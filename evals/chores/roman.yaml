@@ -1,0 +1,21 @@
+repo: thomas-whitley/mercury-fixture
+instruction: |
+  Create roman.py with to_roman(n) that returns the Roman numeral for an int from 1 to 3999
+  using subtractive notation (4 is IV, 9 is IX, 40 is XL, 90 is XC, 400 is CD, 900 is CM).
+  Any other value must raise ValueError. Add test_roman.py with tests.
+grade: |
+  import unittest
+  from roman import to_roman
+
+
+  class Grade(unittest.TestCase):
+      def test_values(self):
+          cases = {1: "I", 4: "IV", 9: "IX", 14: "XIV", 40: "XL", 90: "XC",
+                   400: "CD", 1994: "MCMXCIV", 2026: "MMXXVI", 3999: "MMMCMXCIX"}
+          for n, numeral in cases.items():
+              self.assertEqual(to_roman(n), numeral)
+
+      def test_out_of_range(self):
+          for n in (0, -1, 4000):
+              with self.assertRaises(ValueError):
+                  to_roman(n)

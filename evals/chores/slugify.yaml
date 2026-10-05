@@ -1,0 +1,22 @@
+repo: thomas-whitley/mercury-fixture
+instruction: |
+  Create slug.py with slugify(text) that lowercases the text, replaces every run of
+  characters that are not ASCII letters or digits with a single hyphen, and strips hyphens
+  from both ends. slugify("Hello, World!") is "hello-world" and slugify("") is "".
+  Add test_slug.py with tests.
+grade: |
+  import unittest
+  from slug import slugify
+
+
+  class Grade(unittest.TestCase):
+      def test_basic(self):
+          self.assertEqual(slugify("Hello, World!"), "hello-world")
+
+      def test_runs_and_ends(self):
+          self.assertEqual(slugify("  --A__b--  "), "a-b")
+          self.assertEqual(slugify("Café au lait"), "caf-au-lait")
+
+      def test_empty(self):
+          self.assertEqual(slugify(""), "")
+          self.assertEqual(slugify("!!!"), "")

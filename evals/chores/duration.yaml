@@ -1,0 +1,23 @@
+repo: thomas-whitley/mercury-fixture
+instruction: |
+  Create duration.py with parse_duration(text) that returns a number of seconds as an int.
+  The text is one or more of an integer followed by h, m or s, in that order, each at most
+  once, with no spaces: "1h30m" is 5400, "45s" is 45, "2h" is 7200, "1h0m5s" is 3605.
+  Anything else, including "", "5x", "m5", "30m1h" and "1h1h", must raise ValueError.
+  Add test_duration.py with tests.
+grade: |
+  import unittest
+  from duration import parse_duration
+
+
+  class Grade(unittest.TestCase):
+      def test_values(self):
+          self.assertEqual(parse_duration("1h30m"), 5400)
+          self.assertEqual(parse_duration("45s"), 45)
+          self.assertEqual(parse_duration("2h"), 7200)
+          self.assertEqual(parse_duration("1h0m5s"), 3605)
+
+      def test_invalid(self):
+          for text in ("", "5x", "m5", "30m1h", "1h1h", "1 h"):
+              with self.assertRaises(ValueError, msg=text):
+                  parse_duration(text)

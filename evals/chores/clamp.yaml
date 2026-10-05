@@ -1,0 +1,22 @@
+repo: thomas-whitley/mercury-fixture
+instruction: |
+  In calc.py, add clamp(value, low, high) that returns low if value is below low, high if
+  value is above high, and value otherwise. If low is greater than high it must raise
+  ValueError. Add tests to test_calc.py.
+grade: |
+  import unittest
+  from calc import clamp
+
+
+  class Grade(unittest.TestCase):
+      def test_inside(self):
+          self.assertEqual(clamp(5, 1, 10), 5)
+
+      def test_edges(self):
+          self.assertEqual(clamp(-3, 0, 10), 0)
+          self.assertEqual(clamp(30, 0, 10), 10)
+          self.assertEqual(clamp(10, 0, 10), 10)
+
+      def test_bad_range(self):
+          with self.assertRaises(ValueError):
+              clamp(5, 10, 1)

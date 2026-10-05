@@ -1,0 +1,22 @@
+repo: thomas-whitley/mercury-fixture
+instruction: |
+  In textstats.py, add most_common(text, n) that returns a list of the n most frequent words
+  as (word, count) tuples. Words are whitespace separated and compared lowercased. Order by
+  count, highest first, and break ties alphabetically. If there are fewer than n distinct
+  words, return them all. n below 1 must raise ValueError. Add tests to test_textstats.py.
+grade: |
+  import unittest
+  from textstats import most_common
+
+
+  class Grade(unittest.TestCase):
+      def test_order_and_ties(self):
+          self.assertEqual(most_common("b a B c a b", 2), [("b", 3), ("a", 2)])
+          self.assertEqual(most_common("z y x", 3), [("x", 1), ("y", 1), ("z", 1)])
+
+      def test_fewer_words_than_n(self):
+          self.assertEqual(most_common("one", 5), [("one", 1)])
+
+      def test_bad_n(self):
+          with self.assertRaises(ValueError):
+              most_common("a b", 0)

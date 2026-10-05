@@ -1,0 +1,26 @@
+repo: thomas-whitley/mercury-fixture
+instruction: |
+  Make calc.py runnable as python -m calc add A B, which prints the sum of the integers A and
+  B followed by a newline and exits 0. Any other command, a wrong number of arguments or an
+  argument that is not an integer must print a message to stderr and exit with status 2.
+  Use only the standard library and keep add importable. Add tests to test_calc.py.
+grade: |
+  import subprocess
+  import sys
+  import unittest
+
+
+  def run(*args):
+      return subprocess.run([sys.executable, "-m", "calc", *args], capture_output=True, text=True)
+
+
+  class Grade(unittest.TestCase):
+      def test_add(self):
+          result = run("add", "2", "3")
+          self.assertEqual((result.returncode, result.stdout), (0, "5\n"))
+
+      def test_bad_input(self):
+          for args in (["sub", "2", "3"], ["add", "2"], ["add", "two", "3"]):
+              result = run(*args)
+              self.assertEqual(result.returncode, 2, args)
+              self.assertTrue(result.stderr, args)

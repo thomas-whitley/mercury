@@ -1,0 +1,19 @@
+repo: thomas-whitley/mercury-fixture
+instruction: |
+  word_count in textstats.py is wrong when words are separated by more than one space, by a
+  newline or by a tab, and it returns 1 for an empty string. Fix it so it returns the number
+  of whitespace separated words. Add tests for those cases to test_textstats.py.
+grade: |
+  import unittest
+  from textstats import word_count
+
+
+  class Grade(unittest.TestCase):
+      def test_spacing(self):
+          self.assertEqual(word_count("a  b"), 2)
+          self.assertEqual(word_count("a\nb\tc"), 3)
+          self.assertEqual(word_count("  lead and trail  "), 3)
+
+      def test_empty(self):
+          self.assertEqual(word_count(""), 0)
+          self.assertEqual(word_count("   "), 0)

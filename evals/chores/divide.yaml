@@ -1,0 +1,16 @@
+repo: thomas-whitley/mercury-fixture
+instruction: |
+  In calc.py, add divide(a, b) that returns a / b as a float. If b is 0 it must raise
+  ValueError with the message "cannot divide by zero". Add tests for both cases to test_calc.py.
+grade: |
+  import unittest
+  from calc import divide
+
+
+  class Grade(unittest.TestCase):
+      def test_divides(self):
+          self.assertEqual(divide(7, 2), 3.5)
+
+      def test_zero(self):
+          with self.assertRaisesRegex(ValueError, "cannot divide by zero"):
+              divide(1, 0)

@@ -207,6 +207,68 @@ def close_pull_and_branch(github, repo: str, branch: str) -> None:
     github.delete(f"/repos/{repo}/git/refs/heads/{branch}")
 
 
+DELEGATE_SCRIPT = Path(r"C:\Projects\Cheap AI\scripts\delegate.ps1")
+
+
+def _call_delegate_script(work: Path, instruction: str, model: str, timeout_seconds: float):
+    """delegate.ps1 needs the desktop's own environment (OpenCode, Ollama), so
+    it gets it whole. It edits the clean checkout and does not commit."""
+    subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-File",
+            str(DELEGATE_SCRIPT),
+            "-Dir",
+            str(work),
+            "-Task",
+            instruction,
+            "-Model",
+            model,
+        ],
+        timeout=timeout_seconds,
+        check=False,
+        **_TEXT,
+    )
+
+
+def run_delegate(
+    task: EvalTask,
+    model: str,
+    clone_url: str,
+    *,
+    delegate: Callable[[Path, str, str, float], None] | None = None,
+    timeout_seconds: float = 1800,
+    clock: Callable[[], float] = time.monotonic,
+) -> EvalRow:
+    column = f"delegate:{model}"
+    delegate = delegate or _call_delegate_script
+
+    def row(status: str, graded: bool, seconds: float | None, detail: str) -> EvalRow:
+        return EvalRow(
+            task.id, column, column, None, status, graded, None, seconds, 0.0, detail[-2000:]
+        )
+
+    with tempfile.TemporaryDirectory() as home:
+        work = Path(home) / "work"
+        error = clone(clone_url, "main", work, None, 120)
+        if error:
+            return row("refused", False, None, error)
+        base_ids = test_ids(work)
+        start = clock()
+        try:
+            delegate(work, task.instruction, model, timeout_seconds)
+        except subprocess.TimeoutExpired:
+            return row("timeout", False, clock() - start, "delegate.ps1 timed out")
+        seconds = clock() - start
+        # Mercury opens a pull request only when the repo's own tests pass.
+        tests = subprocess.run(REPO_TESTS, cwd=work, env=_env(home, None), timeout=600, **_TEXT)
+        if tests.returncode not in (0, NO_TESTS_RAN):
+            return row("failed", False, seconds, tests.stdout + tests.stderr)
+        graded, detail = grade_dir(work, task.grade, base_ids)
+        return row("succeeded", graded, seconds, detail)
+
+
 def run_one(
     api,
     github,
@@ -363,6 +425,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives the
 
 
 def _run_column(column, task, api, github, token, timeout) -> EvalRow:  # pragma: no cover
+    if column.startswith("delegate:"):
+        return run_delegate(task, column.split(":", 1)[1], FIXTURE_URL)
     return run_one(
         api,
         github,

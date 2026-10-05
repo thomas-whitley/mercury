@@ -14,6 +14,7 @@ from evals.runner import (
     EvalTask,
     grade_branch,
     load_tasks,
+    run_delegate,
     run_one,
     summarise,
 )
@@ -293,3 +294,73 @@ def test_the_summary_shows_no_tokens_for_a_column_that_cannot_count_them():
     table = summarise([_row("delegate:local", True, tokens=None)])
 
     assert "| delegate:local | 1 of 1 | 1 of 1 | n/a | 30 | 0.0000 |" in table
+
+
+GRADE_DIVIDE = (
+    "import unittest\nfrom calc import divide\n\n\n"
+    "class T(unittest.TestCase):\n    def test_divide(self):\n"
+    "        self.assertEqual(divide(6, 3), 2)\n"
+)
+DIVIDE_TASK = EvalTask(id="divide", repo="o/fixture", instruction="Add divide.", grade=GRADE_DIVIDE)
+CALC_WITH_DIVIDE = "def add(a, b):\n    return a + b\n\n\ndef divide(a, b):\n    return a / b\n"
+
+
+def _delegate_writing(files: dict[str, str]):
+    def delegate(work, instruction, model, timeout_seconds):
+        for name, text in files.items():
+            (work / name).write_text(text, encoding="utf-8")
+
+    return delegate
+
+
+def test_a_delegate_change_that_keeps_the_tests_green_is_graded(tmp_path):
+    row = run_delegate(
+        DIVIDE_TASK,
+        "local",
+        remote(tmp_path, seed_test=True),
+        delegate=_delegate_writing({"calc.py": CALC_WITH_DIVIDE}),
+    )
+
+    assert (row.provider, row.status, row.graded, row.tokens) == (
+        "delegate:local",
+        "succeeded",
+        True,
+        None,
+    )
+
+
+def test_a_delegate_change_that_breaks_the_tests_is_failed_and_not_graded(tmp_path):
+    row = run_delegate(
+        DIVIDE_TASK,
+        "local",
+        remote(tmp_path, seed_test=True),
+        delegate=_delegate_writing({"calc.py": "oops("}),
+    )
+
+    assert (row.status, row.graded) == ("failed", False)
+
+
+def test_a_delegate_change_that_replaces_main_s_test_is_not_graded_a_pass(tmp_path):
+    own_test = (
+        "import unittest\nfrom calc import divide\n\n\n"
+        "class DivideTest(unittest.TestCase):\n    def test_divide(self):\n"
+        "        self.assertEqual(divide(4, 2), 2)\n"
+    )
+    row = run_delegate(
+        DIVIDE_TASK,
+        "local",
+        remote(tmp_path, seed_test=True),
+        delegate=_delegate_writing({"calc.py": CALC_WITH_DIVIDE, "test_calc.py": own_test}),
+    )
+
+    assert (row.status, row.graded) == ("succeeded", False)
+    assert row.detail.startswith("tests removed")
+
+
+def test_a_delegate_that_runs_too_long_is_a_timeout(tmp_path):
+    def slow(work, instruction, model, timeout_seconds):
+        raise subprocess.TimeoutExpired("pwsh", timeout_seconds)
+
+    row = run_delegate(DIVIDE_TASK, "local", remote(tmp_path, seed_test=True), delegate=slow)
+
+    assert (row.status, row.graded) == ("timeout", False)

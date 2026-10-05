@@ -52,7 +52,21 @@ LIST_TESTS = (
     "        walk(t) if isinstance(t, unittest.TestSuite) else print(t.id())\n"
     "walk(unittest.defaultTestLoader.discover('.'))\n"
 )
+# Runs the suite quietly and prints the id of every test it skipped or expected to fail.
+LIST_SKIPPED = (
+    "import io, unittest\n"
+    "suite = unittest.defaultTestLoader.discover('.')\n"
+    "result = unittest.TextTestRunner(stream=io.StringIO()).run(suite)\n"
+    "for test, _ in result.skipped + result.expectedFailures:\n"
+    "    print(test.id())\n"
+)
 _TEXT = {"capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace"}
+
+
+class DiscoveryFailed(RuntimeError):
+    """Listing a checkout's tests crashed, so its test ids are not known. An
+    empty set would look like a repo with no tests and switch the removal
+    check off, so this is raised instead."""
 
 
 class EvalAborted(Exception):
@@ -133,15 +147,21 @@ def clone(
     return None if result.returncode == 0 else "clone failed: " + result.stderr[-1000:]
 
 
-def test_ids(work: Path, timeout_seconds: float = 120) -> set[str]:
+def _listed(script: str, work: Path, timeout_seconds: float) -> set[str]:
     result = subprocess.run(
-        [sys.executable, "-c", LIST_TESTS],
+        [sys.executable, "-c", script],
         cwd=work,
         env=_env(str(work.parent), None),
         timeout=timeout_seconds,
         **_TEXT,
     )
+    if result.returncode != 0:
+        raise DiscoveryFailed(result.stderr[-1000:])
     return set(result.stdout.split())
+
+
+def test_ids(work: Path, timeout_seconds: float = 120) -> set[str]:
+    return _listed(LIST_TESTS, work, timeout_seconds)
 
 
 test_ids.__test__ = False  # a helper, not a test, for pytest's collector
@@ -165,6 +185,11 @@ def grade_dir(
         own = subprocess.run(REPO_TESTS, cwd=work, env=env, timeout=timeout_seconds, **_TEXT)
         if own.returncode not in (0, NO_TESTS_RAN):
             return False, "own tests failed: " + (own.stdout + own.stderr)[-3000:]
+        if base_ids is not None:
+            # A test that is skipped or expected to fail still exists and "passes".
+            skipped = base_ids & _listed(LIST_SKIPPED, work, timeout_seconds)
+            if skipped:
+                return False, "tests skipped: " + ", ".join(sorted(skipped))
         (work / f"{GRADE_MODULE}.py").write_text(grade_source, encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "unittest", "-v", GRADE_MODULE],
@@ -173,6 +198,8 @@ def grade_dir(
             timeout=timeout_seconds,
             **_TEXT,
         )
+    except DiscoveryFailed as crash:
+        return False, f"test discovery failed: {crash}"
     except subprocess.TimeoutExpired:
         return False, f"timed out after {timeout_seconds:.0f} s"
     return result.returncode == 0, (result.stdout + result.stderr)[-4000:]
@@ -196,6 +223,8 @@ def grade_branch(
             if error:
                 return False, error
             base_ids = test_ids(base, timeout_seconds)
+        except DiscoveryFailed as crash:
+            return False, f"test discovery failed on the default branch: {crash}"
         except subprocess.TimeoutExpired:
             return False, f"clone timed out after {timeout_seconds:.0f} s"
         return grade_dir(work, grade_source, base_ids, timeout_seconds)
@@ -302,7 +331,10 @@ def run_delegate(
             error = clone(clone_url, "main", work, None, 120)
             if error:
                 return row("refused", False, None, error)
-            base_ids = test_ids(work)
+            try:
+                base_ids = test_ids(work)
+            except DiscoveryFailed as crash:
+                return row("error", False, None, f"test discovery failed on main: {crash}")
             start = clock()
             try:
                 result = delegate(work, task.instruction, model, timeout_seconds)

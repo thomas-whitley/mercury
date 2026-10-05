@@ -12,6 +12,7 @@ import pytest
 from app.config import PROVIDERS
 from evals import runner
 from evals.runner import (
+    DiscoveryFailed,
     EvalAborted,
     EvalRow,
     EvalTask,
@@ -24,6 +25,7 @@ from evals.runner import (
     run_delegate,
     run_one,
     summarise,
+    test_ids,
 )
 
 GRADE_PASS = (
@@ -638,3 +640,50 @@ def test_the_runner_timeout_reaches_the_delegate_column(monkeypatch):
     runner._run_column("delegate:local-gpt", DIVIDE_TASK, None, None, None, 77)
 
     assert seen == {"model": "local-gpt", "timeout_seconds": 77}
+
+
+SKIPPED_TEST = SEED_TEST.replace(
+    "    def test_add", "    @unittest.skip('later')\n    def test_add"
+)
+SKIPPED_CLASS = SEED_TEST.replace("class AddTest", "@unittest.skip('later')\nclass AddTest")
+EXPECTED_FAILURE = SEED_TEST.replace(
+    "    def test_add", "    @unittest.expectedFailure\n    def test_add"
+).replace("5)", "6)")
+
+
+@pytest.mark.parametrize(
+    "replacement", [SKIPPED_TEST, SKIPPED_CLASS, EXPECTED_FAILURE], ids=["skip", "class", "xfail"]
+)
+def test_a_branch_that_skips_one_of_main_s_tests_fails(tmp_path, replacement):
+    url = remote(tmp_path, seed_test=True, on_branch={"test_calc.py": replacement})
+
+    passed, output = grade_branch(url, "agent/run-1", GRADE_PASS)
+
+    assert not passed
+    assert output.startswith("tests skipped")
+    assert "test_add" in output
+
+
+def test_a_test_listing_that_crashes_raises_instead_of_returning_nothing(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "LIST_TESTS", "raise SystemExit(3)")
+
+    with pytest.raises(DiscoveryFailed):
+        test_ids(tmp_path)
+
+
+def test_a_default_branch_whose_tests_cannot_be_listed_fails_the_grade(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "LIST_TESTS", "raise SystemExit(3)")
+
+    passed, output = grade_branch(remote(tmp_path), "agent/run-1", GRADE_PASS)
+
+    assert not passed
+    assert output.startswith("test discovery failed")
+
+
+def test_a_delegate_run_on_a_main_whose_tests_cannot_be_listed_is_an_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "LIST_TESTS", "raise SystemExit(3)")
+
+    row = run_delegate(DIVIDE_TASK, "local", remote(tmp_path, seed_test=True))
+
+    assert (row.status, row.graded) == ("error", False)
+    assert row.detail.startswith("test discovery failed")

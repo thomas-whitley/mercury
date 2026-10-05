@@ -1,0 +1,19 @@
+repo: thomas-whitley/mercury-fixture
+instruction: |
+  In orders/pricing.py, order_total rounds GST once on the whole order. Change it so each line's
+  total including GST (line_total times 1.10) is rounded to the cent, half up, and the order total
+  is the sum of those rounded lines. Leave line_total as it is. Add tests to test_orders.py.
+grade: |
+  import unittest
+  from decimal import Decimal
+  from orders import order_total, parse_orders
+
+
+  class Grade(unittest.TestCase):
+      def test_rounds_per_line(self):
+          lines = parse_orders("sku,quantity,unit_price\nA,1,0.05\nB,1,0.05\n")
+          self.assertEqual(order_total(lines), Decimal("0.12"))
+
+      def test_plain_order(self):
+          lines = parse_orders("sku,quantity,unit_price\nA,2,10.00\nB,1,2.50\n")
+          self.assertEqual(order_total(lines), Decimal("24.75"))

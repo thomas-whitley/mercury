@@ -1,0 +1,21 @@
+repo: thomas-whitley/mercury-fixture
+instruction: |
+  In orders/parse.py, parse_orders accepts a quantity of zero or below. Treat a quantity below
+  1 as a bad line, reported the same way a bad price already is: one InvalidOrders listing every
+  bad line's number, counting the header as line 1, with bad quantities and bad prices in the
+  same list in line order. Add tests to test_orders.py.
+grade: |
+  import unittest
+  from orders import InvalidOrders, parse_orders
+
+
+  class Grade(unittest.TestCase):
+      def test_bad_quantities_and_prices_together(self):
+          text = "sku,quantity,unit_price\nA,0,1\nB,2,1\nC,-3,1\nD,1,x\n"
+          with self.assertRaises(InvalidOrders) as caught:
+              parse_orders(text)
+          self.assertEqual(caught.exception.line_numbers, [2, 4, 5])
+
+      def test_good_lines_still_parse(self):
+          lines = parse_orders("sku,quantity,unit_price\nA,1,2.00\n")
+          self.assertEqual(lines[0].quantity, 1)

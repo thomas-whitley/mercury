@@ -46,8 +46,9 @@ filterwarnings = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-# Plans under docs/ carry Python snippets that ruff format would rewrite.
-extend-exclude = ["docs"]
+# Plans under docs/ carry Python snippets that ruff format would rewrite, and
+# evals/fixture-seed is the fixture repo's code rather than Mercury's.
+extend-exclude = ["docs", "evals/fixture-seed"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

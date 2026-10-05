@@ -1,0 +1,15 @@
+repo: thomas-whitley/mercury-fixture
+instruction: |
+  orders/report.py prices each line itself, so summary misses the bulk discount that
+  orders/pricing.py line_total applies. Make summary use line_total for every row and for the
+  total, keeping the output format exactly as it is (SKU, x and quantity, the amount to two
+  decimal places, then a TOTAL row). Add tests to test_orders.py.
+grade: |
+  import unittest
+  from orders import parse_orders, summary
+
+
+  class Grade(unittest.TestCase):
+      def test_bulk_lines_are_discounted(self):
+          lines = parse_orders("sku,quantity,unit_price\nA,10,1.00\nB,1,2.50\n")
+          self.assertEqual(summary(lines), "A x10 9.50\nB x1 2.50\nTOTAL 12.00")

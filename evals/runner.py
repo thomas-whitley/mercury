@@ -287,11 +287,19 @@ def _run_tree(
     return subprocess.CompletedProcess(command, process.returncode, "", output)
 
 
+def _delegate_env(environ: dict[str, str]) -> dict[str, str]:
+    """The desktop's environment, whole, minus the runner's own secrets. The
+    model behind delegate.ps1 has a shell and must not find Mercury's bearer
+    token or the GitHub token there. Windows names are case insensitive."""
+    return {k: v for k, v in environ.items() if not k.upper().startswith("MERCURY_")}
+
+
 def _call_delegate_script(
     work: Path, instruction: str, model: str, timeout_seconds: float
 ) -> subprocess.CompletedProcess:
     """delegate.ps1 needs the desktop's own environment (OpenCode, Ollama), so
-    it gets it whole. It edits the clean checkout and does not commit."""
+    it gets it whole, less the MERCURY_ variables. It edits the clean checkout
+    and does not commit."""
     command = [
         "pwsh",
         "-NoProfile",
@@ -304,7 +312,9 @@ def _call_delegate_script(
         "-Model",
         model,
     ]
-    return _run_tree(command, work.parent / "delegate.log", timeout_seconds, None)
+    return _run_tree(
+        command, work.parent / "delegate.log", timeout_seconds, _delegate_env(dict(os.environ))
+    )
 
 
 def run_delegate(

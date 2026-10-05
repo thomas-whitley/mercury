@@ -17,6 +17,7 @@ from evals.runner import (
     EvalRow,
     EvalTask,
     _call_delegate_script,
+    _delegate_env,
     _run_tree,
     close_pull_and_branch,
     contained,
@@ -699,3 +700,36 @@ def test_the_summary_counts_rows_that_fell_back_and_shows_who_answered():
     assert "| gemini | 2 of 3 | 2 of 3 | 1000 | 30 | 0.0000 | 1 |" in table
     assert "| t1 | gemini | ollama | succeeded | pass |" in table
     assert "| t2 | gemini | n/a | refused | fail |" in table
+
+
+def test_the_delegate_environment_keeps_everything_but_mercury_variables():
+    environ = {
+        "PATH": "/bin",
+        "OLLAMA_HOST": "http://localhost:11434",
+        "MERCURY_BEARER_TOKEN": "secret",
+        "mercury_github_token": "secret",
+        "NOT_MERCURY_X": "kept",
+    }
+
+    assert _delegate_env(environ) == {
+        "PATH": "/bin",
+        "OLLAMA_HOST": "http://localhost:11434",
+        "NOT_MERCURY_X": "kept",
+    }
+
+
+def test_the_delegate_script_is_started_without_the_runner_s_tokens(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_tree(cmd, out_path, timeout_seconds, env):
+        seen["env"] = env
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(runner, "_run_tree", fake_tree)
+    monkeypatch.setenv("MERCURY_BEARER_TOKEN", "secret")
+    monkeypatch.setenv("MERCURY_GITHUB_TOKEN", "secret")
+
+    _call_delegate_script(tmp_path / "work", "Add divide.", "local", 77)
+
+    assert "PATH" in seen["env"]
+    assert not [name for name in seen["env"] if name.upper().startswith("MERCURY_")]

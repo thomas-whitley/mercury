@@ -27,6 +27,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 import httpx2
@@ -183,7 +184,7 @@ def grade_branch(
 ) -> tuple[bool, str]:
     """Clone the branch and the default branch, and grade the branch against
     the default branch's test ids."""
-    with tempfile.TemporaryDirectory() as home:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
         work, base = Path(home) / "work", Path(home) / "base"
         try:
             error = clone(clone_url, branch, work, token, timeout_seconds) or clone(
@@ -202,9 +203,16 @@ def close_pull_and_branch(github, repo: str, branch: str) -> None:
     pulls = github.get(
         f"/repos/{repo}/pulls", params={"head": f"{owner}:{branch}", "state": "open"}
     )
+    pulls.raise_for_status()
     for pull in pulls.json():
-        github.patch(f"/repos/{repo}/pulls/{pull['number']}", json={"state": "closed"})
-    github.delete(f"/repos/{repo}/git/refs/heads/{branch}")
+        github.patch(
+            f"/repos/{repo}/pulls/{pull['number']}", json={"state": "closed"}
+        ).raise_for_status()
+    deleted = github.delete(f"/repos/{repo}/git/refs/heads/{branch}")
+    # 404 and 422 mean there was no such branch, as after a chore that timed
+    # out before it pushed. Anything else leaves a branch behind on the fixture.
+    if deleted.status_code not in (404, 422):
+        deleted.raise_for_status()
 
 
 DELEGATE_SCRIPT = Path(r"C:\Projects\Cheap AI\scripts\delegate.ps1")
@@ -249,24 +257,30 @@ def run_delegate(
             task.id, column, column, None, status, graded, None, seconds, 0.0, detail[-2000:]
         )
 
-    with tempfile.TemporaryDirectory() as home:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
         work = Path(home) / "work"
-        error = clone(clone_url, "main", work, None, 120)
-        if error:
-            return row("refused", False, None, error)
-        base_ids = test_ids(work)
-        start = clock()
+        seconds = None
         try:
-            delegate(work, task.instruction, model, timeout_seconds)
+            error = clone(clone_url, "main", work, None, 120)
+            if error:
+                return row("refused", False, None, error)
+            base_ids = test_ids(work)
+            start = clock()
+            try:
+                delegate(work, task.instruction, model, timeout_seconds)
+            except subprocess.TimeoutExpired:
+                return row("timeout", False, clock() - start, "delegate.ps1 timed out")
+            except FileNotFoundError as missing:
+                return row("error", False, clock() - start, f"could not start pwsh: {missing}")
+            seconds = clock() - start
+            # Mercury opens a pull request only when the repo's own tests pass.
+            tests = subprocess.run(REPO_TESTS, cwd=work, env=_env(home, None), timeout=600, **_TEXT)
+            if tests.returncode not in (0, NO_TESTS_RAN):
+                return row("failed", False, seconds, tests.stdout + tests.stderr)
+            graded, detail = grade_dir(work, task.grade, base_ids)
+            return row("succeeded", graded, seconds, detail)
         except subprocess.TimeoutExpired:
-            return row("timeout", False, clock() - start, "delegate.ps1 timed out")
-        seconds = clock() - start
-        # Mercury opens a pull request only when the repo's own tests pass.
-        tests = subprocess.run(REPO_TESTS, cwd=work, env=_env(home, None), timeout=600, **_TEXT)
-        if tests.returncode not in (0, NO_TESTS_RAN):
-            return row("failed", False, seconds, tests.stdout + tests.stderr)
-        graded, detail = grade_dir(work, task.grade, base_ids)
-        return row("succeeded", graded, seconds, detail)
+            return row("timeout", False, seconds, "a clone, test listing or test run timed out")
 
 
 def run_one(
@@ -333,11 +347,15 @@ def run_one(
         )
     graded, detail = False, ""
     branch = f"agent/{run_id}"
-    if run["status"] == "succeeded":
-        graded, detail = grade_branch(f"{clone_base}/{task.repo}.git", branch, task.grade, token)
-    if run["status"] in ("succeeded", "timeout"):
-        # A timed out chore may have pushed its branch before the cancel landed.
-        close_pull_and_branch(github, task.repo, branch)
+    try:
+        if run["status"] == "succeeded":
+            graded, detail = grade_branch(
+                f"{clone_base}/{task.repo}.git", branch, task.grade, token
+            )
+    finally:
+        if run["status"] in ("succeeded", "timeout"):
+            # A timed out chore may have pushed its branch before the cancel landed.
+            close_pull_and_branch(github, task.repo, branch)
     tokens = run.get("tokens") or 0
     answered = run.get("provider")
     rate = PROVIDERS[answered].usd_per_million_tokens if answered in PROVIDERS else 0.0
@@ -353,6 +371,21 @@ def run_one(
         tokens * rate / 1_000_000,
         detail[-2000:],
     )
+
+
+def contained(run: Callable[[], EvalRow], task_id: str, column: str, token: str | None) -> EvalRow:
+    """One row's failure is that row's result, not the batch's. The text is
+    scrubbed of the token, in the form git or an HTTP client might echo it."""
+    try:
+        return run()
+    except EvalAborted:
+        raise
+    except Exception as error:
+        text = f"{type(error).__name__}: {error}"
+        if token:
+            basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+            text = text.replace(token, "[token]").replace(basic, "[token]")
+        return EvalRow(task_id, column, None, None, "error", False, None, None, 0.0, text[-2000:])
 
 
 def summarise(rows: list[EvalRow]) -> str:
@@ -427,7 +460,12 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives the
         for _ in range(args.repeats):
             for task in tasks:
                 for column in columns:
-                    row = _run_column(column, task, api, github, token, args.timeout)
+                    row = contained(
+                        partial(_run_column, column, task, api, github, token, args.timeout),
+                        task.id,
+                        column,
+                        token,
+                    )
                     rows.append(row)
                     print(
                         f"{task.id} {column}->{row.answered_by} {row.status} "

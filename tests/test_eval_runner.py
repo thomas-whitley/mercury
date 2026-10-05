@@ -12,6 +12,8 @@ from evals.runner import (
     EvalAborted,
     EvalRow,
     EvalTask,
+    close_pull_and_branch,
+    contained,
     grade_branch,
     load_tasks,
     run_delegate,
@@ -402,3 +404,138 @@ def test_a_run_that_never_leaves_pending_is_cancelled_after_three_timeouts_of_wa
 
     assert row.status == "timeout"
     assert api.cancelled == ["/runs/run-1/cancel"]
+
+
+def test_an_error_in_one_row_is_recorded_without_the_token():
+    def boom():
+        raise RuntimeError("clone of https://x-access-token:s3cret@host failed: s3cret")
+
+    row = contained(boom, "divide", "gemini", "s3cret")
+
+    assert (row.status, row.graded, row.task, row.provider) == ("error", False, "divide", "gemini")
+    assert "RuntimeError" in row.detail
+    assert "s3cret" not in row.detail
+
+
+def test_an_aborted_batch_is_not_contained():
+    def stop():
+        raise EvalAborted("stop")
+
+    with pytest.raises(EvalAborted):
+        contained(stop, "divide", "gemini", None)
+
+
+def test_the_branch_is_cleaned_up_even_when_grading_raises(monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("grading blew up")
+
+    monkeypatch.setattr(runner, "grade_branch", broken)
+    api = _Api(PENDING, [DONE])
+    github = _GitHub()
+
+    with pytest.raises(RuntimeError, match="grading blew up"):
+        _run(api, github)
+
+    assert ("delete", "/repos/o/fixture/git/refs/heads/agent/run-1") in github.calls
+
+
+class _FailingGitHub(_GitHub):
+    def __init__(self, patch_status: int = 200, delete_status: int = 204) -> None:
+        super().__init__()
+        self.patch_status, self.delete_status = patch_status, delete_status
+
+    def patch(self, path: str, json: dict) -> _Response:
+        super().patch(path, json)
+        return _Response(self.patch_status)
+
+    def delete(self, path: str) -> _Response:
+        super().delete(path)
+        return _Response(self.delete_status)
+
+
+def test_a_pull_request_that_cannot_be_closed_is_an_error():
+    with pytest.raises(RuntimeError, match="403"):
+        close_pull_and_branch(_FailingGitHub(patch_status=403), "o/fixture", "agent/run-1")
+
+
+def test_a_branch_that_cannot_be_deleted_is_an_error():
+    with pytest.raises(RuntimeError, match="500"):
+        close_pull_and_branch(_FailingGitHub(delete_status=500), "o/fixture", "agent/run-1")
+
+
+@pytest.mark.parametrize("status", [404, 422])
+def test_a_branch_that_was_never_pushed_is_not_an_error(status):
+    close_pull_and_branch(_FailingGitHub(delete_status=status), "o/fixture", "agent/run-1")
+
+
+def test_every_temporary_directory_ignores_cleanup_errors(monkeypatch, tmp_path):
+    real = runner.tempfile.TemporaryDirectory
+    seen: list[dict] = []
+
+    def recording(*args, **kwargs):
+        seen.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(runner.tempfile, "TemporaryDirectory", recording)
+
+    grade_branch("file:///no/such/repo.git", "main", GRADE_PASS)
+    run_delegate(DIVIDE_TASK, "local", "file:///no/such/repo.git")
+
+    assert [kwargs.get("ignore_cleanup_errors") for kwargs in seen] == [True, True]
+
+
+def test_a_delegate_clone_that_times_out_is_a_timeout_row(monkeypatch, tmp_path):
+    def slow_clone(*args, **kwargs):
+        raise subprocess.TimeoutExpired("git", 120)
+
+    monkeypatch.setattr(runner, "clone", slow_clone)
+
+    row = run_delegate(DIVIDE_TASK, "local", "file:///unused")
+
+    assert (row.status, row.graded) == ("timeout", False)
+
+
+def test_a_delegate_test_listing_that_times_out_is_a_timeout_row(monkeypatch, tmp_path):
+    def slow_ids(*args, **kwargs):
+        raise subprocess.TimeoutExpired("python", 120)
+
+    monkeypatch.setattr(runner, "test_ids", slow_ids)
+
+    row = run_delegate(
+        DIVIDE_TASK,
+        "local",
+        remote(tmp_path, seed_test=True),
+        delegate=_delegate_writing({"calc.py": CALC_WITH_DIVIDE}),
+    )
+
+    assert (row.status, row.graded) == ("timeout", False)
+
+
+def test_a_delegate_repo_test_run_that_times_out_is_a_timeout_row(monkeypatch, tmp_path):
+    real_run = subprocess.run
+
+    def run(args, *a, **kwargs):
+        if args == runner.REPO_TESTS:
+            raise subprocess.TimeoutExpired("python", 600)
+        return real_run(args, *a, **kwargs)
+
+    monkeypatch.setattr(runner.subprocess, "run", run)
+
+    row = run_delegate(
+        DIVIDE_TASK,
+        "local",
+        remote(tmp_path, seed_test=True),
+        delegate=_delegate_writing({"calc.py": CALC_WITH_DIVIDE}),
+    )
+
+    assert (row.status, row.graded) == ("timeout", False)
+
+
+def test_a_delegate_that_cannot_start_pwsh_is_an_error_row(tmp_path):
+    def missing(work, instruction, model, timeout_seconds):
+        raise FileNotFoundError("pwsh")
+
+    row = run_delegate(DIVIDE_TASK, "local", remote(tmp_path, seed_test=True), delegate=missing)
+
+    assert (row.status, row.graded) == ("error", False)
+    assert "pwsh" in row.detail

@@ -40,7 +40,7 @@ async def create_run(state, run: RunRequest, source: str) -> RunCreated:
             (
                 run.inputs["task"].strip(),
                 run.type,
-                TASK_TYPES[run.type].provider,
+                run.provider or TASK_TYPES[run.type].provider,
                 start_run_trace(),
                 run.check_kind,
                 source,
@@ -62,7 +62,11 @@ def _request_chore(state, run: RunRequest, source: str) -> RunCreated:
     if starts_unasked(repo, source):
         with connect(state.settings.database_url, autocommit=True) as conn:
             run_id = start_chore(
-                conn, repo, run.inputs["task"], source, TASK_TYPES["repo_chore"].provider
+                conn,
+                repo,
+                run.inputs["task"],
+                source,
+                run.provider or TASK_TYPES["repo_chore"].provider,
             )
         return RunCreated(id=run_id, status="pending")
     settings = state.settings
@@ -74,7 +78,9 @@ def _request_chore(state, run: RunRequest, source: str) -> RunCreated:
     telegram = TelegramClient(settings.telegram_bot_token, settings.telegram_api_url)
     try:
         with connect(settings.database_url, autocommit=True) as conn:
-            run_id = request_chore(conn, telegram, chat_id, repo, run.inputs["task"], source)
+            run_id = request_chore(
+                conn, telegram, chat_id, repo, run.inputs["task"], source, provider=run.provider
+            )
     except TelegramError:
         raise HTTPException(
             status_code=502, detail="the approval question could not be sent"

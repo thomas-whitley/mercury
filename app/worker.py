@@ -278,8 +278,13 @@ def _process_run(
         return None
 
     task_type = TASK_TYPES[task_type_name]
+    # The row's provider is the type's own unless the caller named one.
+    provider = (
+        conn.execute("SELECT provider FROM runs WHERE id = %s", (run_id,)).fetchone()[0]
+        or task_type.provider
+    )
     trip = check_budget(
-        conn, task_type.provider, settings.daily_tokens_per_provider, settings.monthly_budget_usd
+        conn, provider, settings.daily_tokens_per_provider, settings.monthly_budget_usd
     )
     if trip is not None:
         end_on_budget(conn, run_id, trip)
@@ -287,7 +292,7 @@ def _process_run(
         return None
 
     try:
-        model = model_builder(settings, task_type.provider)
+        model = model_builder(settings, provider)
     except RuntimeError as error:
         logger.error(
             "refusing run %s: %s",
@@ -297,7 +302,7 @@ def _process_run(
         )
         refuse_run(conn, run_id, str(error))
         return None
-    model = _with_fallback(conn, run_id, model, task_type, settings, model_builder)
+    model = _with_fallback(conn, run_id, model, task_type, settings, model_builder, provider)
 
     if task_type_name == "repo_chore":
         return _run_chore(conn, run_id, model, settings, repos, telegram, task_type.budget_tokens)
@@ -322,7 +327,7 @@ def _process_run(
         retriever=retriever,
         worker_id=settings.worker_id,
         tracer=tracer,
-        provider=task_type.provider,
+        provider=provider,
     )
 
 
@@ -390,12 +395,13 @@ def _with_fallback(
     task_type: TaskType,
     settings: Settings,
     model_builder: Callable[[Settings, str], Model],
+    provider: str,
 ) -> Model:
     """The run's model, with its type's fallback provider behind it when that
     provider has credentials. When the fallback takes over, the run's provider
     column names it, so the runs list and the daily token cap count the
     provider that answered."""
-    if task_type.fallback is None:
+    if task_type.fallback is None or task_type.fallback == provider:
         return model
     fields = {"run_id": run_id, "worker_id": settings.worker_id}
     try:
@@ -408,7 +414,7 @@ def _with_fallback(
         logger.warning(
             "run %s: %s failed, falling back to %s",
             run_id,
-            task_type.provider,
+            provider,
             task_type.fallback,
             extra=fields,
         )

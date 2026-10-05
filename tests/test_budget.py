@@ -118,7 +118,7 @@ def test_a_tripped_run_ends_with_one_event_and_one_message(migrated_db, fake_tel
 
 def test_a_chat_run_is_held_to_the_caps_too(migrated_db, fake_telegram):
     spend(migrated_db, TASK_TYPES["chat"].provider, 500_000)
-    run_id = new_run(migrated_db, type_="chat", telegram=True)
+    run_id = new_run(migrated_db, type_="chat", provider=TASK_TYPES["chat"].provider, telegram=True)
 
     run(migrated_db, run_id, fake_telegram)
 

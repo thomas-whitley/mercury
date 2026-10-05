@@ -162,3 +162,12 @@ def test_a_request_without_the_token_is_refused(api, header):
     response = httpx2.post(f"{api}/mcp", json=initialize, headers=headers)
 
     assert response.status_code == 401
+
+
+def test_create_run_takes_a_provider(api, migrated_db):
+    created = call(api, "create_run", type="pytest", task=TEST_FILE, provider="ollama")
+
+    row = migrated_db.execute(
+        "SELECT provider, source FROM runs WHERE id = %s", (created["id"],)
+    ).fetchone()
+    assert row == ("ollama", "mcp")

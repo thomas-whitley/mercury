@@ -73,6 +73,7 @@ def request_chore(
     repo: RepoConfig,
     instruction: str,
     source: str,
+    provider: str | None = None,
 ) -> str:
     """Create the chore waiting and ask about it. Returns the run id.
 
@@ -87,7 +88,13 @@ def request_chore(
     with conn.transaction():
         run_id = conn.execute(
             _CREATE,
-            (instruction, TASK_TYPES["repo_chore"].provider, repo.name, chat_id, source),
+            (
+                instruction,
+                provider or TASK_TYPES["repo_chore"].provider,
+                repo.name,
+                chat_id,
+                source,
+            ),
         ).fetchone()[0]
         approval_id = ask(conn, telegram, chat_id, "start_run", question, run_id=str(run_id))
         conn.execute(_SET_MESSAGE_FROM_APPROVAL, (approval_id, run_id))

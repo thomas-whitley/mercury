@@ -118,3 +118,46 @@ def test_a_fallback_with_no_key_leaves_the_run_on_its_own_provider(migrated_db, 
 
     status = migrated_db.execute("SELECT status FROM runs WHERE id = %s", (run_id,)).fetchone()
     assert status == ("succeeded",)
+
+
+def _recording(seen: list[str]):
+    def build(settings, provider_name):
+        seen.append(provider_name)
+        return StubModel(replies=['{"action": "ask", "question": "Which URL?"}'])
+
+    return build
+
+
+def _chat_run_on(conn, provider: str) -> str:
+    run_id = conn.execute(
+        "INSERT INTO runs (task, type, provider, telegram_chat_id, telegram_message_id) "
+        "VALUES ('check my site', 'chat', %s, 42, 7) RETURNING id::text",
+        (provider,),
+    ).fetchone()[0]
+    claim_run(conn, run_id, "worker-test")
+    return run_id
+
+
+def test_a_run_is_built_on_the_provider_its_row_names(migrated_db, fake_telegram):
+    run_id = _chat_run_on(migrated_db, "haiku")
+    settings = settings_with(
+        worker_id="worker-test", telegram_bot_token="1:a", telegram_api_url=fake_telegram.url
+    )
+    seen: list[str] = []
+
+    process_run(migrated_db, run_id, settings, model_builder=_recording(seen))
+
+    # chat's own fallback, gemini, still stands behind the provider the row named.
+    assert seen == ["haiku", "gemini"]
+
+
+def test_a_run_already_on_its_types_fallback_gets_no_fallback_behind_it(migrated_db, fake_telegram):
+    run_id = _chat_run_on(migrated_db, "gemini")
+    settings = settings_with(
+        worker_id="worker-test", telegram_bot_token="1:a", telegram_api_url=fake_telegram.url
+    )
+    seen: list[str] = []
+
+    process_run(migrated_db, run_id, settings, model_builder=_recording(seen))
+
+    assert seen == ["gemini"]

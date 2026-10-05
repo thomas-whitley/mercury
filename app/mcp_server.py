@@ -33,7 +33,9 @@ file), site_check (task is a URL, kind is uptime, lighthouse or broken_links) or
 repo_chore (task is an instruction, repo is owner/name from the configured portfolio). \
 A repo_chore waits for the owner to press Approve on Telegram unless the repo is marked \
 auto_approve in the config, and this server has no way to approve it. A status of \
-awaiting_approval means tell the user to check Telegram. Returns the run id and its status."""
+awaiting_approval means tell the user to check Telegram. provider is optional, one of the \
+configured providers such as gemini or ollama; leave it out to use the type's default. \
+Returns the run id and its status."""
 
 
 def _refused(error: HTTPException) -> ToolError:
@@ -55,7 +57,11 @@ def build_mcp(app: FastAPI) -> MCPServer:
 
     @mcp.tool(name="create_run", description=CREATE_RUN)
     async def create_run_tool(
-        type: str, task: str, kind: str | None = None, repo: str | None = None
+        type: str,
+        task: str,
+        kind: str | None = None,
+        repo: str | None = None,
+        provider: str | None = None,
     ) -> dict[str, Any]:
         inputs: dict[str, Any] = {"task": task}
         if kind is not None:
@@ -63,7 +69,7 @@ def build_mcp(app: FastAPI) -> MCPServer:
         if repo is not None:
             inputs["repo"] = repo
         try:
-            run = RunRequest(type=type, inputs=inputs)
+            run = RunRequest(type=type, inputs=inputs, provider=provider)
             created = await create_run(app.state, run, "mcp")
         except ValidationError as error:
             raise ToolError(f"422: {error.errors()[0]['msg']}") from None

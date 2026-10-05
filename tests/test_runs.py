@@ -275,3 +275,50 @@ def test_a_run_that_is_not_a_check_has_no_check_kind(start_server, clean_db, aut
             "SELECT check_kind FROM runs WHERE id = %s", (response.json()["id"],)
         ).fetchone()[0]
     assert kind is None
+
+
+def test_a_run_may_name_its_provider(start_server, clean_db, auth_headers):
+    base_url = start_server()
+
+    response = httpx2.post(
+        f"{base_url}/runs",
+        json={"type": "pytest", "inputs": {"task": "x"}, "provider": "ollama"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 201
+    with psycopg.connect(clean_db) as conn:
+        row = conn.execute(
+            "SELECT provider FROM runs WHERE id = %s", (response.json()["id"],)
+        ).fetchone()
+    assert row == ("ollama",)
+
+
+def test_an_unknown_provider_is_refused(start_server, clean_db, auth_headers):
+    base_url = start_server()
+
+    response = httpx2.post(
+        f"{base_url}/runs",
+        json={"type": "pytest", "inputs": {"task": "x"}, "provider": "gpt-9"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 422
+    with psycopg.connect(clean_db) as conn:
+        assert conn.execute("SELECT count(*) FROM runs").fetchone() == (0,)
+
+
+def test_a_provider_on_a_site_check_is_refused(start_server, auth_headers):
+    base_url = start_server()
+
+    response = httpx2.post(
+        f"{base_url}/runs",
+        json={
+            "type": "site_check",
+            "inputs": {"task": "https://example.com"},
+            "provider": "gemini",
+        },
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 422

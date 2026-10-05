@@ -320,3 +320,19 @@ def test_auto_approve_is_on_only_for_a_yaml_true(tmp_path):
     repos = {repo.name: repo.auto_approve for repo in load_mercury_config(config).repos}
 
     assert repos == {"a/on": True, "a/quoted": False, "a/absent": False}
+
+
+def test_an_auto_approved_chore_runs_on_the_provider_it_names(auto_bot, fake_telegram, migrated_db):
+    response = post_chore(auto_bot, provider="ollama")
+
+    assert response.status_code == 201
+    assert migrated_db.execute("SELECT provider FROM runs").fetchone() == ("ollama",)
+
+
+def test_a_gated_chore_keeps_the_provider_it_names(bot, fake_telegram, migrated_db):
+    post_chore(bot, provider="ollama")
+
+    assert migrated_db.execute("SELECT status, provider FROM runs").fetchone() == (
+        "awaiting_approval",
+        "ollama",
+    )

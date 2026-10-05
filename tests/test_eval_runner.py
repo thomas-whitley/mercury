@@ -364,3 +364,12 @@ def test_a_delegate_that_runs_too_long_is_a_timeout(tmp_path):
     row = run_delegate(DIVIDE_TASK, "local", remote(tmp_path, seed_test=True), delegate=slow)
 
     assert (row.status, row.graded) == ("timeout", False)
+
+
+def test_a_run_the_worker_refused_stops_the_batch_naming_the_daily_limit():
+    api = _Api(PENDING, [{"status": "refused", "provider": "gemini", "tokens": 0}])
+
+    with pytest.raises(EvalAborted, match="MAX_RUNS_PER_DAY") as stop:
+        _run(api, _GitHub())
+
+    assert "run-1" in str(stop.value)

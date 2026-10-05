@@ -313,6 +313,15 @@ def run_one(
             break
         sleep(poll_seconds)
 
+    if run["status"] == "refused":
+        # The worker closes a run it will not execute as refused. Past the daily
+        # run limit it refuses every model run, so going on would record fails
+        # that measure the limit and not the model.
+        raise EvalAborted(
+            f"run {run_id} was refused by the worker, most likely because the daily run limit "
+            "MAX_RUNS_PER_DAY (default 20) is reached. Raise it in mercury-config for the "
+            "day of the eval, or continue tomorrow. Its events give the exact reason."
+        )
     graded, detail = False, ""
     if run["status"] == "succeeded":
         branch = f"agent/{run_id}"

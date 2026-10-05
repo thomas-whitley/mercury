@@ -1960,6 +1960,8 @@ uv run python -m evals.runner --columns gemini,ollama --repeats 1
 
 Twenty two runs. Each chore is capped at 50,000 tokens and the daily cap is 500,000 per provider, so one repeat stays under it.
 
+The worker also refuses every model run past `MAX_RUNS_PER_DAY` (default 20), chores included, so 22 chores in one day would trip it and the runner stops with an error. Raise `MAX_RUNS_PER_DAY` in `mercury-config` for the day of the baseline, or split the run across two days with `--only`. Do not change the server default.
+
 - [ ] **Step 2: Run the two delegate columns once**, from the Windows desktop after `git pull`, with Docker Desktop stopped so `qwen3-coder:30b` has the RAM:
 
 ```powershell

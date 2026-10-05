@@ -468,8 +468,8 @@ def contained(run: Callable[[], EvalRow], task_id: str, column: str, token: str 
 def summarise(rows: list[EvalRow]) -> str:
     lines = [
         "| Column | Passed the hidden test | Opened a PR | Median tokens | Median seconds "
-        "| Cost USD |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Cost USD | Fell back |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for column in sorted({row.provider for row in rows}):
         mine = [row for row in rows if row.provider == column]
@@ -480,12 +480,20 @@ def summarise(rows: list[EvalRow]) -> str:
             f"| {sum(r.status == 'succeeded' for r in mine)} of {len(mine)} "
             f"| {f'{statistics.median(tokens):.0f}' if tokens else 'n/a'} "
             f"| {f'{statistics.median(seconds):.0f}' if seconds else 'n/a'} "
-            f"| {sum(r.usd for r in mine):.4f} |"
+            f"| {sum(r.usd for r in mine):.4f} "
+            f"| {sum(r.answered_by not in (None, r.provider) for r in mine)} |"
         )
-    lines += ["", "| Task | Column | Status | Graded |", "| --- | --- | --- | --- |"]
+    lines += [
+        "",
+        "| Task | Column | Answered by | Status | Graded |",
+        "| --- | --- | --- | --- | --- |",
+    ]
     for row in sorted(rows, key=lambda r: (r.task, r.provider)):
         verdict = "pass" if row.graded else "fail"
-        lines.append(f"| {row.task} | {row.provider} | {row.status} | {verdict} |")
+        lines.append(
+            f"| {row.task} | {row.provider} | {row.answered_by or 'n/a'} "
+            f"| {row.status} | {verdict} |"
+        )
     return "\n".join(lines)
 
 

@@ -687,3 +687,15 @@ def test_a_delegate_run_on_a_main_whose_tests_cannot_be_listed_is_an_error(monke
 
     assert (row.status, row.graded) == ("error", False)
     assert row.detail.startswith("test discovery failed")
+
+
+def test_the_summary_counts_rows_that_fell_back_and_shows_who_answered():
+    fell_back = EvalRow("t1", "gemini", "ollama", "id", "succeeded", True, 1000, 30.0, 0.0)
+    refused = EvalRow("t2", "gemini", None, None, "refused", False, 0, None, 0.0)
+
+    table = summarise([_row("gemini", True), fell_back, refused])
+
+    assert "| Fell back |" in table
+    assert "| gemini | 2 of 3 | 2 of 3 | 1000 | 30 | 0.0000 | 1 |" in table
+    assert "| t1 | gemini | ollama | succeeded | pass |" in table
+    assert "| t2 | gemini | n/a | refused | fail |" in table

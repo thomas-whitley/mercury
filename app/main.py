@@ -14,7 +14,7 @@ from app.logging_setup import configure_logging
 from app.mcp_server import mount_mcp
 from app.mercury_config import MercuryConfig, load_mercury_config
 from app.migrations import apply_migrations
-from app.run_api import RunCreated, create_run, get_run, list_runs
+from app.run_api import RunCreated, cancel, create_run, get_run, list_runs
 from app.run_list import DEFAULT_LIMIT, MAX_LIMIT
 from app.run_request import RunRequest
 from app.stream import event_stream, parse_last_event_id
@@ -88,6 +88,11 @@ def create_app() -> FastAPI:
     @app.get("/runs/{run_id}")
     async def get_one_run(run_id: uuid.UUID, request: Request) -> dict:
         return await get_run(request.app.state.pool, str(run_id))
+
+    @app.post("/runs/{run_id}/cancel")
+    async def cancel_one_run(run_id: uuid.UUID, request: Request) -> dict:
+        require_bearer_token(request)
+        return await cancel(request.app.state, str(run_id))
 
     app.state.mcp = mount_mcp(app)
 

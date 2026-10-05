@@ -301,14 +301,23 @@ def run_one(
             "live mercury.yaml. Decline it on Telegram, set auto_approve, and run again."
         )
     run_id = run["id"]
-    deadline = clock() + timeout_seconds
+    # The clock for the run itself starts once it leaves pending, so time spent
+    # queued behind other runs does not count against it. A run that never
+    # leaves pending still ends, after three timeouts of waiting.
+    queue_deadline = clock() + 3 * timeout_seconds
+    deadline = None
     while True:
         response = api.get(f"/runs/{run_id}")
         response.raise_for_status()
         run = response.json()
         if run["status"] not in OPEN:
             break
-        if clock() >= deadline:
+        now = clock()
+        if deadline is None and run["status"] != "pending":
+            deadline = now + timeout_seconds
+        if now >= (deadline if deadline is not None else queue_deadline):
+            # Stop the worker too, so it does not push a branch after the row is written.
+            api.post(f"/runs/{run_id}/cancel")
             run = {**run, "status": "timeout"}
             break
         sleep(poll_seconds)
@@ -323,9 +332,11 @@ def run_one(
             "day of the eval, or continue tomorrow. Its events give the exact reason."
         )
     graded, detail = False, ""
+    branch = f"agent/{run_id}"
     if run["status"] == "succeeded":
-        branch = f"agent/{run_id}"
         graded, detail = grade_branch(f"{clone_base}/{task.repo}.git", branch, task.grade, token)
+    if run["status"] in ("succeeded", "timeout"):
+        # A timed out chore may have pushed its branch before the cancel landed.
         close_pull_and_branch(github, task.repo, branch)
     tokens = run.get("tokens") or 0
     answered = run.get("provider")

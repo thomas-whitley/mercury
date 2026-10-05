@@ -322,3 +322,43 @@ def test_a_provider_on_a_site_check_is_refused(start_server, auth_headers):
     )
 
     assert response.status_code == 422
+
+
+def _post_pending_run(base_url, auth_headers) -> str:
+    response = httpx2.post(
+        f"{base_url}/runs",
+        json={"type": "pytest", "inputs": {"task": "x"}},
+        headers=auth_headers,
+    )
+    return response.json()["id"]
+
+
+def test_cancelling_a_run_over_http_needs_the_bearer_token(start_server, auth_headers):
+    base_url = start_server()
+    run_id = _post_pending_run(base_url, auth_headers)
+
+    response = httpx2.post(f"{base_url}/runs/{run_id}/cancel")
+
+    assert response.status_code == 401
+
+
+def test_a_run_can_be_cancelled_over_http(start_server, clean_db, auth_headers):
+    base_url = start_server()
+    run_id = _post_pending_run(base_url, auth_headers)
+
+    first = httpx2.post(f"{base_url}/runs/{run_id}/cancel", headers=auth_headers)
+    again = httpx2.post(f"{base_url}/runs/{run_id}/cancel", headers=auth_headers)
+
+    assert (first.status_code, first.json()) == (200, {"id": run_id, "cancelled": True})
+    assert (again.status_code, again.json()) == (200, {"id": run_id, "cancelled": False})
+    with psycopg.connect(clean_db) as conn:
+        row = conn.execute("SELECT status FROM runs WHERE id = %s", (run_id,)).fetchone()
+    assert row == ("cancelled",)
+
+
+def test_cancelling_an_unknown_run_is_a_404(start_server, auth_headers):
+    base_url = start_server()
+
+    response = httpx2.post(f"{base_url}/runs/{uuid.uuid4()}/cancel", headers=auth_headers)
+
+    assert response.status_code == 404

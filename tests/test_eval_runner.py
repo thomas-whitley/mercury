@@ -162,8 +162,12 @@ class _Api:
 
     def __init__(self, created: _Response, statuses: list[dict]) -> None:
         self.created, self.statuses, self.posted = created, list(statuses), []
+        self.cancelled: list[str] = []
 
-    def post(self, path: str, json: dict) -> _Response:
+    def post(self, path: str, json: dict | None = None) -> _Response:
+        if path.endswith("/cancel"):
+            self.cancelled.append(path)
+            return _Response(200, {"cancelled": True})
         self.posted.append(json)
         return self.created
 
@@ -248,9 +252,14 @@ def test_a_red_chore_is_not_graded_and_nothing_is_closed(monkeypatch):
 def test_a_chore_that_never_finishes_is_a_timeout():
     api = _Api(PENDING, [{"status": "running", "tokens": 0}])
 
-    row = _run(api, _GitHub(), timeout=60)
+    github = _GitHub()
+
+    row = _run(api, github, timeout=60)
 
     assert (row.status, row.graded) == ("timeout", False)
+    assert api.cancelled == ["/runs/run-1/cancel"]
+    # The chore may have pushed its branch just before the cancel landed.
+    assert ("delete", "/repos/o/fixture/git/refs/heads/agent/run-1") in github.calls
 
 
 def test_a_refused_chore_is_recorded_not_raised():
@@ -373,3 +382,23 @@ def test_a_run_the_worker_refused_stops_the_batch_naming_the_daily_limit():
         _run(api, _GitHub())
 
     assert "run-1" in str(stop.value)
+
+
+def test_the_timeout_clock_starts_only_once_the_run_leaves_pending(monkeypatch):
+    monkeypatch.setattr(runner, "grade_branch", lambda *a, **k: (True, "OK"))
+    # 30 polls at 5 s each wait 150 s in the queue, longer than the 60 s timeout.
+    api = _Api(PENDING, [{"status": "pending"}] * 30 + [{"status": "running"}, DONE])
+
+    row = _run(api, _GitHub(), timeout=60)
+
+    assert (row.status, row.graded) == ("succeeded", True)
+    assert api.cancelled == []
+
+
+def test_a_run_that_never_leaves_pending_is_cancelled_after_three_timeouts_of_waiting():
+    api = _Api(PENDING, [{"status": "pending"}])
+
+    row = _run(api, _GitHub(), timeout=60)
+
+    assert row.status == "timeout"
+    assert api.cancelled == ["/runs/run-1/cancel"]

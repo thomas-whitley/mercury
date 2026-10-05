@@ -14,6 +14,7 @@ from starlette.concurrency import run_in_threadpool
 from app.chores import ChoreRefused, find_repo, request_chore, start_chore, starts_unasked
 from app.run_list import ONE_RUN, build_query, encode_cursor, serialize_run_row
 from app.run_request import RunRequest
+from app.runs import cancel_run
 from app.tasks import TASK_TYPES
 from app.telegram import TelegramClient, TelegramError
 from app.telemetry import start_run_trace
@@ -102,6 +103,19 @@ async def get_run(pool, run_id: str) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail="run not found")
     return serialize_run_row(row)
+
+
+def _cancel(database_url: str, run_id: str) -> bool:
+    with connect(database_url, autocommit=True) as conn:
+        return cancel_run(conn, run_id)
+
+
+async def cancel(state, run_id: str) -> dict:
+    """Close an unfinished run as cancelled, the way /cancel on Telegram does.
+    cancelled is False for a run that had already finished."""
+    await get_run(state.pool, run_id)
+    cancelled = await run_in_threadpool(_cancel, state.settings.database_url, run_id)
+    return {"id": run_id, "cancelled": cancelled}
 
 
 async def run_events(pool, run_id: str, after: int = 0) -> list[dict]:

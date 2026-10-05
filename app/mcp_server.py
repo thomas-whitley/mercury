@@ -8,7 +8,8 @@ unchanged. Runs created here are written source mcp.
 
 There is no approve tool. A chore created here waits for the Approve button
 on Telegram like any other, which is the point: the owner's phone stays the
-only place a chore starts.
+only place a chore starts. The one exception is a repo marked auto_approve in
+mercury.yaml, which is meant for the throwaway fixture the evals run on.
 """
 
 import hmac
@@ -30,9 +31,9 @@ from app.telegram_webhook import cancel_by_prefix, status_text
 CREATE_RUN = """Queue a Mercury run. type is one of pytest (task is a complete pytest \
 file), site_check (task is a URL, kind is uptime, lighthouse or broken_links) or \
 repo_chore (task is an instruction, repo is owner/name from the configured portfolio). \
-A repo_chore does not start here: it waits for the owner to press Approve on Telegram, \
-and this server has no way to approve it. Tell the user to check Telegram. Returns the \
-run id and its status."""
+A repo_chore waits for the owner to press Approve on Telegram unless the repo is marked \
+auto_approve in the config, and this server has no way to approve it. A status of \
+awaiting_approval means tell the user to check Telegram. Returns the run id and its status."""
 
 
 def _refused(error: HTTPException) -> ToolError:
@@ -46,7 +47,10 @@ def build_mcp(app: FastAPI) -> MCPServer:
     """The tools read the pool, settings and config from app.state at call time."""
     mcp = MCPServer(
         name="mercury",
-        instructions="Queue and read Mercury runs. Repo chores need approval on Telegram.",
+        instructions=(
+            "Queue and read Mercury runs. Repo chores need approval on Telegram "
+            "unless the repo is marked auto_approve."
+        ),
     )
 
     @mcp.tool(name="create_run", description=CREATE_RUN)

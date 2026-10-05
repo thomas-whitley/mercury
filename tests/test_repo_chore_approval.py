@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from app.chat import run_chat
+from app.chores import request_chore
 from app.mercury_config import RepoConfig, load_mercury_config
 from app.model import StubModel
 from app.telegram import TelegramClient
@@ -242,3 +243,80 @@ def test_repos_are_read_with_their_test_command(tmp_path):
         RepoConfig(name=REPO, test_command="uv run pytest"),
         RepoConfig(name="owner/bare", test_command=None),
     )
+
+
+def _auto_config(tmp_path, with_telegram: bool = True):
+    config = tmp_path / "mercury.yaml"
+    data = {
+        "portfolio": {
+            "repos": [{"name": REPO, "test_command": "uv run pytest", "auto_approve": True}]
+        }
+    }
+    if with_telegram:
+        data["telegram"] = {"chat_id": CHAT}
+    config.write_text(yaml.dump(data))
+    return config
+
+
+@pytest.fixture
+def auto_bot(start_server, fake_telegram, monkeypatch, tmp_path):
+    monkeypatch.setenv("MERCURY_CONFIG_PATH", str(_auto_config(tmp_path)))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", SECRET)
+    monkeypatch.setenv("TELEGRAM_API_URL", fake_telegram.url)
+    monkeypatch.setenv("MERCURY_BEARER_TOKEN", "test-bearer-token")
+    return start_server()
+
+
+@pytest.fixture
+def auto_bot_without_telegram(start_server, monkeypatch, tmp_path):
+    monkeypatch.setenv("MERCURY_CONFIG_PATH", str(_auto_config(tmp_path, with_telegram=False)))
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("MERCURY_BEARER_TOKEN", "test-bearer-token")
+    return start_server()
+
+
+def test_a_posted_chore_on_an_auto_approved_repo_starts_without_asking(
+    auto_bot, fake_telegram, migrated_db
+):
+    response = post_chore(auto_bot)
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "pending"
+    assert fake_telegram.sent() == []
+    row = migrated_db.execute("SELECT status, repo, source FROM runs").fetchone()
+    assert row == ("pending", REPO, "api")
+    assert str(claim_next_run(migrated_db, "worker-1")) == response.json()["id"]
+
+
+def test_an_auto_approved_chore_needs_no_telegram_to_start(auto_bot_without_telegram, migrated_db):
+    response = post_chore(auto_bot_without_telegram)
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "pending"
+
+
+def test_a_chore_asked_for_in_chat_still_waits_on_an_auto_approved_repo(fake_telegram, migrated_db):
+    repo = RepoConfig(name=REPO, test_command="uv run pytest", auto_approve=True)
+    telegram = TelegramClient("123:abc", fake_telegram.url)
+
+    run_id = request_chore(migrated_db, telegram, CHAT, repo, INSTRUCTION, "telegram")
+
+    status = migrated_db.execute("SELECT status FROM runs WHERE id = %s", (run_id,)).fetchone()
+    assert status == ("awaiting_approval",)
+    assert len(fake_telegram.sent()) == 1
+
+
+def test_auto_approve_is_on_only_for_a_yaml_true(tmp_path):
+    config = tmp_path / "mercury.yaml"
+    config.write_text(
+        "portfolio:\n"
+        "  repos:\n"
+        "    - {name: a/on, test_command: t, auto_approve: true}\n"
+        "    - {name: a/quoted, test_command: t, auto_approve: 'yes'}\n"
+        "    - {name: a/absent, test_command: t}\n"
+    )
+
+    repos = {repo.name: repo.auto_approve for repo in load_mercury_config(config).repos}
+
+    assert repos == {"a/on": True, "a/quoted": False, "a/absent": False}

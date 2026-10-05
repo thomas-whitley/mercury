@@ -3,7 +3,9 @@
 A chore is created waiting, where no worker claims it, and the owner is asked
 on Telegram with the repo and the instruction echoed. Only a button press
 starts it (app/approvals.py). The chat, POST /runs and anything that calls
-POST /runs come through here, so none of them can start a chore unasked.
+POST /runs come through here, so none of them can start a chore unasked,
+except on a repo marked auto_approve in mercury.yaml, which skips the
+question for every source but chat.
 """
 
 import psycopg
@@ -22,6 +24,10 @@ _SET_MESSAGE_FROM_APPROVAL = """
 UPDATE runs SET telegram_message_id = (SELECT message_id FROM approvals WHERE id = %s)
 WHERE id = %s
 """
+_CREATE_STARTED = """
+INSERT INTO runs (task, type, provider, repo, status, source)
+VALUES (%s, 'repo_chore', %s, %s, 'pending', %s) RETURNING id
+"""
 
 
 class ChoreRefused(ValueError):
@@ -39,6 +45,25 @@ def find_repo(repos: tuple[RepoConfig, ...], name: object) -> RepoConfig:
             f"{repo.name} has no test_command in mercury.yaml, so it cannot have a chore."
         )
     return repo
+
+
+def starts_unasked(repo: RepoConfig, source: str) -> bool:
+    """A repo marked auto_approve skips the question, except for a chore asked
+    for in chat, where the owner is there to press the button and the chat
+    has already told them it is waiting."""
+    return repo.auto_approve and source != "telegram"
+
+
+def start_chore(
+    conn: psycopg.Connection, repo: RepoConfig, instruction: str, source: str, provider: str
+) -> str:
+    """Create the chore pending, where the worker claims it. Only for a repo
+    starts_unasked allows. No chat id, so no progress message and no Open it
+    anyway button."""
+    run_id = conn.execute(
+        _CREATE_STARTED, (instruction.strip(), provider, repo.name, source)
+    ).fetchone()[0]
+    return str(run_id)
 
 
 def request_chore(

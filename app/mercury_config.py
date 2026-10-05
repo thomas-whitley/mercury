@@ -21,6 +21,9 @@ class RepoConfig:
 
     name: str
     test_command: str | None = None
+    # true in mercury.yaml lets a chore from the API, MCP or n8n start without
+    # the Approve button. Meant for the throwaway fixture the evals run on.
+    auto_approve: bool = False
 
 
 @dataclass(frozen=True)
@@ -58,4 +61,9 @@ def load_mercury_config(path: str | Path) -> MercuryConfig:
 def _repo(entry: str | dict) -> RepoConfig:
     if isinstance(entry, str):
         return RepoConfig(name=entry)
-    return RepoConfig(name=entry["name"], test_command=entry.get("test_command"))
+    return RepoConfig(
+        name=entry["name"],
+        test_command=entry.get("test_command"),
+        # Only a YAML boolean true. A quoted "yes" keeps the gate.
+        auto_approve=entry.get("auto_approve") is True,
+    )

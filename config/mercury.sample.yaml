@@ -43,6 +43,7 @@ portfolio:
   repos:                # a repo_chore may touch only these, and only one with a test_command
     - name: owner/repo-one
       test_command: uv run pytest
+      auto_approve: false  # true starts chores from the API, MCP or n8n without asking; throwaway repos only
     - name: owner/repo-two
       test_command: npm ci && npm test
   sites:                # uptime, hourly, plain HTTP from the scheduler Job

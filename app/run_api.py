@@ -11,7 +11,7 @@ from psycopg import connect
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from app.chores import ChoreRefused, find_repo, request_chore
+from app.chores import ChoreRefused, find_repo, request_chore, start_chore, starts_unasked
 from app.run_list import ONE_RUN, build_query, encode_cursor, serialize_run_row
 from app.run_request import RunRequest
 from app.tasks import TASK_TYPES
@@ -52,12 +52,19 @@ async def create_run(state, run: RunRequest, source: str) -> RunCreated:
 
 def _request_chore(state, run: RunRequest, source: str) -> RunCreated:
     """A chore from any caller waits for the same Approve button as one
-    asked for in chat (app/chores.py). With no bot or chat to ask, it is
-    refused rather than left waiting on a question nobody saw."""
+    asked for in chat (app/chores.py), unless its repo is marked auto_approve.
+    With no bot or chat to ask, it is refused rather than left waiting on a
+    question nobody saw."""
     try:
         repo = find_repo(state.mercury.repos, run.inputs.get("repo"))
     except ChoreRefused as refused:
         raise HTTPException(status_code=422, detail=str(refused)) from None
+    if starts_unasked(repo, source):
+        with connect(state.settings.database_url, autocommit=True) as conn:
+            run_id = start_chore(
+                conn, repo, run.inputs["task"], source, TASK_TYPES["repo_chore"].provider
+            )
+        return RunCreated(id=run_id, status="pending")
     settings = state.settings
     chat_id = state.mercury.telegram_chat_id
     if not settings.telegram_bot_token or not chat_id:

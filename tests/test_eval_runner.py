@@ -316,10 +316,11 @@ DIVIDE_TASK = EvalTask(id="divide", repo="o/fixture", instruction="Add divide.",
 CALC_WITH_DIVIDE = "def add(a, b):\n    return a + b\n\n\ndef divide(a, b):\n    return a / b\n"
 
 
-def _delegate_writing(files: dict[str, str]):
+def _delegate_writing(files: dict[str, str], returncode: int = 0, stderr: str = ""):
     def delegate(work, instruction, model, timeout_seconds):
         for name, text in files.items():
             (work / name).write_text(text, encoding="utf-8")
+        return subprocess.CompletedProcess(["pwsh"], returncode, "", stderr)
 
     return delegate
 
@@ -539,3 +540,25 @@ def test_a_delegate_that_cannot_start_pwsh_is_an_error_row(tmp_path):
 
     assert (row.status, row.graded) == ("error", False)
     assert "pwsh" in row.detail
+
+
+def test_a_delegate_that_exits_nonzero_is_failed_with_the_end_of_its_stderr(tmp_path):
+    row = run_delegate(
+        DIVIDE_TASK,
+        "local",
+        remote(tmp_path, seed_test=True),
+        delegate=_delegate_writing(
+            {"calc.py": CALC_WITH_DIVIDE}, returncode=1, stderr="x" * 5000 + "model server down"
+        ),
+    )
+
+    assert (row.status, row.graded) == ("failed", False)
+    assert row.detail.endswith("model server down")
+
+
+def test_a_delegate_that_changes_nothing_is_failed(tmp_path):
+    row = run_delegate(
+        DIVIDE_TASK, "local", remote(tmp_path, seed_test=True), delegate=_delegate_writing({})
+    )
+
+    assert (row.status, row.graded, row.detail) == ("failed", False, "no change")

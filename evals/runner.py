@@ -102,6 +102,8 @@ def _env(home: str, token: str | None) -> dict[str, str]:
         "HOME": home,
         "GIT_TERMINAL_PROMPT": "0",
         "PYTHONUTF8": "1",
+        # Importing tests would otherwise leave __pycache__ that looks like a change.
+        "PYTHONDONTWRITEBYTECODE": "1",
     }
     if "SYSTEMROOT" in os.environ:  # Windows cannot start a process without it
         env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
@@ -218,10 +220,12 @@ def close_pull_and_branch(github, repo: str, branch: str) -> None:
 DELEGATE_SCRIPT = Path(r"C:\Projects\Cheap AI\scripts\delegate.ps1")
 
 
-def _call_delegate_script(work: Path, instruction: str, model: str, timeout_seconds: float):
+def _call_delegate_script(
+    work: Path, instruction: str, model: str, timeout_seconds: float
+) -> subprocess.CompletedProcess:
     """delegate.ps1 needs the desktop's own environment (OpenCode, Ollama), so
     it gets it whole. It edits the clean checkout and does not commit."""
-    subprocess.run(
+    return subprocess.run(
         [
             "pwsh",
             "-NoProfile",
@@ -245,7 +249,7 @@ def run_delegate(
     model: str,
     clone_url: str,
     *,
-    delegate: Callable[[Path, str, str, float], None] | None = None,
+    delegate: Callable[[Path, str, str, float], subprocess.CompletedProcess] | None = None,
     timeout_seconds: float = 1800,
     clock: Callable[[], float] = time.monotonic,
 ) -> EvalRow:
@@ -267,12 +271,19 @@ def run_delegate(
             base_ids = test_ids(work)
             start = clock()
             try:
-                delegate(work, task.instruction, model, timeout_seconds)
+                result = delegate(work, task.instruction, model, timeout_seconds)
             except subprocess.TimeoutExpired:
                 return row("timeout", False, clock() - start, "delegate.ps1 timed out")
             except FileNotFoundError as missing:
                 return row("error", False, clock() - start, f"could not start pwsh: {missing}")
             seconds = clock() - start
+            if result.returncode != 0:
+                return row("failed", False, seconds, (result.stderr or "")[-2000:])
+            changed = subprocess.run(
+                ["git", "status", "--porcelain"], cwd=work, env=_env(home, None), **_TEXT
+            )
+            if not [line for line in changed.stdout.splitlines() if "__pycache__" not in line]:
+                return row("failed", False, seconds, "no change")
             # Mercury opens a pull request only when the repo's own tests pass.
             tests = subprocess.run(REPO_TESTS, cwd=work, env=_env(home, None), timeout=600, **_TEXT)
             if tests.returncode not in (0, NO_TESTS_RAN):

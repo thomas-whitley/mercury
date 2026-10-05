@@ -1,7 +1,10 @@
 """The eval runner, against a local bare repo and fake API and GitHub
 clients. The live runs are in evals/results/, not here."""
 
+import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -12,6 +15,8 @@ from evals.runner import (
     EvalAborted,
     EvalRow,
     EvalTask,
+    _call_delegate_script,
+    _run_tree,
     close_pull_and_branch,
     contained,
     grade_branch,
@@ -562,3 +567,74 @@ def test_a_delegate_that_changes_nothing_is_failed(tmp_path):
     )
 
     assert (row.status, row.graded, row.detail) == ("failed", False, "no change")
+
+
+def test_a_command_s_output_goes_to_a_file_not_a_pipe(tmp_path):
+    out = tmp_path / "out.log"
+    code = "import sys; print('said'); print('oops', file=sys.stderr); sys.exit(3)"
+
+    result = _run_tree([sys.executable, "-c", code], out, 30, None)
+
+    assert result.returncode == 3
+    assert "said" in out.read_text(encoding="utf-8")
+    assert "oops" in result.stderr
+
+
+def _alive(pid: int) -> bool:
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except OSError:
+        return False
+    return state != "Z"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the Windows branch kills with taskkill")
+def test_a_timeout_kills_the_whole_process_tree(tmp_path):
+    pid_file = tmp_path / "grandchild.pid"
+    code = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(60)\n"
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_tree([sys.executable, "-c", code], tmp_path / "out.log", 2, None)
+
+    grandchild = int(pid_file.read_text())
+    for _ in range(30):
+        if not _alive(grandchild):
+            break
+        time.sleep(0.1)
+    assert not _alive(grandchild)
+
+
+def test_the_delegate_script_runs_with_its_output_in_the_temp_dir(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_tree(cmd, out_path, timeout_seconds, env):
+        seen.update(cmd=cmd, out=out_path, timeout=timeout_seconds)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(runner, "_run_tree", fake_tree)
+    work = tmp_path / "work"
+
+    _call_delegate_script(work, "Add divide.", "local", 77)
+
+    assert seen["cmd"][:3] == ["pwsh", "-NoProfile", "-File"]
+    assert seen["cmd"][seen["cmd"].index("-Dir") + 1] == str(work)
+    assert seen["out"].parent == tmp_path
+    assert seen["timeout"] == 77
+
+
+def test_the_runner_timeout_reaches_the_delegate_column(monkeypatch):
+    seen = {}
+
+    def fake_delegate(task, model, clone_url, **kwargs):
+        seen.update(model=model, **kwargs)
+
+    monkeypatch.setattr(runner, "run_delegate", fake_delegate)
+
+    runner._run_column("delegate:local-gpt", DIVIDE_TASK, None, None, None, 77)
+
+    assert seen == {"model": "local-gpt", "timeout_seconds": 77}

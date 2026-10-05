@@ -19,6 +19,7 @@ import argparse
 import base64
 import json
 import os
+import signal
 import statistics
 import subprocess
 import sys
@@ -220,28 +221,61 @@ def close_pull_and_branch(github, repo: str, branch: str) -> None:
 DELEGATE_SCRIPT = Path(r"C:\Projects\Cheap AI\scripts\delegate.ps1")
 
 
+def _kill_tree(process: subprocess.Popen) -> None:  # pragma: no cover - Windows branch
+    """Kill the process and everything it started. On Windows a timeout that
+    killed only pwsh would leave OpenCode and its children holding the pipe."""
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True, check=False
+        )
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    process.wait()
+
+
+def _run_tree(
+    command: list[str], out_path: Path, timeout_seconds: float, env: dict[str, str] | None
+) -> subprocess.CompletedProcess:
+    """Run command with stdout and stderr in a file, not a pipe, in its own
+    process group. On timeout the whole tree is killed, then TimeoutExpired is
+    raised. The CompletedProcess carries the combined output as stderr."""
+    group = (
+        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        if os.name == "nt"
+        else {"start_new_session": True}
+    )
+    with out_path.open("wb") as out:
+        process = subprocess.Popen(command, stdout=out, stderr=subprocess.STDOUT, env=env, **group)
+        try:
+            process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            _kill_tree(process)
+            raise
+    output = out_path.read_text(encoding="utf-8", errors="replace")
+    return subprocess.CompletedProcess(command, process.returncode, "", output)
+
+
 def _call_delegate_script(
     work: Path, instruction: str, model: str, timeout_seconds: float
 ) -> subprocess.CompletedProcess:
     """delegate.ps1 needs the desktop's own environment (OpenCode, Ollama), so
     it gets it whole. It edits the clean checkout and does not commit."""
-    return subprocess.run(
-        [
-            "pwsh",
-            "-NoProfile",
-            "-File",
-            str(DELEGATE_SCRIPT),
-            "-Dir",
-            str(work),
-            "-Task",
-            instruction,
-            "-Model",
-            model,
-        ],
-        timeout=timeout_seconds,
-        check=False,
-        **_TEXT,
-    )
+    command = [
+        "pwsh",
+        "-NoProfile",
+        "-File",
+        str(DELEGATE_SCRIPT),
+        "-Dir",
+        str(work),
+        "-Task",
+        instruction,
+        "-Model",
+        model,
+    ]
+    return _run_tree(command, work.parent / "delegate.log", timeout_seconds, None)
 
 
 def run_delegate(
@@ -495,7 +529,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives the
 
 def _run_column(column, task, api, github, token, timeout) -> EvalRow:  # pragma: no cover
     if column.startswith("delegate:"):
-        return run_delegate(task, column.split(":", 1)[1], FIXTURE_URL)
+        return run_delegate(task, column.split(":", 1)[1], FIXTURE_URL, timeout_seconds=timeout)
     return run_one(
         api,
         github,

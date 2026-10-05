@@ -362,3 +362,18 @@ def test_cancelling_an_unknown_run_is_a_404(start_server, auth_headers):
     response = httpx2.post(f"{base_url}/runs/{uuid.uuid4()}/cancel", headers=auth_headers)
 
     assert response.status_code == 404
+
+
+def test_a_paid_provider_cannot_be_named_by_a_caller(start_server, clean_db, auth_headers):
+    base_url = start_server()
+
+    response = httpx2.post(
+        f"{base_url}/runs",
+        json={"type": "pytest", "inputs": {"task": "x"}, "provider": "haiku"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 422
+    assert "free" in response.text
+    with psycopg.connect(clean_db) as conn:
+        assert conn.execute("SELECT count(*) FROM runs").fetchone() == (0,)

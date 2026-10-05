@@ -34,7 +34,8 @@ repo_chore (task is an instruction, repo is owner/name from the configured portf
 A repo_chore waits for the owner to press Approve on Telegram unless the repo is marked \
 auto_approve in the config, and this server has no way to approve it. A status of \
 awaiting_approval means tell the user to check Telegram. provider is optional, one of the \
-configured providers such as gemini or ollama; leave it out to use the type's default. \
+free providers such as gemini or ollama, never a paid one; leave it out to use the \
+type's default. \
 Returns the run id and its status."""
 
 

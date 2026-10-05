@@ -18,7 +18,9 @@ class RunRequest(BaseModel):
     type: str
     inputs: dict[str, Any]
     source: PostedSource = "api"
-    # A key of app.config.PROVIDERS. None runs on the type's own provider.
+    # A key of app.config.PROVIDERS that costs nothing. None runs on the type's
+    # own provider. A caller cannot spend money by naming one: a paid provider
+    # is only ever a type's own choice.
     provider: str | None = None
 
     @field_validator("provider")
@@ -26,6 +28,8 @@ class RunRequest(BaseModel):
     def provider_must_be_registered(cls, value: str | None) -> str | None:
         if value is not None and value not in PROVIDERS:
             raise ValueError(f"unknown provider {value!r}")
+        if value is not None and PROVIDERS[value].usd_per_million_tokens != 0:
+            raise ValueError(f"{value!r} is not free, and a caller may only name a free provider")
         return value
 
     @model_validator(mode="after")

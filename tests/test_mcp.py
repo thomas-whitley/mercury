@@ -171,3 +171,20 @@ def test_create_run_takes_a_provider(api, migrated_db):
         "SELECT provider, source FROM runs WHERE id = %s", (created["id"],)
     ).fetchone()
     assert row == ("ollama", "mcp")
+
+
+def test_create_run_refuses_a_paid_provider_and_says_only_free_ones_are_named(api, migrated_db):
+    async def calls(mcp):
+        tools = (await mcp.list_tools()).tools
+        refused = await mcp.call_tool(
+            "create_run", {"type": "pytest", "task": TEST_FILE, "provider": "haiku"}
+        )
+        return tools, refused
+
+    tools, refused = session(api, calls)
+
+    assert refused.is_error
+    assert "free" in refused.content[0].text
+    [create] = [tool for tool in tools if tool.name == "create_run"]
+    assert "free" in create.description
+    assert migrated_db.execute("SELECT count(*) FROM runs").fetchone() == (0,)

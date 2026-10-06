@@ -1,6 +1,48 @@
-# Handoff: 5f, 5g and the rename (6d) done (2026-10-02)
+# Handoff: eval Phase 1 deployed, baseline three columns of four (2026-10-06)
 
-## Where things stand
+## The chore eval baseline, Task 7 of `docs/build-brief-evals.md` (2026-10-06)
+
+`mercury-config` pins `PUBLIC_SHA` at `19735d3` (its commit `f7bd892`, Deploy green on
+2026-10-06), which carries Phase 1 Tasks 1 to 5, the 5b review fixes, and a fix so a timed
+out eval run is cleaned up even when its cancel call fails. `thomas-whitley/mercury-fixture`
+is the only repo with `auto_approve: true`, and the fixture is seeded at `c113c04`. The
+smoke test (`--only divide` on gemini) passed in 816 tokens with no Telegram message and no
+PR left open.
+
+Each column ran the 11 tasks once. Reports are in `evals/results/`.
+
+| Column | Passed the hidden test | Results that removed one of main's tests | Report |
+| --- | --- | --- | --- |
+| gemini, through Mercury | 11 of 11 | 0 | `2026-10-06T0410Z` |
+| delegate:local (`qwen3-coder:30b`) | 10 of 11 | 1 | `2026-10-06T0615Z` |
+| delegate:local-gpt (`gpt-oss:20b`) | 4 of 11 | 3 | `2026-10-06T0640Z` |
+| ollama, through Mercury | not run yet | | |
+
+Gemini's median was 1,253 tokens and 10 seconds per chore, at $0, with no fallback.
+
+The 8 failures have four causes. Four results removed a test `main` has, all after an
+instruction that said "Add tests to" an existing file, which both local models read as
+"rewrite" (`cli` on both models, `orders_gst` and `orders_quantity` on gpt-oss). Two runs
+of gpt-oss changed nothing (`clamp`, `word_count`). On `orders_report` gpt-oss fixed nothing
+and wrote a test of its own that fails. On `slugify` gpt-oss wrote `test_slug.py` without
+the `slug.py` it imports. No failure came from the runner, a timeout or the fixture.
+
+The ollama column did not run today, because the worker refuses every model run past
+`MAX_RUNS_PER_DAY` (20 a UTC day, site checks not counted) and 12 were used. The brief
+says to raise it in `mercury-config`, but nothing passes `MAX_RUNS_PER_DAY` through
+`infra/deploy.sh` or the Bicep, so the live value is always the default 20. Run it on a
+later UTC day with `--columns ollama --repeats 1`, 11 runs. Plumbing the variable through
+the Bicep belongs in Phase 2.
+
+The two delegate columns must run one at a time on the 32 GB desktop. Run together they
+alternate models task by task, Ollama keeps both loaded (18 GB and 13 GB), and Claude Code
+killed the first attempt for low memory after 18 of 22 runs. Run `ollama stop` on the first
+model before starting the second.
+
+The recommendation for `delegate.ps1` stands as `local` meaning `qwen3-coder:30b`. gpt-oss
+removed tests in 3 of 11 results and changed nothing in 2.
+
+## Where things stand (2026-10-02)
 
 The original agent-runs build is finished, Mercury steps 0 and 1 are done, and step
 2a closed on the live deploy on 2026-09-23. The scheduler Job

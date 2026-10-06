@@ -1,0 +1,14 @@
+[
+  {
+    "task": "divide",
+    "provider": "gemini",
+    "answered_by": "gemini",
+    "run_id": "630202e3-1a6f-4f0d-b103-ad35e93f364f",
+    "status": "succeeded",
+    "graded": true,
+    "tokens": 816,
+    "seconds": 41.589924,
+    "usd": 0.0,
+    "detail": "test_divides (grade_hidden.Grade.test_divides) ... ok\ntest_zero (grade_hidden.Grade.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n"
+  }
+]

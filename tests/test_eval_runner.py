@@ -272,6 +272,21 @@ def test_a_chore_that_never_finishes_is_a_timeout():
     assert ("delete", "/repos/o/fixture/git/refs/heads/agent/run-1") in github.calls
 
 
+def test_a_timed_out_chore_is_cleaned_up_even_when_the_cancel_fails():
+    class _CancelFails(_Api):
+        def post(self, path: str, json: dict | None = None) -> _Response:
+            if path.endswith("/cancel"):
+                return _Response(502)
+            return super().post(path, json)
+
+    github = _GitHub()
+
+    with pytest.raises(RuntimeError):
+        _run(_CancelFails(PENDING, [{"status": "running", "tokens": 0}]), github, timeout=60)
+
+    assert ("delete", "/repos/o/fixture/git/refs/heads/agent/run-1") in github.calls
+
+
 def test_a_refused_chore_is_recorded_not_raised():
     api = _Api(_Response(422, text='{"detail":"I can only work on a/b."}'), [])
 
@@ -584,6 +599,11 @@ def test_a_command_s_output_goes_to_a_file_not_a_pipe(tmp_path):
 
 
 def _alive(pid: int) -> bool:
+    if os.name == "nt":
+        listed = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True
+        )
+        return str(pid) in listed.stdout
     try:
         state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
     except OSError:
@@ -591,7 +611,6 @@ def _alive(pid: int) -> bool:
     return state != "Z"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the Windows branch kills with taskkill")
 def test_a_timeout_kills_the_whole_process_tree(tmp_path):
     pid_file = tmp_path / "grandchild.pid"
     code = (

@@ -417,8 +417,6 @@ def run_one(
         if deadline is None and run["status"] != "pending":
             deadline = now + timeout_seconds
         if now >= (deadline if deadline is not None else queue_deadline):
-            # Stop the worker too, so it does not push a branch after the row is written.
-            api.post(f"/runs/{run_id}/cancel")
             run = {**run, "status": "timeout"}
             break
         sleep(poll_seconds)
@@ -435,6 +433,10 @@ def run_one(
     graded, detail = False, ""
     branch = f"agent/{run_id}"
     try:
+        if run["status"] == "timeout":
+            # Stop the worker too, so it does not push a branch after the row is
+            # written. A failed cancel still cleans up, then fails the row.
+            api.post(f"/runs/{run_id}/cancel").raise_for_status()
         if run["status"] == "succeeded":
             graded, detail = grade_branch(
                 f"{clone_base}/{task.repo}.git", branch, task.grade, token

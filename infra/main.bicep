@@ -57,6 +57,9 @@ param telegramWebhookSecret string = ''
 @description('Seconds a Lighthouse check waits for the self hosted worker before the cloud worker takes it.')
 param checkClaimWindowSeconds int = 1800
 
+@description('Model runs the worker starts in a UTC day, site checks not counted. The api reports it in /status.')
+param maxRunsPerDay int = 20
+
 @description('mercury.yaml, base64 encoded, for the scheduler, the api (the Telegram chat allowlist and site list) and the worker (the chat told about budget trips). The private config repo, which runs this template, passes its real one.')
 @secure()
 param mercuryConfigB64 string = ''
@@ -352,6 +355,10 @@ var sharedEnvironment = [
   {
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     secretRef: 'insights-connection-string'
+  }
+  {
+    name: 'MAX_RUNS_PER_DAY'
+    value: string(maxRunsPerDay)
   }
 ]
 

@@ -25,7 +25,9 @@ az deployment group create \
       modelBaseUrl="${MODEL_BASE_URL:-}" \
       modelApiKey="${MODEL_API_KEY:-}" \
       voyageApiKey="${VOYAGE_API_KEY:-}" \
-      pagespeedApiKey="${PAGESPEED_API_KEY:-}"       ollamaApiKey="${OLLAMA_API_KEY:-}" \
+      pagespeedApiKey="${PAGESPEED_API_KEY:-}" \
+      ollamaApiKey="${OLLAMA_API_KEY:-}" \
+      maxRunsPerDay="${MAX_RUNS_PER_DAY:-20}" \
       telegramBotToken="${TELEGRAM_BOT_TOKEN:-}" \
       telegramWebhookSecret="${TELEGRAM_WEBHOOK_SECRET:-}" \
       mercuryGithubToken="${MERCURY_GITHUB_TOKEN:-}" \

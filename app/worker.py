@@ -181,11 +181,21 @@ def build_model(settings: Settings, provider_name: str) -> Model:
 
     from app.model import OpenAICompatibleModel
 
+    base_url = provider.base_url
+    if provider.base_url_env:
+        base_url = os.environ.get(provider.base_url_env) or None
+        if base_url is None:
+            raise RuntimeError(f"no model address: set {provider.base_url_env}")
+    model_name = (
+        os.environ.get(provider.model_env) if provider.model_env else None
+    ) or provider.model
     return OpenAICompatibleModel(
-        model=provider.model,
+        model=model_name,
         api_key=api_key,
-        base_url=provider.base_url,
-        timeout_seconds=settings.model_timeout_seconds,
+        base_url=base_url,
+        max_tokens=provider.max_tokens,
+        json_mode=provider.json_mode,
+        timeout_seconds=provider.timeout_seconds or settings.model_timeout_seconds,
     )
 
 

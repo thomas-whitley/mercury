@@ -31,12 +31,27 @@ class ProviderConfig:
     # What the monthly cap charges per million tokens. Runs store total
     # tokens only, so this is one rate for input and output alike.
     usd_per_million_tokens: float = 0.0
+    # A provider on Thomas's own machine (Phase 5, decisions 23, 25 and 26 of
+    # docs/build-brief-evals.md). Its runs count against
+    # MAX_LOCAL_RUNS_PER_DAY instead of MAX_RUNS_PER_DAY, its tokens against no
+    # daily cap, and a run on it never falls back to a cloud rung.
+    home: bool = False
+    # Read when the model is built, for an address and a tag that differ per machine.
+    base_url_env: str | None = None
+    model_env: str | None = None
+    # None takes MODEL_TIMEOUT_SECONDS.
+    timeout_seconds: float | None = None
+    max_tokens: int = 2048
+    # Ask the endpoint for a JSON object, so the reply always parses.
+    json_mode: bool = False
 
 
 # Chosen per task type by the registry in app/tasks.py, not by MODEL, which
 # also names the provider each type falls back to. MODEL_API_KEY is Gemini's
 # free tier key, OLLAMA_API_KEY is Ollama's cloud free tier, and
 # ANTHROPIC_API_KEY is for Haiku 4.5, which no type uses today.
+# LOCAL_MODEL_TOKEN is the bearer Caddy checks in front of Ollama on the home
+# PC (local/README.md).
 PROVIDERS: dict[str, ProviderConfig] = {
     "gemini": ProviderConfig(
         kind="openai_compatible",
@@ -53,6 +68,21 @@ PROVIDERS: dict[str, ProviderConfig] = {
         model="gpt-oss:120b",
         # The free tier, one request at a time, which the single worker keeps to.
         usd_per_million_tokens=0.0,
+    ),
+    "local": ProviderConfig(
+        kind="openai_compatible",
+        base_url=None,
+        api_key_env="LOCAL_MODEL_TOKEN",
+        # qwen2.5-coder:7b with a 16K context window (local/Modelfile.base).
+        model="mercury-local:base",
+        home=True,
+        base_url_env="LOCAL_MODEL_URL",
+        model_env="LOCAL_MODEL",
+        # A cold load plus a whole file reply on the 4060. The chore's own
+        # heartbeat thread keeps the lease meanwhile.
+        timeout_seconds=120.0,
+        max_tokens=8192,
+        json_mode=True,
     ),
     "haiku": ProviderConfig(
         kind="anthropic",

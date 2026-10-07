@@ -122,3 +122,21 @@ def test_the_openai_compatible_model_copes_with_an_empty_reply():
     model = OpenAICompatibleModel(model="gemini-3.8-flash", client=client)
 
     assert model.complete(system="s", prompt="p").text == ""
+
+
+def test_json_mode_asks_the_endpoint_for_a_json_object():
+    from app.model import OpenAICompatibleModel
+
+    client = _FakeOpenAIClient(content='{"read": []}')
+    OpenAICompatibleModel(model="m", client=client, json_mode=True).complete("s", "p")
+
+    assert client.chat.completions.calls[0]["response_format"] == {"type": "json_object"}
+
+
+def test_without_json_mode_no_response_format_is_sent():
+    from app.model import OpenAICompatibleModel
+
+    client = _FakeOpenAIClient()
+    OpenAICompatibleModel(model="m", client=client).complete("s", "p")
+
+    assert "response_format" not in client.chat.completions.calls[0]

@@ -90,6 +90,7 @@ class OpenAICompatibleModel:
         max_tokens: int = 2048,
         client: object | None = None,
         timeout_seconds: float = 25.0,
+        json_mode: bool = False,
     ) -> None:
         if client is None:
             from openai import OpenAI
@@ -99,8 +100,10 @@ class OpenAICompatibleModel:
         self._client = client
         self._model = model
         self._max_tokens = max_tokens
+        self._json_mode = json_mode
 
     def complete(self, system: str, prompt: str) -> ModelReply:
+        extra = {"response_format": {"type": "json_object"}} if self._json_mode else {}
         response = self._client.chat.completions.create(
             model=self._model,
             max_tokens=self._max_tokens,
@@ -108,6 +111,7 @@ class OpenAICompatibleModel:
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
+            **extra,
         )
         text = response.choices[0].message.content or ""
         usage = getattr(response, "usage", None)

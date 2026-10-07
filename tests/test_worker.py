@@ -204,6 +204,39 @@ def test_build_model_refuses_an_unregistered_provider():
         build_model(settings, "not_a_provider")
 
 
+def test_build_model_reads_the_local_address_and_tag_from_the_environment(monkeypatch):
+    monkeypatch.setenv("LOCAL_MODEL_TOKEN", "t" * 32)
+    monkeypatch.setenv("LOCAL_MODEL_URL", "http://127.0.0.1:11434/v1")
+    monkeypatch.setenv("LOCAL_MODEL", "mercury-local:v1")
+
+    model = build_model(settings_with(model="gemini-3.5-flash-lite"), "local")
+
+    assert isinstance(model, OpenAICompatibleModel)
+    assert model._model == "mercury-local:v1"
+    assert model._max_tokens == 8192
+    assert model._json_mode is True
+    assert str(model._client.base_url).startswith("http://127.0.0.1:11434/v1")
+    assert model._client.timeout == 120.0
+
+
+def test_build_model_refuses_local_without_an_address(monkeypatch):
+    monkeypatch.setenv("LOCAL_MODEL_TOKEN", "t" * 32)
+    monkeypatch.delenv("LOCAL_MODEL_URL", raising=False)
+
+    with pytest.raises(RuntimeError, match="LOCAL_MODEL_URL"):
+        build_model(settings_with(model="gemini-3.5-flash-lite"), "local")
+
+
+def test_the_local_tag_defaults_to_the_base_model(monkeypatch):
+    monkeypatch.setenv("LOCAL_MODEL_TOKEN", "t" * 32)
+    monkeypatch.setenv("LOCAL_MODEL_URL", "http://127.0.0.1:11434/v1")
+    monkeypatch.delenv("LOCAL_MODEL", raising=False)
+
+    model = build_model(settings_with(model="gemini-3.5-flash-lite"), "local")
+
+    assert model._model == "mercury-local:base"
+
+
 def test_claim_next_run_takes_over_a_run_whose_worker_stopped_reporting(migrated_db):
     run_id = new_run(migrated_db)
     claim_next_run(migrated_db, "worker-a", lease_seconds=60)

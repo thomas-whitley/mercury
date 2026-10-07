@@ -473,7 +473,7 @@ The first measurement, on 2026-09-29 with a 132 MB image, was 26.1 seconds, of w
 
 ## A pull request from a Telegram message
 
-A message asking for a change to a repo listed in `mercury.yaml` becomes a `repo_chore` that waits for an Approve button. Once approved, the worker clones the repo, branches as `agent/<run id>`, lets the model rewrite whole files, and runs the repo's own `test_command`. The branch is pushed and a pull request opened only when the tests pass. Three red attempts end the run failed with nothing pushed, and the chat offers an Open it anyway button.
+A message asking for a change to a repo listed in `mercury.yaml` becomes a `repo_chore` that waits for an Approve button. Once approved, the worker clones the repo, branches as `agent/<run id>`, lets the model rewrite whole files, and runs the repo's own `test_command`. The branch is pushed and a pull request opened only when the tests pass and the change keeps every test the repo already has. A chore that cannot get there ends `escalated` with nothing pushed; the next section says what happens then.
 
 The approval sits at run creation, in `app/chores.py`, so it does not depend on where a chore comes from. A `repo_chore` posted to `POST /runs` with `inputs.repo` is created `awaiting_approval` and the same question goes to the owner's chat. A repo outside `portfolio.repos` is a 422, and with no bot token or chat id configured it is a 503 that leaves no run behind, because a chore nobody was asked about would wait 24 hours for nothing. `tests/test_repo_chore_approval.py` covers both sources.
 
@@ -490,11 +490,21 @@ PASSED
 
 From the Approve press to the chore ending took 5.3 seconds on the first run, covering the clone, the fixture's tests, the push and the two GitHub calls. [Pull request 2](https://github.com/thomas-whitley/mercury-fixture/pull/2) stays on the fixture, closed, as the record.
 
+## When a chore escalates
+
+A chore runs on its type's provider ladder, `[gemini, ollama]` by default and set per type under `tasks:` in `mercury.yaml`. A provider that fails hands the run to the next rung, and a run that is reclaimed after a crash keeps only the rungs below the one it reached. A chore ends `escalated`, with its reason on the run row and in `GET /runs`, in three cases. Its tests are still red after 3 attempts. Its 3 replies were not the JSON asked for. Or its tests pass but its diff removes or skips a test the repo already has, three times running. That last check reads the staged diff (`app/test_guard.py`), so it works for any language. A green attempt that drops a test is not pushed. The model is told which test it dropped and shown the repo's own copy of the file, and tries again. In the Phase 1 eval, 6 of the 10 failed results were a green change that had dropped one of `main`'s tests.
+
+An escalated chore sends one Telegram message to the owner's chat with the reason, the tail of the test output, a link to the run page, and the Open it anyway button when it left a diff. A reply to that message is a hint. It reruns the chore from `main` with the hint, the failed diff and its test output in the prompt, and it starts without Approve because the owner is the one advising. The MCP tool `advise(run_id, hint)` does the same. A chore takes 2 advised reruns. When the second also escalates, the run is marked for a Claude session and `advise` refuses a third. Eval chores and a second escalation of the same chore send no message. A model that never answers on any rung ends the run in error, and the hourly scheduler Job retries it up to 3 times before escalating it.
+
+`GET /report`, the MCP tool `report` and `scripts/mercury_report.py` give one Markdown page. It lists escalations first, with every run of the chore and its provider, tokens, cost, hint, last diff and test output. Then come chores Mercury started itself, then where the eval results are, then spend against each cap. The morning digest adds one line when a chore is waiting for a hint.
+
+The last rung is a Claude session. The MCP server's instructions tell it to read `report`, write a sharper hint through `advise` first, and do the chore itself on a local clone only when it judges the task beyond free models, saying why in the pull request.
+
 ## An MCP server for Claude Code
 
 The API serves an MCP server at `/mcp`, built on the official Python `mcp` SDK (2.2) and mounted in the FastAPI app, so it adds no process, image or secret. It speaks streamable HTTP, stateless with JSON responses, so any replica answers any request and nothing is kept between calls. Every request must carry the bearer token, checked with the same constant time compare as `POST /runs`, and one without it is a 401 before the SDK sees it.
 
-There are six tools. `create_run`, `list_runs`, `get_run` and `get_run_events` call the same functions as `POST /runs`, `GET /runs`, `GET /runs/{id}` and the event stream (`app/run_api.py`). `cancel_run` and `status` give the same answers as `/cancel` and `/status` on Telegram. Runs created here are written `source: mcp`, and anything `POST /runs` would refuse comes back as a tool error with the same status and reason. There is no approve tool. A `repo_chore` created here waits for the Approve button on Telegram like any other, and `create_run`'s description tells the client so. It is meant for Claude Code, which can send a header:
+There are eight tools. `advise` and `report` are described in the section above. `create_run`, `list_runs`, `get_run` and `get_run_events` call the same functions as `POST /runs`, `GET /runs`, `GET /runs/{id}` and the event stream (`app/run_api.py`). `cancel_run` and `status` give the same answers as `/cancel` and `/status` on Telegram. Runs created here are written `source: mcp`, and anything `POST /runs` would refuse comes back as a tool error with the same status and reason. There is no approve tool. A `repo_chore` created here waits for the Approve button on Telegram like any other, and `create_run`'s description tells the client so. It is meant for Claude Code, which can send a header:
 
 ```
 claude mcp add --transport http mercury <api url>/mcp --header "Authorization: Bearer <token>"
@@ -593,7 +603,7 @@ with `status: error` rather than hanging, which is what the error path is for.
 
 ## Guards
 
-Three numbers are configuration, not code. `TOKEN_BUDGET` is 50000 per run and is counted in the loop. `MAX_RUNS_PER_DAY` is 20 and is counted in the worker from `runs.created_at`, and a refused run still gets its `done` event so a client waiting on the stream is not left hanging. `MODEL=stub` runs the loop with an offline model that needs no key, which is what CI uses so a push costs nothing.
+Three numbers are configuration, not code. `TOKEN_BUDGET` is 50000 per run and is counted in the loop. `MAX_RUNS_PER_DAY` is 20 by default, set per deploy from the private repo's `MAX_RUNS_PER_DAY` Actions variable (40 since 2026-10-07), and is counted in the worker from `runs.created_at`, and a refused run still gets its `done` event so a client waiting on the stream is not left hanging. `MODEL=stub` runs the loop with an offline model that needs no key, which is what CI uses so a push costs nothing.
 
 Two more caps sit above a run's own budget, and both are configuration too. `DAILY_TOKENS_PER_PROVIDER` is 500,000 tokens a day for each provider and `MONTHLY_BUDGET_USD` is 5. Before a run that calls a model starts, the worker adds up the tokens every step has recorded today on its provider, and this month across all of them. Gemini's free tier counts as nothing toward the month, and Haiku is charged at its output price on every token, since a run stores total tokens only, so the monthly figure can only overstate the bill. A tripped cap ends the run with one `done` event whose status is `budget` and names the cap, and sends one Telegram message to the owner's chat. A run that spends its own `TOKEN_BUDGET` sends the same one message.
 

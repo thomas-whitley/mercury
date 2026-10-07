@@ -32,11 +32,17 @@ The runner may open pull requests and write drafts. It never merges and never pu
 
 ## Repo chores
 
-A `repo_chore` clones the repo into a temporary directory inside the worker container, branches as `agent/<run id>`, makes the change, runs the repo's own tests, pushes the branch and opens a PR. If the tests fail after the change, the run ends `failed` with the diff and the test output in the final event, and no PR is opened. The user can say "open it anyway" from Telegram, which creates a new run that pushes the existing branch.
+A `repo_chore` clones the repo into a temporary directory inside the worker container, branches as `agent/<run id>`, makes the change, runs the repo's own tests, pushes the branch and opens a PR. If the tests still fail after 3 attempts, or the change removes or skips a test the repo already has, the run ends `escalated` with its reason, the diff and the test output in the final event, and no PR is opened. The owner can press Open it anyway, which creates a new run that reapplies the diff, or reply with a hint (see Escalation below).
 
 Auth is a fine grained GitHub personal access token in Container Apps secrets, scoped to the named repos, contents and pull requests only, one year expiry. It cannot push to `main` because branch protection on each repo forbids it, and the runner never tries.
 
 Takeover: the worker heartbeats every 30 seconds and the lease is two minutes. A replica that finds an expired lease takes the run over. The clone was local to the dying container, so the chore restarts from the beginning. That is safe because the first step checks whether `agent/<run id>` already exists on the remote and resumes from it if so.
+
+## Escalation
+
+Settled 2026-10-05 and 2026-10-07 (decisions 6 to 19 of `docs/build-brief-evals.md`). Each model type has a provider ladder, read from `tasks:` in `mercury.yaml`; a failing provider hands the run to the next rung. A chore ends `escalated` with one of three reasons: `tests still failing after 3 attempts`, `three unusable replies`, or `weakened tests`. The last is a green attempt whose diff removes or skips one of the repo's tests, which gets feedback naming the test and only escalates on the third attempt. A model that never answers on any rung ends the run `error` with `providers unavailable`. The hourly Job retries it up to 3 times and then escalates it. A budget trip keeps its own `budget` status and message.
+
+One Telegram message per escalated chore, none for a chore whose source is `eval` and none for a second escalation of the same chore. A reply to it, or the MCP tool `advise(run_id, hint)`, creates an advised rerun from `main` that starts without Approve. A chore takes 2 advised reruns, then it is marked `needs_claude` and `advise` refuses. The report (`GET /report`, MCP `report`, `scripts/mercury_report.py`) lists escalations, chores Mercury started itself and spend against the caps. A Claude session reads it, advises first, and does a chore itself only when it is beyond free models.
 
 ## Other ways in: MCP and n8n
 
@@ -86,7 +92,7 @@ Three caps, all config: tokens per run (default 50,000), tokens per day per prov
 
 ## Configuration
 
-The public repo ships the image and a sample config in `config/mercury.sample.yaml`. A private repo holds the real config: task definitions, schedules, the chat ID, the list of repos and the site URL, plus a GitHub Actions workflow that deploys the public image with that config. Secrets live in that repo's Actions secrets and in Container Apps secrets. The private repo pins an image tag and the tag is bumped by hand, so a public commit cannot change what talks to the phone before its owner has read it.
+The public repo ships the image and a sample config in `config/mercury.sample.yaml`. A private repo holds the real config: each task type's provider ladder and budget, schedules, the chat ID, the list of repos and the site URL, plus a GitHub Actions workflow that deploys the public image with that config. Secrets live in that repo's Actions secrets and in Container Apps secrets. The private repo pins an image tag and the tag is bumped by hand, so a public commit cannot change what talks to the phone before its owner has read it.
 
 ## The runs page
 

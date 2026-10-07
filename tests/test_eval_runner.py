@@ -183,7 +183,7 @@ class _Api:
         return self.created
 
     def get(self, path: str) -> _Response:
-        if path.endswith("/events"):
+        if path.endswith("/history"):
             return _Response(200, self.events)
         status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
         return _Response(200, status)
@@ -861,3 +861,32 @@ def test_a_row_its_hint_rescued_counts_after_one_hint():
 
     assert "| gemini | 1 of 2 | 2 of 2 | 50% | 1 of 2 | 1 of 2 | 1000 |" in table
     assert "| t1 | gemini | 1 | gemini | escalated | fail | pass |" in table
+
+
+def test_a_run_whose_history_cannot_be_read_keeps_its_graded_row(monkeypatch):
+    class _StreamNotJson(_Api):
+        def get(self, path: str) -> _Response:
+            if path.endswith("/history"):
+                raise ValueError("Expecting value: line 1 column 1")
+            return super().get(path)
+
+    monkeypatch.setattr(runner, "grade_branch", lambda *a, **k: (True, "OK"))
+
+    row = _run(_StreamNotJson(PENDING, [DONE]), _GitHub())
+
+    assert (row.status, row.graded, row.diff) == ("succeeded", True, "")
+
+
+def test_the_evidence_comes_from_the_json_history_not_the_event_stream(monkeypatch):
+    monkeypatch.setattr(runner, "grade_branch", lambda *a, **k: (True, "OK"))
+    paths: list[str] = []
+
+    class _Recording(_Api):
+        def get(self, path: str) -> _Response:
+            paths.append(path)
+            return super().get(path)
+
+    _run(_Recording(PENDING, [DONE]), _GitHub())
+
+    assert "/runs/run-1/history" in paths
+    assert not [p for p in paths if p.endswith("/events")]

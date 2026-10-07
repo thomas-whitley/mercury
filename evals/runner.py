@@ -548,12 +548,16 @@ def follow(
 
 
 def _evidence(api, run_id: str) -> tuple[str, str]:
-    """The done step's diff and test output tail, for the rescue brief. A
-    run whose events cannot be read keeps its row, with no evidence."""
-    response = api.get(f"/runs/{run_id}/events")
-    if response.status_code != 200:
+    """The done step's diff and test output tail, for the rescue brief, from
+    GET /runs/{id}/history (JSON; /events is the SSE stream). By now the row
+    is graded and its branch deleted, so a history that cannot be read costs
+    only the evidence, never the row."""
+    try:
+        response = api.get(f"/runs/{run_id}/history")
+        events = response.json() if response.status_code == 200 else []
+        done = [e.get("output") or {} for e in events if e.get("kind") == "done"]
+    except Exception:  # noqa: BLE001 - see the docstring
         return "", ""
-    done = [event.get("output") or {} for event in response.json() if event.get("kind") == "done"]
     output = done[-1] if done else {}
     return (
         (output.get("diff") or "")[:EVIDENCE_DIFF_CHARS],

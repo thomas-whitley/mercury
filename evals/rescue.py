@@ -128,7 +128,13 @@ def table(paths: list[Path]) -> str:
 
 
 def check_hints(rows: list[EvalRow], hints: dict[str, str]) -> None:
-    """Every key must name a briefed row, before anything is rerun."""
+    """The hints file must map briefed rows to text, before anything is
+    rerun. YAML reads an unquoted no, 1.5 or a date as something else."""
+    if not isinstance(hints, dict):
+        raise ValueError("the hints file must be a mapping of row keys to hints")
+    for key, value in hints.items():
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"the hint for {key} is not text; put it in quotes")
     known = {row_key(row) for row in rows if rescuable(row)}
     unknown = sorted(set(hints) - known)
     if unknown:
@@ -183,11 +189,12 @@ def apply_hints(
     clone_url: str = FIXTURE_URL,
 ) -> list[EvalRow]:
     """Rerun each row that has a non blank hint and record the rerun on it.
-    An EvalAborted stops the pass; the rows done so far keep their rescue."""
+    An EvalAborted stops the pass; the rows done so far keep their rescue, and
+    a second apply skips them, so each row gets one hint (decision 37)."""
     check_hints(rows, hints)
     for row in rows:
         hint = (hints.get(row_key(row)) or "").strip()
-        if not hint or not rescuable(row):
+        if not hint or not rescuable(row) or row.rescue is not None:
             continue
         task = tasks[row.task]
         if row.provider.startswith("delegate:"):
@@ -201,8 +208,8 @@ def apply_hints(
                 timeout_seconds=timeout_seconds, poll_seconds=poll_seconds, sleep=sleep,
                 clock=clock,
             )  # fmt: skip
-        row.rescue_hint = hint
         row.rescue = contained(run, row.task, row.provider, token)
+        row.rescue_hint = hint
     return rows
 
 

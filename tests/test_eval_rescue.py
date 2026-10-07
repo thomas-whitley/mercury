@@ -91,7 +91,7 @@ class _Api:
         return self.advised
 
     def get(self, path: str) -> _Response:
-        if path.endswith("/events"):
+        if path.endswith("/history"):
             return _Response(200, [{"id": 1, "kind": "done", "seq": 9, "output": {}}])
         return _Response(
             200, {"status": "succeeded", "provider": "gemini", "tokens": 500,
@@ -231,3 +231,41 @@ def test_the_table_summarises_every_results_file_together(tmp_path):
 
     assert "| gemini | 0 of 1 |" in table
     assert "| local | 0 of 1 |" in table
+
+
+def test_applying_the_hints_again_keeps_each_finished_rescue(monkeypatch):
+    monkeypatch.setattr(runner, "grade_branch", lambda *a, **k: (True, ""))
+    rows = _apply([failed()], {"divide/gemini/1": "a hint"})
+    api = _Api(_Response(422, text="already has a newer run"))
+
+    [after] = _apply(rows, {"divide/gemini/1": "a hint"}, api)
+
+    assert api.posts == []
+    assert (after.rescue.run_id, after.rescue.graded) == ("run-2", True)
+
+
+def test_a_pass_that_stops_leaves_no_hint_without_a_rescue():
+    class _Refused(_Api):
+        def get(self, path: str) -> _Response:
+            return _Response(200, {"status": "refused"})
+
+    row = failed()
+    with pytest.raises(runner.EvalAborted):
+        _apply([row], {"divide/gemini/1": "a hint"}, _Refused())
+
+    assert (row.rescue_hint, row.rescue) == (None, None)
+
+
+@pytest.mark.parametrize("value", [False, 1.5, ["a"]])
+def test_a_hint_that_is_not_text_stops_before_any_rerun(value):
+    api = _Api()
+
+    with pytest.raises(ValueError, match="divide/gemini/1"):
+        _apply([failed()], {"divide/gemini/1": value}, api)
+
+    assert api.posts == []
+
+
+def test_a_hints_file_that_is_not_a_mapping_is_refused():
+    with pytest.raises(ValueError, match="mapping"):
+        _apply([failed()], ["divide/gemini/1"])

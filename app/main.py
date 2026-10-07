@@ -23,6 +23,7 @@ from app.run_api import (
     get_run,
     list_runs,
     report_text,
+    run_events,
 )
 from app.run_list import DEFAULT_LIMIT, MAX_LIMIT
 from app.run_request import RunRequest
@@ -117,6 +118,14 @@ def create_app() -> FastAPI:
     ) -> RunCreated:
         require_bearer_token(request)
         return await advise_run(request.app.state, str(run_id), advice)
+
+    @app.get("/runs/{run_id}/history")
+    async def run_history(run_id: uuid.UUID, request: Request) -> list[dict]:
+        """Every event of a run with its body, as one JSON list: what the MCP
+        tool get_run_events returns, for a client that is not a stream reader,
+        such as the eval runner (Phase 3 of docs/build-brief-evals.md)."""
+        require_bearer_token(request)
+        return await run_events(request.app.state.pool, str(run_id))
 
     app.state.mcp = mount_mcp(app)
 

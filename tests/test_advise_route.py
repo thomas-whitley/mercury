@@ -111,3 +111,20 @@ def test_an_eval_chore_is_rerun_quietly_on_the_column_named(api, clean_db):
     assert response.status_code == 201
     status, _, source, provider, _ = rerun(clean_db, response.json()["id"])
     assert (status, source, provider) == ("pending", "eval", "ollama")
+
+
+def test_a_run_s_history_is_its_events_as_json_behind_the_bearer(api, clean_db):
+    run_id = chore(clean_db)
+    with psycopg.connect(clean_db, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO events (run_id, seq, payload) VALUES (%s, 1, %s)",
+            (run_id, Jsonb({"kind": "done", "seq": 1, "output": {"diff": "+x\n"}})),
+        )
+
+    without = httpx2.get(f"{api}/runs/{run_id}/history")
+    response = httpx2.get(f"{api}/runs/{run_id}/history", headers=HEADERS)
+
+    assert without.status_code == 401
+    assert response.status_code == 200
+    [event] = response.json()
+    assert (event["kind"], event["output"]["diff"]) == ("done", "+x\n")

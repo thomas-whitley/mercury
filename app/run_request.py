@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, field_validator, model_validator
 
-from app.config import PROVIDERS
+from app.config import HOME_PROVIDERS, PROVIDERS
 from app.tasks import CHECK_KINDS, DEFAULT_CHECK_KIND, TASK_TYPES
 
 # What a caller of POST /runs may say it is. telegram and mcp are set inside
@@ -42,6 +42,10 @@ class RunRequest(BaseModel):
     def only_a_model_run_names_a_provider(self) -> "RunRequest":
         if self.provider is not None and TASK_TYPES[self.type].provider is None:
             raise ValueError(f"a {self.type} run calls no model, so it takes no provider")
+        # A home provider answers in JSON mode (decision 23 of
+        # docs/build-brief-evals.md), which only a chore's reply format survives.
+        if self.provider in HOME_PROVIDERS and self.type != "repo_chore":
+            raise ValueError(f"{self.provider!r} runs only a repo chore")
         return self
 
     @field_validator("type")

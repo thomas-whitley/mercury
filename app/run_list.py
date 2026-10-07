@@ -19,7 +19,7 @@ MAX_LIMIT = 200
 _COLUMNS = """
 SELECT id, type, provider, executor, status, tokens_used,
        extract(epoch from (finished_at - created_at)) AS duration_seconds,
-       created_at, source
+       created_at, source, escalation_reason
 FROM runs
 """
 # GET /runs/{id}: one row, the same fields as the list.
@@ -36,9 +36,18 @@ _CURSOR_CLAUSE = "WHERE (created_at, id) < (%s, %s)"
 
 
 def serialize_run_row(row: tuple) -> dict:
-    run_id, type_, provider, executor, status, tokens_used, duration_seconds, created_at, source = (
-        row
-    )
+    (
+        run_id,
+        type_,
+        provider,
+        executor,
+        status,
+        tokens_used,
+        duration_seconds,
+        created_at,
+        source,
+        escalation_reason,
+    ) = row
     return {
         "id": str(run_id),
         "type": type_,
@@ -51,6 +60,7 @@ def serialize_run_row(row: tuple) -> dict:
         "duration_seconds": float(duration_seconds) if duration_seconds is not None else None,
         "created_at": created_at.isoformat(),
         "source": source,
+        "escalation_reason": escalation_reason,
     }
 
 

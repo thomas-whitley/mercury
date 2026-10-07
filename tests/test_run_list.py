@@ -37,9 +37,11 @@ def test_runs_are_listed_newest_first_with_metadata_only(start_server, clean_db)
         "duration_seconds",
         "created_at",
         "source",
+        "escalation_reason",
     }
     # A row written without a source, as every row before migration 012 was.
     assert run["source"] == "api"
+    assert run["escalation_reason"] is None
 
 
 def test_duration_is_null_until_the_run_finishes(start_server, clean_db):
@@ -182,3 +184,21 @@ def test_an_unknown_run_id_is_a_404(start_server, clean_db):
     response = httpx2.get(f"{base_url}/runs/00000000-0000-0000-0000-000000000000")
 
     assert response.status_code == 404
+
+
+def test_an_escalated_run_shows_why(start_server, clean_db):
+    base_url = start_server()
+    with psycopg.connect(clean_db, autocommit=True) as conn:
+        run_id = conn.execute(
+            "INSERT INTO runs (task, type, provider, status, escalation_reason, source) "
+            "VALUES ('x', 'repo_chore', 'gemini', 'escalated', 'weakened tests', 'eval') "
+            "RETURNING id"
+        ).fetchone()[0]
+
+    run = httpx2.get(f"{base_url}/runs/{run_id}").json()
+
+    assert (run["status"], run["escalation_reason"], run["source"]) == (
+        "escalated",
+        "weakened tests",
+        "eval",
+    )

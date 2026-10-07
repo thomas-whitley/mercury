@@ -389,6 +389,7 @@ def run_one(
             "type": "repo_chore",
             "inputs": {"task": task.instruction, "repo": task.repo},
             "provider": provider,
+            "source": "eval",
         },
     )
     if created.status_code != 201:
@@ -427,8 +428,9 @@ def run_one(
         # that measure the limit and not the model.
         raise EvalAborted(
             f"run {run_id} was refused by the worker, most likely because the daily run limit "
-            "MAX_RUNS_PER_DAY (default 20) is reached. Raise it in mercury-config for the "
-            "day of the eval, or continue tomorrow. Its events give the exact reason."
+            "MAX_RUNS_PER_DAY is reached. Raise the MAX_RUNS_PER_DAY Actions variable in "
+            "mercury-config and re-run its Deploy, or continue tomorrow. Its events give the "
+            "exact reason."
         )
     graded, detail = False, ""
     branch = f"agent/{run_id}"
@@ -441,6 +443,8 @@ def run_one(
             graded, detail = grade_branch(
                 f"{clone_base}/{task.repo}.git", branch, task.grade, token
             )
+        else:
+            detail = run.get("escalation_reason") or ""
     finally:
         if run["status"] in ("succeeded", "timeout"):
             # A timed out chore may have pushed its branch before the cancel landed.

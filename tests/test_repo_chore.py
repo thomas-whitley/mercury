@@ -18,9 +18,10 @@ import pytest
 from app.github import GitHubClient
 from app.mercury_config import RepoConfig
 from app.model import StubModel
-from app.repo_chore import ChoreSetup, run_repo_chore
+from app.repo_chore import OUTAGE, RED, UNUSABLE, ChoreSetup, run_repo_chore
 from app.runs import claim_run
 from tests.github_fake import FakeGitHub
+from tests.test_fallback import _Failing
 
 REPO = "owner/fixture"
 WORKER = "worker-1"
@@ -177,7 +178,7 @@ def test_red_tests_are_shown_to_the_model_and_it_tries_again(migrated_db, remote
     assert kinds(migrated_db, run_id).count("test") == 2
 
 
-def test_three_red_attempts_fail_the_run_with_the_diff_and_push_nothing(
+def test_three_red_attempts_escalate_the_run_with_the_diff_and_push_nothing(
     migrated_db, remote, github, tmp_path
 ):
     run_id = chore_run(migrated_db)
@@ -185,11 +186,14 @@ def test_three_red_attempts_fail_the_run_with_the_diff_and_push_nothing(
 
     result = run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
 
-    assert result.status == "failed"
+    assert result.status == "escalated"
     assert remote_branches(remote) == ["main"]
     assert github.pulls == []
     output = done(migrated_db, run_id)
-    assert output["status"] == "failed"
+    assert output["status"] == "escalated"
+    assert output["reason"] == RED
+    row = migrated_db.execute("SELECT escalation_reason FROM runs WHERE id = %s", (run_id,))
+    assert row.fetchone() == (RED,)
     assert "+def subtract(a, b):" in output["diff"]
     assert "test_subtract.py" in output["diff"]
     assert "assert 8 == 2" in output["test_output"]
@@ -378,7 +382,7 @@ def failed_chore(conn, remote, github, tmp_path) -> str:
     model = StubModel(replies=[pick("calc.py"), change(BAD_CALC)])
     assert (
         run_repo_chore(conn, run_id, model, setup(tmp_path, github), worker_id=WORKER).status
-        == "failed"
+        == "escalated"
     )
     return run_id
 
@@ -539,3 +543,35 @@ def test_as_root_with_no_chore_user_the_tests_do_not_run(tmp_path, monkeypatch):
 
     with pytest.raises(repo_chore.ChoreError, match="chore user"):
         repo_chore._run_tests(clone, chore, tmp_path)
+
+
+def test_three_unusable_replies_escalate_with_their_own_reason(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = chore_run(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), "I would change calc.py like so."])
+
+    result = run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert result.status == "escalated"
+    assert done(migrated_db, run_id)["reason"] == UNUSABLE
+    assert remote_branches(remote) == ["main"]
+
+
+def test_a_model_that_never_answers_ends_in_error_as_an_outage(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = chore_run(migrated_db)
+
+    result = run_repo_chore(
+        migrated_db,
+        run_id,
+        _Failing(),
+        setup(tmp_path, github),
+        worker_id=WORKER,
+        retry_attempts=1,
+        retry_backoff_seconds=0,
+    )
+
+    assert result.status == "error"
+    assert done(migrated_db, run_id)["reason"] == OUTAGE

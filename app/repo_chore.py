@@ -3,8 +3,10 @@
 A chore clones the repo into a temporary directory, branches as
 agent/<run id>, lets the model rewrite whole files, and runs the repo's own
 test command. Green pushes the branch and opens a pull request. Three red
-attempts end the run failed, with the diff and the test output in its done
-event, and nothing leaves the machine. The runner never merges and never
+attempts, or three replies that could not be used, end the run escalated
+with its reason, the diff and the test output in its done event, and nothing
+leaves the machine. A model that never answers, on any provider, ends it in
+error as an outage, which the scheduler retries. The runner never merges and never
 pushes to anything but its own branch.
 
 The branch reaches the remote only after the tests pass, so a branch already
@@ -63,6 +65,13 @@ AUTHOR = ("mercury", "mercury@users.noreply.github.com")
 # worker is root, as it is in the image.
 CHORE_USER = "chore"
 
+# Why a chore ended escalated, or in error for an outage. The done event and
+# runs.escalation_reason carry the same text.
+RED = "tests still failing after 3 attempts"
+UNUSABLE = "three unusable replies"
+WEAKENED = "weakened tests"
+OUTAGE = "providers unavailable"
+
 SYSTEM = """You change a git repository to carry out one instruction from its owner. \
 Answer with a single JSON object and nothing else."""
 
@@ -114,7 +123,7 @@ def run_repo_chore(
         "SELECT coalesce(max(seq), 0) FROM steps WHERE run_id = %s", (run_id,)
     ).fetchone()[0]
     fields = {"run_id": run_id, "worker_id": worker_id}
-    state = {"seq": seq, "tokens": tokens_used, "attempts": 0}
+    state = {"seq": seq, "tokens": tokens_used, "attempts": 0, "unusable": 0}
 
     def write(kind: str, output: dict, tokens: int = 0) -> None:
         state["seq"] += 1
@@ -130,6 +139,10 @@ def run_repo_chore(
         if not finish_run(conn, run_id, status, state["tokens"], worker_id=worker_id):
             return LoopResult(
                 status="lost", attempts=state["attempts"], tokens_used=state["tokens"]
+            )
+        if status == "escalated":
+            conn.execute(
+                "UPDATE runs SET escalation_reason = %s WHERE id = %s", (output["reason"], run_id)
             )
         logger.info("repo chore %s ended %s", run_id, status, extra=fields)
         return LoopResult(status=status, attempts=state["attempts"], tokens_used=state["tokens"])
@@ -151,9 +164,9 @@ def run_repo_chore(
         logger.warning("repo chore %s: lease lost, stopping", run_id, extra=fields)
         return LoopResult(status="lost", attempts=state["attempts"], tokens_used=state["tokens"])
     except RuntimeError as error:
-        # The model never answered, after its retries.
+        # The model never answered, after its retries, on any rung of its ladder.
         logger.error("repo chore %s: %s", run_id, error, extra=fields)
-        return close("error", {"reason": "the model did not answer"})
+        return close("error", {"reason": OUTAGE})
     except (ChoreError, GitHubError) as error:
         logger.error("repo chore %s: %s", run_id, error, extra=fields)
         return close("error", {"reason": str(error)})
@@ -212,6 +225,7 @@ def _run(setup, run_id, instruction, workdir, write, close, ask, state, token_bu
                 if refused
                 else "Your reply was not the JSON asked for."
             )
+            state["unusable"] += 1
             write(
                 "edit", {"attempt": attempt, "files": [], "problem": problem}, state["last_tokens"]
             )
@@ -247,9 +261,9 @@ def _run(setup, run_id, instruction, workdir, write, close, ask, state, token_bu
         git.run("add", "--", *sorted(written), cwd=clone) if written else None
         diff = git.run("diff", "--cached", cwd=clone) if written else ""
         return close(
-            "failed",
+            "escalated",
             {
-                "reason": f"tests still failing after {MAX_ATTEMPTS} attempts",
+                "reason": UNUSABLE if state["unusable"] == MAX_ATTEMPTS else RED,
                 "diff": diff[:MAX_DIFF_CHARS],
                 "test_output": test_output,
             },

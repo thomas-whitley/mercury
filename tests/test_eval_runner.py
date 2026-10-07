@@ -236,6 +236,7 @@ def test_a_green_chore_is_graded_and_its_pull_request_closed(monkeypatch):
             "type": "repo_chore",
             "inputs": {"task": "Add divide.", "repo": "o/fixture"},
             "provider": "gemini",
+            "source": "eval",
         }
     ]
     assert (row.status, row.graded, row.tokens, row.answered_by) == (
@@ -752,3 +753,12 @@ def test_the_delegate_script_is_started_without_the_runner_s_tokens(monkeypatch,
 
     assert "PATH" in seen["env"]
     assert not [name for name in seen["env"] if name.upper().startswith("MERCURY_")]
+
+
+def test_an_escalated_chore_records_its_reason_as_the_detail(monkeypatch):
+    monkeypatch.setattr(runner, "grade_branch", pytest.fail)
+    api = _Api(PENDING, [{**DONE, "status": "escalated", "escalation_reason": "weakened tests"}])
+
+    row = _run(api, _GitHub())
+
+    assert (row.status, row.graded, row.detail) == ("escalated", False, "weakened tests")

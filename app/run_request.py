@@ -10,8 +10,9 @@ from app.tasks import CHECK_KINDS, DEFAULT_CHECK_KIND, TASK_TYPES
 
 # What a caller of POST /runs may say it is. telegram and mcp are set inside
 # the app (app/telegram_webhook.py, app/chat.py, the MCP server), so a POST
-# cannot claim either.
-PostedSource = Literal["api", "n8n", "scheduler"]
+# cannot claim either. eval is the eval runner (evals/runner.py), whose
+# escalations reach the report and never Telegram.
+PostedSource = Literal["api", "n8n", "scheduler", "eval"]
 
 
 class RunRequest(BaseModel):

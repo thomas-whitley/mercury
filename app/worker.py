@@ -363,7 +363,7 @@ def _run_chore(
         token_budget=token_budget,
         on_step=lambda: _step_landed(conn, run_id, settings.worker_id, telegram),
     )
-    if result.status == "failed":
+    if result.status == "escalated":
         _offer_open_anyway(conn, run_id, telegram)
     return result
 

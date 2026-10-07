@@ -206,3 +206,87 @@ def test_each_answer_logs_how_long_after_the_message_was_sent(
     match = re.search(r"answered /runs (\d+\.\d) s after it was sent", caplog.text)
     assert match, caplog.text
     assert 3.0 <= float(match.group(1)) < 10.0
+
+
+# A reply to an escalation message is a hint for that chore (app/advice.py).
+
+
+@pytest.fixture
+def advising_bot(start_server, fake_telegram, monkeypatch, tmp_path):
+    config = tmp_path / "mercury.yaml"
+    config.write_text(
+        yaml.dump(
+            {
+                "telegram": {"chat_id": CHAT},
+                "portfolio": {
+                    "sites": [SITE],
+                    "repos": [{"name": "owner/fixture", "test_command": "python -m pytest -q"}],
+                },
+            }
+        )
+    )
+    monkeypatch.setenv("MERCURY_CONFIG_PATH", str(config))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", SECRET)
+    monkeypatch.setenv("TELEGRAM_API_URL", fake_telegram.url)
+    return start_server()
+
+
+def reply_to(message_id: int, text: str, chat_id: int = CHAT) -> dict:
+    body = update(text, chat_id)
+    body["message"]["reply_to_message"] = {"message_id": message_id, "text": "earlier"}
+    return body
+
+
+def announced_chore(conn, message_id: int) -> str:
+    from tests.test_escalation import escalated_chore
+
+    run_id = escalated_chore(conn, "tests still failing after 3 attempts")
+    conn.execute("UPDATE runs SET escalation_message_id = %s WHERE id = %s", (message_id, run_id))
+    return run_id
+
+
+def test_a_reply_to_an_escalation_message_queues_an_advised_rerun(
+    advising_bot, fake_telegram, migrated_db
+):
+    failed = announced_chore(migrated_db, 77)
+
+    post(advising_bot, reply_to(77, "Use float division."))
+
+    row = migrated_db.execute(
+        "SELECT id::text, status, source, hint FROM runs WHERE source_run_id = %s", (failed,)
+    ).fetchone()
+    assert row[1:] == ("pending", "telegram", "Use float division.")
+    assert replies(fake_telegram) == [f"Rerunning {failed[:8]} from main with your hint."]
+    assert migrated_db.execute("SELECT count(*) FROM runs WHERE type = 'chat'").fetchone() == (0,)
+
+
+def test_a_refused_hint_is_answered_with_why(advising_bot, fake_telegram, migrated_db):
+    failed = announced_chore(migrated_db, 77)
+    migrated_db.execute("UPDATE runs SET status = 'succeeded' WHERE id = %s", (failed,))
+
+    post(advising_bot, reply_to(77, "Use float division."))
+
+    [answer] = replies(fake_telegram)
+    assert "not escalated" in answer
+    assert migrated_db.execute("SELECT count(*) FROM runs").fetchone() == (1,)
+
+
+def test_a_reply_to_any_other_message_is_ordinary_chat(advising_bot, fake_telegram, migrated_db):
+    announced_chore(migrated_db, 77)
+
+    post(advising_bot, reply_to(12, "how are my sites?"))
+
+    assert migrated_db.execute("SELECT count(*) FROM runs WHERE type = 'chat'").fetchone() == (1,)
+    assert migrated_db.execute("SELECT count(*) FROM runs WHERE hint IS NOT NULL").fetchone() == (
+        0,
+    )
+
+
+def test_a_reply_from_another_chat_is_ignored(advising_bot, fake_telegram, migrated_db):
+    announced_chore(migrated_db, 77)
+
+    post(advising_bot, reply_to(77, "Use float division.", chat_id=999))
+
+    assert fake_telegram.sent() == []
+    assert migrated_db.execute("SELECT count(*) FROM runs").fetchone() == (1,)

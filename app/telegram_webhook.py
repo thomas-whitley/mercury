@@ -2,7 +2,8 @@
 
 Telegram's secret token header is checked first and fails closed when no
 secret is configured. Then the chat id is checked against the allowlist of
-one; any other sender gets a 200 and no reply at all. /status, /runs and
+one; any other sender gets a 200 and no reply at all. A reply to a chore's
+escalation message is a hint for it (app/advice.py). /status, /runs and
 /cancel are answered here with no model call. Anything else becomes a chat
 run for the worker (app/chat.py).
 
@@ -18,10 +19,12 @@ import time
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Request
+from psycopg import connect
 from psycopg.types.json import Jsonb
 from starlette.concurrency import run_in_threadpool
 
 from app import approvals
+from app.advice import AdviceRefused, advise
 from app.runs import CANCEL_RUN, CANCELLED, DONE_EVENT, DONE_STEP, NEXT_EVENT_SEQ
 from app.schedule_state import RESUME
 from app.tasks import TASK_TYPES
@@ -66,6 +69,7 @@ ORDER BY created_at DESC LIMIT 1
 """
 
 _SUSPENDED_NAMES = "SELECT name FROM schedule_state WHERE suspended ORDER BY name"
+_ESCALATED_BY_MESSAGE = "SELECT id FROM runs WHERE escalation_message_id = %s"
 RESUME_USAGE = "Usage: /resume <site>"
 UPTIME_PREFIX = "site_uptime:"
 
@@ -98,6 +102,14 @@ async def telegram_webhook(request: Request) -> dict:
         return {}
 
     text = text.strip()
+    # A reply to a chore's escalation message is a hint for that chore.
+    replied_to = (message.get("reply_to_message") or {}).get("message_id")
+    if replied_to is not None:
+        answer = await _advise_from_reply(request, replied_to, text)
+        if answer is not None:
+            await _send(request, chat_id, answer)
+            return {}
+
     if text.startswith("/"):
         reply = await _answer(request, text)
         if reply is not None:
@@ -121,6 +133,26 @@ async def telegram_webhook(request: Request) -> dict:
         ).fetchone()
     logger.info("chat run %s created from Telegram", row[0], extra={"run_id": str(row[0])})
     return {}
+
+
+def _advise_on_escalation(state, message_id: int, hint: str) -> str | None:
+    """None when no chore's escalation message has this id, so the reply is
+    ordinary chat. Only the one allowed chat gets here, so the id is enough."""
+    with connect(state.settings.database_url, autocommit=True) as conn:
+        row = conn.execute(_ESCALATED_BY_MESSAGE, (message_id,)).fetchone()
+        if row is None:
+            return None
+        run_id = str(row[0])
+        try:
+            advise(conn, run_id, hint, "telegram", state.mercury.repos)
+        except AdviceRefused as refused:
+            return str(refused)
+    logger.info("advised run %s from a Telegram reply", run_id, extra={"run_id": run_id})
+    return f"Rerunning {run_id[:8]} from main with your hint."
+
+
+async def _advise_from_reply(request: Request, message_id: int, hint: str) -> str | None:
+    return await run_in_threadpool(_advise_on_escalation, request.app.state, message_id, hint)
 
 
 def _log_wait(message: dict, what: str) -> None:

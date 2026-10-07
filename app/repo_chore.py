@@ -71,6 +71,7 @@ CHORE_USER = "chore"
 RED = "tests still failing after 3 attempts"
 UNUSABLE = "three unusable replies"
 WEAKENED = "weakened tests"
+UNCHANGED = "no change to the repository"
 OUTAGE = "providers unavailable"
 
 SYSTEM = """You change a git repository to carry out one instruction from its owner. \
@@ -256,6 +257,7 @@ def _run(
         state["attempts"] = attempt
         # What this attempt dropped or skipped of main's tests, if it was green.
         state["weakened"] = None
+        state["unchanged"] = False
         reply = ask(prompt)
         files = (reply or {}).get("files")
         refused = _refused_paths(files)
@@ -292,7 +294,21 @@ def _run(
         if passed:
             # Green is not enough: the change may not drop or skip main's tests.
             git.run("add", "--", *sorted(written), cwd=clone)
-            problems = weakened_tests(git.run("diff", "--cached", cwd=clone))
+            staged = git.run("diff", "--cached", cwd=clone)
+            if not staged.strip():
+                # Green because nothing changed: there is nothing to commit.
+                state["unchanged"] = True
+                write("guard", {"attempt": attempt, "problems": [], "unchanged": True})
+                prompt = (
+                    f"Instruction:\n{instruction}{advice}\n\nFiles in the repository:\n"
+                    f"{listing}\n\nYour change so far:\n{current}\n\n"
+                    f"`{setup.repo.test_command}` passed, but your change leaves the repository "
+                    "as it was, so it does not carry out the instruction. "
+                    'Reply {"files": {"path": "the full new contents"}, "summary": "one line"} '
+                    "with the files that make the change."
+                )
+                continue
+            problems = weakened_tests(staged)
             if not problems:
                 break
             state["weakened"] = problems
@@ -326,6 +342,8 @@ def _run(
         diff = git.run("diff", "--cached", cwd=clone) if written else ""
         if state["weakened"]:
             output = {"reason": WEAKENED, "problems": state["weakened"]}
+        elif state["unchanged"]:
+            output = {"reason": UNCHANGED}
         elif state["unusable"] == MAX_ATTEMPTS:
             output = {"reason": UNUSABLE}
         else:

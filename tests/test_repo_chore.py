@@ -18,7 +18,15 @@ import pytest
 from app.github import GitHubClient
 from app.mercury_config import RepoConfig
 from app.model import StubModel
-from app.repo_chore import OUTAGE, RED, UNUSABLE, WEAKENED, ChoreSetup, run_repo_chore
+from app.repo_chore import (
+    OUTAGE,
+    RED,
+    UNCHANGED,
+    UNUSABLE,
+    WEAKENED,
+    ChoreSetup,
+    run_repo_chore,
+)
 from app.runs import claim_run
 from tests.github_fake import FakeGitHub
 from tests.test_fallback import _Failing
@@ -755,3 +763,33 @@ def test_a_takeover_between_the_push_and_the_pull_request_keeps_the_branch(
 
     assert result.status == "lost"
     assert f"agent/{run_id}" in remote_branches(remote)
+
+
+def unchanged() -> str:
+    """A green reply that writes calc.py back exactly as main has it."""
+    return json.dumps({"files": {"calc.py": CALC}, "summary": "x"})
+
+
+def test_a_green_attempt_that_changes_nothing_is_retried_with_feedback(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = chore_run(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), unchanged(), change(GOOD_CALC)])
+
+    result = run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert result.status == "succeeded"
+    assert "leaves the repository as it was" in model.prompts[2]
+
+
+def test_three_attempts_that_change_nothing_escalate_rather_than_error(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = chore_run(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), unchanged()])
+
+    result = run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert result.status == "escalated"
+    assert done(migrated_db, run_id)["reason"] == UNCHANGED
+    assert remote_branches(remote) == ["main"]

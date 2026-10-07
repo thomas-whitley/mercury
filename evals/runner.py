@@ -576,18 +576,41 @@ def contained(run: Callable[[], EvalRow], task_id: str, column: str, token: str 
         return EvalRow(task_id, column, None, None, "error", False, None, None, 0.0, text[-2000:])
 
 
+def _after_hint(mine: list[EvalRow]) -> str:
+    """Rows that passed first time or after their one Claude hint, or n/a
+    when the rescue pass has not run on the column."""
+    if not any(r.rescue_hint for r in mine):
+        return "n/a"
+    passed = sum(r.graded or bool(r.rescue and r.rescue.graded) for r in mine)
+    return f"{passed} of {len(mine)}"
+
+
+def _mean_pass_rate(mine: list[EvalRow]) -> str:
+    """The mean over repeats of each repeat's pass rate, first time only."""
+    repeats = sorted({r.repeat for r in mine})
+    rates = [statistics.mean(r.graded for r in mine if r.repeat == repeat) for repeat in repeats]
+    return f"{100 * statistics.mean(rates):.0f}%"
+
+
 def summarise(rows: list[EvalRow]) -> str:
+    """Every figure but Passed after one hint counts first time rows only; a
+    rescue's own tokens and seconds stay in the JSON."""
     lines = [
-        "| Column | Passed the hidden test | Opened a PR | Median tokens | Median seconds "
+        "| Column | Passed first time | Passed after one hint | Mean pass rate "
+        "| Passed at least once | Opened a PR | Median tokens | Median seconds "
         "| Cost USD | Fell back | Weakened tests | Unusable replies |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for column in sorted({row.provider for row in rows}):
         mine = [row for row in rows if row.provider == column]
         tokens = [row.tokens for row in mine if row.tokens is not None]
         seconds = [row.seconds for row in mine if row.seconds is not None]
+        tasks = {r.task for r in mine}
+        once = {r.task for r in mine if r.graded}
         lines.append(
             f"| {column} | {sum(r.graded for r in mine)} of {len(mine)} "
+            f"| {_after_hint(mine)} | {_mean_pass_rate(mine)} "
+            f"| {len(once)} of {len(tasks)} "
             f"| {sum(r.status == 'succeeded' for r in mine)} of {len(mine)} "
             f"| {f'{statistics.median(tokens):.0f}' if tokens else 'n/a'} "
             f"| {f'{statistics.median(seconds):.0f}' if seconds else 'n/a'} "
@@ -599,14 +622,15 @@ def summarise(rows: list[EvalRow]) -> str:
         )
     lines += [
         "",
-        "| Task | Column | Answered by | Status | Graded |",
-        "| --- | --- | --- | --- | --- |",
+        "| Task | Column | Repeat | Answered by | Status | Graded | After hint |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
-    for row in sorted(rows, key=lambda r: (r.task, r.provider)):
+    for row in sorted(rows, key=lambda r: (r.task, r.provider, r.repeat)):
         verdict = "pass" if row.graded else "fail"
+        after = "" if row.rescue is None else ("pass" if row.rescue.graded else "fail")
         lines.append(
-            f"| {row.task} | {row.provider} | {row.answered_by or 'n/a'} "
-            f"| {row.status} | {verdict} |"
+            f"| {row.task} | {row.provider} | {row.repeat} | {row.answered_by or 'n/a'} "
+            f"| {row.status} | {verdict} | {after} |"
         )
     return "\n".join(lines)
 

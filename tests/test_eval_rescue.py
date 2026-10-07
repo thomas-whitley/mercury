@@ -220,3 +220,14 @@ def test_rows_with_a_rescue_round_trip_through_the_json(tmp_path):
 
 def test_a_row_key_names_the_task_column_and_repeat():
     assert row_key(failed(column="local", repeat=3)) == "divide/local/3"
+
+
+def test_the_table_summarises_every_results_file_together(tmp_path):
+    first, second = tmp_path / "a.json", tmp_path / "b.json"
+    write_rows([failed(column="gemini")], first)
+    write_rows([failed(column="local")], second)
+
+    table = rescue.table([first, second])
+
+    assert "| gemini | 0 of 1 |" in table
+    assert "| local | 0 of 1 |" in table

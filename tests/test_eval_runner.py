@@ -324,14 +324,14 @@ def _row(provider: str, graded: bool, status: str = "succeeded", tokens: int | N
 def test_the_summary_counts_hidden_test_passes_per_column():
     table = summarise([_row("gemini", True), _row("gemini", False, "failed"), _row("ollama", True)])
 
-    assert "| gemini | 1 of 2 | 1 of 2 | 1000 | 30 | 0.0000 |" in table
-    assert "| ollama | 1 of 1 | 1 of 1 | 1000 | 30 | 0.0000 |" in table
+    assert "| gemini | 1 of 2 | n/a | 50% | 1 of 1 | 1 of 2 | 1000 | 30 | 0.0000 |" in table
+    assert "| ollama | 1 of 1 | n/a | 100% | 1 of 1 | 1 of 1 | 1000 | 30 | 0.0000 |" in table
 
 
 def test_the_summary_shows_no_tokens_for_a_column_that_cannot_count_them():
     table = summarise([_row("delegate:local", True, tokens=None)])
 
-    assert "| delegate:local | 1 of 1 | 1 of 1 | n/a | 30 | 0.0000 |" in table
+    assert "| delegate:local | 1 of 1 | n/a | 100% | 1 of 1 | 1 of 1 | n/a | 30 | 0.0000 |" in table
 
 
 GRADE_DIVIDE = (
@@ -720,9 +720,9 @@ def test_the_summary_counts_rows_that_fell_back_and_shows_who_answered():
     table = summarise([_row("gemini", True), fell_back, refused])
 
     assert "| Fell back |" in table
-    assert "| gemini | 2 of 3 | 2 of 3 | 1000 | 30 | 0.0000 | 1 |" in table
-    assert "| t1 | gemini | ollama | succeeded | pass |" in table
-    assert "| t2 | gemini | n/a | refused | fail |" in table
+    assert "| gemini | 2 of 3 | n/a | 67% | 2 of 3 | 2 of 3 | 1000 | 30 | 0.0000 | 1 |" in table
+    assert "| t1 | gemini | 1 | ollama | succeeded | pass |  |" in table
+    assert "| t2 | gemini | 1 | n/a | refused | fail |  |" in table
 
 
 def test_the_delegate_environment_keeps_everything_but_mercury_variables():
@@ -778,7 +778,7 @@ def test_the_summary_counts_chores_the_test_guard_escalated():
     table = summarise([weakened, red, _row("ollama", True)])
 
     assert "| Weakened tests |" in table.splitlines()[0]
-    assert "| ollama | 1 of 3 | 1 of 3 | 1000 | 30 | 0.0000 | 0 | 1 |" in table
+    assert "| ollama | 1 of 3 | n/a | 33% | 1 of 3 | 1 of 3 | 1000 | 30 | 0.0000 | 0 | 1 |" in table
 
 
 def test_the_summary_counts_unusable_replies_per_column():
@@ -835,3 +835,29 @@ def test_a_red_delegate_change_keeps_its_diff_and_test_output(tmp_path):
     assert row.status == "failed"
     assert "-    return a + b" in row.diff
     assert "FAILED" in row.test_tail
+
+
+def _repeat(task: str, graded: bool, repeat: int) -> EvalRow:
+    row = EvalRow(task, "gemini", "gemini", "id", "succeeded", graded, 1000, 30.0, 0.0)
+    row.repeat = repeat
+    return row
+
+
+def test_the_mean_pass_rate_averages_repeats_and_tasks_passed_at_least_once_are_counted():
+    rows = [_repeat("a", True, 1), _repeat("b", False, 1), _repeat("a", False, 2)]
+    rows.append(_repeat("b", False, 2))
+
+    table = summarise(rows)
+
+    assert "| gemini | 1 of 4 | n/a | 25% | 1 of 2 |" in table
+
+
+def test_a_row_its_hint_rescued_counts_after_one_hint():
+    failed = EvalRow("t1", "gemini", "gemini", "id", "escalated", False, 1000, 30.0, 0.0, "red")
+    failed.rescue_hint = "Use float division."
+    failed.rescue = EvalRow("t1", "gemini", "gemini", "id2", "succeeded", True, 50, 9.0, 0.0)
+
+    table = summarise([failed, _row("gemini", True)])
+
+    assert "| gemini | 1 of 2 | 2 of 2 | 50% | 1 of 2 | 1 of 2 | 1000 |" in table
+    assert "| t1 | gemini | 1 | gemini | escalated | fail | pass |" in table

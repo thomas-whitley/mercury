@@ -12,6 +12,10 @@ hint cannot carry the answer.
 A Claude session reads the brief and writes one hint per row into the hints
 file. Nothing else writes a hint: no paid model is called (decision 4).
 
+  python -m evals.rescue table evals/results/a.json evals/results/b.json ...
+prints one summary of every row in the files, for the README, since the
+live, compose and delegate columns each run as their own results file.
+
   python -m evals.rescue apply evals/results/<stamp>.json evals/results/<stamp>.hints.yaml
 sends each hint. A Mercury row is advised through POST /runs/{id}/advise on
 the column it failed on, and the rerun is graded on its own branch, which is
@@ -47,6 +51,7 @@ from evals.runner import (
     load_tasks,
     row_key,
     run_delegate,
+    summarise,
     write_rows,
 )
 
@@ -116,6 +121,10 @@ def brief(rows: list[EvalRow], tasks: dict[str, EvalTask]) -> tuple[str, dict[st
         lines += ["", "## Not rescued", "", "These failed for a reason no hint can fix.", ""]
         lines += [f"- {row_key(row)}: {row.status}" for row in skipped]
     return "\n".join(lines) + "\n", hints
+
+
+def table(paths: list[Path]) -> str:
+    return summarise([row for path in paths for row in load_rows(path)])
 
 
 def check_hints(rows: list[EvalRow], hints: dict[str, str]) -> None:
@@ -206,7 +215,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives a l
     apply_cmd.add_argument("results", type=Path)
     apply_cmd.add_argument("hints", type=Path)
     apply_cmd.add_argument("--timeout", type=float, default=900.0)
+    table_cmd = commands.add_parser("table", help="one summary of several results files")
+    table_cmd.add_argument("results", type=Path, nargs="+")
     args = parser.parse_args(argv)
+
+    if args.command == "table":
+        print(table(args.results))
+        return 0
 
     rows = load_rows(args.results)
     tasks = {task.id: task for task in load_tasks(HERE / "chores")}

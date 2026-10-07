@@ -95,6 +95,13 @@ def test_an_eval_chore_is_never_announced(migrated_db, fake_telegram):
     assert fake_telegram.sent() == []
 
 
+def test_a_bank_chore_is_never_announced(migrated_db, fake_telegram):
+    run_id = escalated_chore(migrated_db, RED, source="bank")
+
+    assert announce_escalation(migrated_db, client(fake_telegram), CHAT, run_id, PAGE) is None
+    assert fake_telegram.sent() == []
+
+
 def test_a_second_escalation_of_the_same_chore_is_not_announced(migrated_db, fake_telegram):
     first = escalated_chore(migrated_db, RED)
     announce_escalation(migrated_db, client(fake_telegram), CHAT, first, PAGE)

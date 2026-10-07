@@ -32,7 +32,7 @@ def test_a_run_posted_with_no_source_is_api(api, auth_headers):
     assert source_of(api, run_id) == "api"
 
 
-@pytest.mark.parametrize("source", ["api", "n8n", "scheduler"])
+@pytest.mark.parametrize("source", ["api", "n8n", "scheduler", "eval", "bank"])
 def test_a_caller_may_name_its_source(api, auth_headers, source):
     run_id = post(api, auth_headers, source=source).json()["id"]
 

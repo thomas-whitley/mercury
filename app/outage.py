@@ -42,7 +42,7 @@ _CANDIDATES = (
     + _OUTAGE
     + """AND r.finished_at < now() - %s::interval
 AND NOT EXISTS (SELECT 1 FROM runs n WHERE n.source_run_id = r.id)
-AND r.source <> 'eval'
+AND r.source NOT IN ('eval', 'bank')
 ORDER BY r.finished_at"""
 )
 _IS_OUTAGE = "SELECT count(*) FROM runs r WHERE r.id = %s AND " + _OUTAGE

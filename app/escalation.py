@@ -97,7 +97,7 @@ def announce_escalation(
     if telegram is None or chat_id is None:
         return None
     task, repo, source, reason = conn.execute(_RUN, (run_id,)).fetchone()
-    if source == "eval" or _already_announced(conn, run_id):
+    if source in ("eval", "bank") or _already_announced(conn, run_id):
         return None
     done = conn.execute(_DONE, (run_id,)).fetchone()
     output = (done[0] if done else None) or {}

@@ -75,7 +75,7 @@ _REPORT_ON = "UPDATE runs SET telegram_chat_id = %s, telegram_message_id = %s WH
 # The newest escalated chore with no rerun yet, outside the evals.
 _NEWEST_WAITING = """
 SELECT id FROM runs r
-WHERE r.type = 'repo_chore' AND r.status = 'escalated' AND r.source <> 'eval'
+WHERE r.type = 'repo_chore' AND r.status = 'escalated' AND r.source NOT IN ('eval', 'bank')
   AND NOT r.needs_claude
   AND NOT EXISTS (SELECT 1 FROM runs n WHERE n.source_run_id = r.id)
 ORDER BY r.created_at DESC LIMIT 1

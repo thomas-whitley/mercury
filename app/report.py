@@ -53,7 +53,7 @@ WHERE claimed_by IS NOT NULL AND type <> 'site_check' AND created_at >= date_tru
 _WAITING = """
 SELECT count(*) FILTER (WHERE NOT needs_claude), count(*) FILTER (WHERE needs_claude)
 FROM runs r
-WHERE r.status = 'escalated' AND r.source <> 'eval'
+WHERE r.status = 'escalated' AND r.source NOT IN ('eval', 'bank')
   AND NOT EXISTS (SELECT 1 FROM runs n WHERE n.source_run_id = r.id)
 """
 

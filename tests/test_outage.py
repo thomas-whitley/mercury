@@ -2,6 +2,7 @@
 hourly scheduler Job, at most three times in a row, per decision 17 of
 docs/build-brief-evals.md. The run after the third retry escalates."""
 
+import pytest
 from psycopg.types.json import Jsonb
 
 from app.outage import MAX_OUTAGE_RETRIES, retry_outages
@@ -99,10 +100,11 @@ def test_after_three_retries_the_fourth_outage_escalates_and_tells_the_owner(
     assert OUTAGE in message["text"]
 
 
-def test_an_eval_chore_is_never_retried(migrated_db, fake_telegram):
-    """The eval runner has already recorded the row and moved on, so a later
-    retry could open a pull request on the fixture that nobody closes."""
-    failed = outage_run(migrated_db, source="eval")
+@pytest.mark.parametrize("source", ["eval", "bank"])
+def test_a_quiet_chore_is_never_retried(migrated_db, fake_telegram, source):
+    """The eval runner and the bank script have already recorded the row and
+    moved on, so a later retry could open a pull request nobody closes."""
+    failed = outage_run(migrated_db, source=source)
 
     queued = retry_outages(migrated_db, TelegramClient("123:abc", fake_telegram.url), CHAT, PAGE)
 

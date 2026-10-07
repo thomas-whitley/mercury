@@ -6,12 +6,15 @@ Refusals are HTTPExceptions, which the routes return as they are and the
 MCP server turns into tool errors.
 """
 
+from datetime import date, timedelta
+
 from fastapi import HTTPException
 from psycopg import connect
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from app.chores import ChoreRefused, find_repo, request_chore, start_chore, starts_unasked
+from app.report import build_report
 from app.run_list import ONE_RUN, build_query, encode_cursor, serialize_run_row
 from app.run_request import RunRequest
 from app.runs import cancel_run
@@ -116,6 +119,30 @@ async def cancel(state, run_id: str) -> dict:
     await get_run(state.pool, run_id)
     cancelled = await run_in_threadpool(_cancel, state.settings.database_url, run_id)
     return {"id": run_id, "cancelled": cancelled}
+
+
+def _report(state, since: date) -> str:
+    settings = state.settings
+    with connect(settings.database_url, autocommit=True) as conn:
+        return build_report(
+            conn,
+            since,
+            daily_tokens=settings.daily_tokens_per_provider,
+            monthly_usd=settings.monthly_budget_usd,
+            max_runs_per_day=settings.max_runs_per_day,
+        )
+
+
+async def report_text(state, since: str | None) -> str:
+    """The report since an ISO date, 7 days ago by default. A date that does
+    not parse is a 422."""
+    try:
+        day = date.fromisoformat(since) if since else date.today() - timedelta(days=7)
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail="since must be a date like 2026-10-01"
+        ) from None
+    return await run_in_threadpool(_report, state, day)
 
 
 async def run_events(pool, run_id: str, after: int = 0) -> list[dict]:

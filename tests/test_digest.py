@@ -446,3 +446,19 @@ def test_the_next_day_gets_its_own_digest(start_server, migrated_db, monkeypatch
     assert second is not None and second != first
     task = migrated_db.execute("SELECT task FROM runs WHERE id = %s", (second,)).fetchone()[0]
     assert task == "2026-10-02"
+
+
+def test_the_digest_says_when_chores_wait_on_the_owner(migrated_db):
+    from tests.test_escalation import escalated_chore
+
+    facts = gather_facts(migrated_db)
+    assert (facts["escalations_waiting"], facts["needs_claude"]) == (0, 0)
+    assert "see the report" not in render_facts(facts)
+
+    escalated_chore(migrated_db, "x")
+    escalated_chore(migrated_db, "x")
+    marked = escalated_chore(migrated_db, "x")
+    migrated_db.execute("UPDATE runs SET needs_claude = true WHERE id = %s", (marked,))
+
+    text = render_facts(gather_facts(migrated_db))
+    assert "2 chores are waiting for a hint and 1 needs a Claude session; see the report." in text

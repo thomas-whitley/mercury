@@ -26,7 +26,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from app.advice import AdviceRefused, advise
-from app.run_api import create_run, get_run, list_runs, run_events
+from app.run_api import create_run, get_run, list_runs, report_text, run_events
 from app.run_list import DEFAULT_LIMIT, MAX_LIMIT
 from app.run_request import RunRequest
 from app.telegram_webhook import cancel_by_prefix, status_text
@@ -66,8 +66,10 @@ def build_mcp(app: FastAPI) -> MCPServer:
         name="mercury",
         instructions=(
             "Queue and read Mercury runs. Repo chores need approval on Telegram "
-            "unless the repo is marked auto_approve. An escalated chore takes a hint "
-            "through advise, at most twice."
+            "unless the repo is marked auto_approve. Read report for escalated chores; "
+            "for each, write a sharper hint through advise first, at most twice, and do "
+            "the chore yourself on a local clone only when it is beyond free models, "
+            "saying why in the pull request."
         ),
     )
 
@@ -100,6 +102,18 @@ def build_mcp(app: FastAPI) -> MCPServer:
         except AdviceRefused as refused:
             raise ToolError(f"422: {refused}") from None
         return {"id": new_id, "status": "pending"}
+
+    @mcp.tool(
+        name="report",
+        description="The Markdown report: escalated chores with every run, diff and test "
+        "output, chores Mercury started, and spend against the caps. since is an ISO date; "
+        "the default is 7 days ago. Read it before advising.",
+    )
+    async def report_tool(since: str | None = None) -> str:
+        try:
+            return await report_text(app.state, since)
+        except HTTPException as error:
+            raise _refused(error) from None
 
     @mcp.tool(
         name="list_runs", description="List runs newest first, with the same fields as GET /runs."

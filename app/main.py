@@ -14,7 +14,7 @@ from app.logging_setup import configure_logging
 from app.mcp_server import mount_mcp
 from app.mercury_config import MercuryConfig, load_mercury_config
 from app.migrations import apply_migrations
-from app.run_api import RunCreated, cancel, create_run, get_run, list_runs
+from app.run_api import RunCreated, cancel, create_run, get_run, list_runs, report_text
 from app.run_list import DEFAULT_LIMIT, MAX_LIMIT
 from app.run_request import RunRequest
 from app.stream import event_stream, parse_last_event_id
@@ -77,6 +77,13 @@ def create_app() -> FastAPI:
 
     app.include_router(check_claims_router)
     app.include_router(telegram_router)
+
+    @app.get("/report", include_in_schema=False)
+    async def report(request: Request, since: str | None = None) -> PlainTextResponse:
+        require_bearer_token(request)
+        return PlainTextResponse(
+            await report_text(request.app.state, since), media_type="text/markdown"
+        )
 
     @app.get("/runs")
     async def get_runs(

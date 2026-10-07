@@ -26,6 +26,7 @@ TOOLS = {
     "cancel_run",
     "status",
     "advise",
+    "report",
 }
 
 
@@ -231,3 +232,12 @@ def test_advise_on_a_chore_that_did_not_escalate_is_a_tool_error(api, migrated_d
     assert "422" in result.content[0].text
     assert "escalated" in result.content[0].text
     assert migrated_db.execute("SELECT count(*) FROM runs").fetchone() == (1,)
+
+
+def test_report_returns_the_markdown_report(api, migrated_db):
+    _escalated_on_the_portfolio_repo(migrated_db)
+
+    text = call(api, "report")
+
+    assert text.startswith("# Mercury report since ")
+    assert "## Escalations" in text

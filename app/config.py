@@ -95,6 +95,11 @@ PROVIDERS: dict[str, ProviderConfig] = {
     ),
 }
 
+# The providers on Thomas's own machine (decisions 25 and 26 of
+# docs/build-brief-evals.md): counted apart, never fallen back from, and kept
+# by an advised rerun or an outage retry.
+HOME_PROVIDERS = [name for name, provider in PROVIDERS.items() if provider.home]
+
 
 @dataclass(frozen=True)
 class Settings:

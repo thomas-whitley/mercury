@@ -15,6 +15,7 @@ from app.chat import run_chat
 from app.config import (
     DEFAULT_CHECK_CLAIM_WINDOW_SECONDS,
     DEFAULT_LEASE_SECONDS,
+    HOME_PROVIDERS,
     PROVIDERS,
     Settings,
     load_settings,
@@ -79,10 +80,6 @@ WHERE finished_at IS NULL
 ORDER BY created_at
 LIMIT 5
 """
-
-# The providers on Thomas's own machine, counted apart (decision 25 of
-# docs/build-brief-evals.md).
-HOME_PROVIDERS = [name for name, provider in PROVIDERS.items() if provider.home]
 
 # site_check makes no model call, and the checks worker claims it too, so it
 # is left out of the limit that protects the model key. A run on a home

@@ -21,6 +21,7 @@ import logging
 
 import psycopg
 
+from app.config import HOME_PROVIDERS
 from app.escalation import announce_escalation, chain_ids
 from app.repo_chore import OUTAGE
 from app.tasks import TASK_TYPES
@@ -48,7 +49,8 @@ ORDER BY r.finished_at"""
 _IS_OUTAGE = "SELECT count(*) FROM runs r WHERE r.id = %s AND " + _OUTAGE
 _RETRY = """
 INSERT INTO runs (task, type, provider, repo, status, source, source_run_id, hint, base_sha)
-SELECT task, 'repo_chore', %s, repo, 'pending', source, id, hint, base_sha
+SELECT task, 'repo_chore', CASE WHEN provider = ANY(%s) THEN provider ELSE %s END,
+       repo, 'pending', source, id, hint, base_sha
 FROM runs WHERE id = %s
 RETURNING id
 """
@@ -78,7 +80,9 @@ def retry_outages(
         with conn.transaction():
             if _outages_in_a_row(conn, run_id) <= MAX_OUTAGE_RETRIES:
                 provider = TASK_TYPES["repo_chore"].provider
-                retry = str(conn.execute(_RETRY, (provider, run_id)).fetchone()[0])
+                # A chore on a home provider is retried there (decision 26).
+                row = conn.execute(_RETRY, (HOME_PROVIDERS, provider, run_id)).fetchone()
+                retry = str(row[0])
                 queued.append(retry)
                 logger.info("retrying %s after an outage as %s", run_id, retry)
                 continue

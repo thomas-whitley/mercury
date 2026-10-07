@@ -890,3 +890,21 @@ def test_a_base_that_is_not_in_the_repo_ends_the_chore_in_error(
     assert result.status == "error"
     assert "git checkout failed" in done(migrated_db, run_id)["reason"]
     assert TOKEN not in json.dumps(done(migrated_db, run_id))
+
+
+def test_a_nul_byte_in_a_reply_is_recorded_without_it_and_the_chore_carries_on(
+    migrated_db, remote, github, tmp_path
+):
+    """Postgres text cannot hold NUL, and recording a call must never end a chore."""
+    run_id = chore_run(migrated_db)
+    replies = [pick("calc.py") + "\x00", change(GOOD_CALC)]
+
+    result = run_repo_chore(
+        migrated_db, run_id, StubModel(replies=replies), setup(tmp_path, github), worker_id=WORKER
+    )
+
+    assert result.status == "succeeded"
+    first = migrated_db.execute(
+        "SELECT reply FROM model_calls WHERE run_id = %s ORDER BY id LIMIT 1", (run_id,)
+    ).fetchone()[0]
+    assert first == pick("calc.py")

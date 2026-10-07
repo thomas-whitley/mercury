@@ -41,3 +41,17 @@ def test_an_advised_rerun_starts_from_the_same_base(migrated_db):
 
     base = migrated_db.execute("SELECT base_sha FROM runs WHERE id = %s", (new_id,)).fetchone()
     assert base == (SHA,)
+
+
+def test_an_advised_rerun_of_a_local_chore_stays_on_local(migrated_db):
+    """A rescue measured on gemini would say nothing about the local model
+    (decisions 26 and 37)."""
+    run_id = migrated_db.execute(
+        "INSERT INTO runs (task, type, repo, status, provider) "
+        "VALUES ('x', 'repo_chore', 'owner/fixture', 'escalated', 'local') RETURNING id::text"
+    ).fetchone()[0]
+
+    new_id = advise(migrated_db, run_id, "try the other file", "mcp", REPOS)
+
+    provider = migrated_db.execute("SELECT provider FROM runs WHERE id = %s", (new_id,)).fetchone()
+    assert provider == ("local",)

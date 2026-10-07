@@ -172,10 +172,20 @@ def run_repo_chore(
         reply = _complete_with_retry(model, SYSTEM, prompt, retry_attempts, retry_backoff_seconds)
         state["tokens"] += reply.tokens
         state["last_tokens"] = reply.tokens
-        conn.execute(
-            _RECORD_CALL,
-            (state["seq"] + 1, SYSTEM, prompt, reply.text, reply.tokens, run_id),
-        )
+        try:
+            # Postgres text cannot hold NUL, which a repo file or a reply can.
+            conn.execute(
+                _RECORD_CALL,
+                (
+                    state["seq"] + 1, SYSTEM, prompt.replace("\x00", ""),
+                    reply.text.replace("\x00", ""), reply.tokens, run_id,
+                ),
+            )  # fmt: skip
+        except psycopg.Error as error:
+            # Recording a call never ends a chore.
+            logger.warning(
+                "repo chore %s: model call not recorded: %s", run_id, error, extra=fields
+            )
         return _parse(reply.text)
 
     def was_cancelled() -> bool:

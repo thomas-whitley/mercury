@@ -17,6 +17,7 @@ ended in error, so it is not counted.
 import psycopg
 
 from app.chores import ChoreRefused, find_repo
+from app.config import HOME_PROVIDERS
 from app.escalation import chain_ids
 from app.mercury_config import RepoConfig
 from app.tasks import TASK_TYPES
@@ -24,7 +25,7 @@ from app.tasks import TASK_TYPES
 MAX_ADVISED = 2
 MAX_HINT_CHARS = 2000
 
-_RUN = "SELECT type, status, task, repo, base_sha FROM runs WHERE id = %s"
+_RUN = "SELECT type, status, task, repo, base_sha, provider FROM runs WHERE id = %s"
 _NEWER = "SELECT count(*) FROM runs WHERE source_run_id = %s"
 _ADVISED = """
 SELECT count(*) FROM runs r JOIN runs prior ON prior.id = r.source_run_id
@@ -61,7 +62,7 @@ def advise(
     row = conn.execute(_RUN, (run_id,)).fetchone()
     if row is None:
         raise AdviceRefused(f"No run {run_id}.")
-    type_, status, task, repo_name, base_sha = row
+    type_, status, task, repo_name, base_sha, provider = row
     if type_ != "repo_chore":
         raise AdviceRefused("Only a repo chore takes advice.")
     if status != "escalated":
@@ -76,9 +77,13 @@ def advise(
         repo = find_repo(repos, repo_name)
     except ChoreRefused as refused:
         raise AdviceRefused(str(refused)) from None
+    # A chore on a home provider stays there, so a rescue measures that model
+    # (decision 26 of docs/build-brief-evals.md); any other starts on the
+    # type's first rung.
+    if provider not in HOME_PROVIDERS:
+        provider = TASK_TYPES["repo_chore"].provider
     new_id = conn.execute(
-        _CREATE,
-        (task, TASK_TYPES["repo_chore"].provider, repo.name, source, run_id, hint, base_sha),
+        _CREATE, (task, provider, repo.name, source, run_id, hint, base_sha)
     ).fetchone()[0]
     return str(new_id)
 

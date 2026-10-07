@@ -19,8 +19,12 @@ from app.escalation import chain_root
 MAX_DIFF_CHARS = 6000
 MAX_OUTPUT_CHARS = 2000
 
+# Eval and bank chores are left out: their own runners read them (decisions
+# 18 and 27 of docs/build-brief-evals.md).
 _ESCALATED_SINCE = """
-SELECT id FROM runs WHERE status = 'escalated' AND created_at >= %s ORDER BY created_at DESC
+SELECT id FROM runs
+WHERE status = 'escalated' AND source NOT IN ('eval', 'bank') AND created_at >= %s
+ORDER BY created_at DESC
 """
 _CHAIN_FORWARD = """
 WITH RECURSIVE chain(id, depth) AS (

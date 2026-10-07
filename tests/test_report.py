@@ -143,3 +143,12 @@ def test_get_report_needs_the_token_and_returns_markdown(reporting_api, auth_hea
 def test_get_report_refuses_a_bad_date(reporting_api, auth_headers):
     response = httpx2.get(f"{reporting_api}/report?since=yesterday", headers=auth_headers)
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize("source", ["eval", "bank"])
+def test_a_quiet_chore_is_left_out_of_the_escalations(migrated_db, source):
+    """A bank batch on a 7B model escalates most of its chores; listing each
+    one would bury the escalations Thomas has to act on (decisions 18, 27)."""
+    run_id = escalated_chore(migrated_db, "tests still failing after 3 attempts", source=source)
+
+    assert run_id[:8] not in report(migrated_db)

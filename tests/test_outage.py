@@ -130,3 +130,12 @@ def test_a_retry_that_follows_an_escalation_counts_from_zero(migrated_db):
         newest = outage_run(migrated_db, source_run_id=newest, hint="a hint")
 
     assert len(retry_outages(migrated_db, None, None, PAGE)) == 1
+
+
+def test_an_outage_retry_of_a_local_chore_stays_on_local(migrated_db):
+    failed = outage_run(migrated_db)
+    migrated_db.execute("UPDATE runs SET provider = 'local' WHERE id = %s", (failed,))
+
+    retry_outages(migrated_db, None, None, PAGE)
+
+    assert [row[5] for row in retries_of(migrated_db, failed)] == ["local"]

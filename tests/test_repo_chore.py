@@ -638,3 +638,71 @@ def test_three_attempts_that_drop_a_test_escalate_as_weakened_and_push_nothing(
     assert output["problems"] == ["test_calc.py: removed test_add"]
     assert remote_branches(remote) == ["main"]
     assert github.pulls == []
+
+
+def test_an_advised_rerun_starts_from_main_with_the_hint_and_the_failed_attempt(
+    migrated_db, remote, github, tmp_path
+):
+    failed = chore_run(migrated_db)
+    red = StubModel(replies=[pick("calc.py"), change(BAD_CALC)])
+    run_repo_chore(migrated_db, failed, red, setup(tmp_path, github), worker_id=WORKER)
+    advised = str(
+        migrated_db.execute(
+            "INSERT INTO runs (task, type, repo, source_run_id, hint) "
+            "VALUES ('Add subtract to calc.py', 'repo_chore', %s, %s, %s) RETURNING id",
+            (REPO, failed, "subtract must return a - b, not a + b"),
+        ).fetchone()[0]
+    )
+    assert claim_run(migrated_db, advised, WORKER)
+    model = StubModel(replies=[pick("calc.py"), change(GOOD_CALC)])
+
+    result = run_repo_chore(migrated_db, advised, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert result.status == "succeeded"
+    assert kinds(migrated_db, advised)[:3] == ["clone", "read", "edit"]
+    edit_prompt = model.prompts[1]
+    assert "The owner's hint: subtract must return a - b, not a + b" in edit_prompt
+    assert "+    return a + b" in edit_prompt  # the failed diff
+    assert "assert 8 == 2" in edit_prompt  # its test output
+    assert "(tests still failing after 3 attempts)" in edit_prompt
+
+
+def test_a_second_advised_rerun_that_escalates_is_marked_for_a_claude_session(
+    migrated_db, clean_db, remote, github, fake_telegram, tmp_path, monkeypatch
+):
+    from app.worker import process_run
+
+    tmp_path.joinpath(".db-url").write_text(clean_db)
+    settings = worker_settings(tmp_path, github, monkeypatch)
+    newest = chore_run(migrated_db)
+    migrated_db.execute(
+        "UPDATE runs SET status = 'escalated', finished_at = now() WHERE id = %s", (newest,)
+    )
+    for hint in ("first hint", "second hint"):
+        newest = str(
+            migrated_db.execute(
+                "INSERT INTO runs (task, type, repo, source_run_id, hint, status, finished_at) "
+                "VALUES ('Add subtract to calc.py', 'repo_chore', %s, %s, %s, 'escalated', now()) "
+                "RETURNING id",
+                (REPO, newest, hint),
+            ).fetchone()[0]
+        )
+    # The second advised rerun is the one the worker runs now.
+    migrated_db.execute(
+        "UPDATE runs SET status = 'pending', finished_at = NULL WHERE id = %s", (newest,)
+    )
+    assert claim_run(migrated_db, newest, settings.worker_id)
+    model = StubModel(replies=[pick("calc.py"), change(BAD_CALC)])
+
+    process_run(
+        migrated_db,
+        newest,
+        settings,
+        model_builder=lambda settings, provider: model,
+        repos=(RepoConfig(name=REPO, test_command=TEST_COMMAND),),
+    )
+
+    row = migrated_db.execute(
+        "SELECT status, needs_claude FROM runs WHERE id = %s", (newest,)
+    ).fetchone()
+    assert row == ("escalated", True)

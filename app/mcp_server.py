@@ -19,10 +19,13 @@ from fastapi import FastAPI, HTTPException
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from psycopg import connect
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from app.advice import AdviceRefused, advise
 from app.run_api import create_run, get_run, list_runs, run_events
 from app.run_list import DEFAULT_LIMIT, MAX_LIMIT
 from app.run_request import RunRequest
@@ -39,6 +42,17 @@ type's default. \
 Returns the run id and its status."""
 
 
+ADVISE = """Rerun an escalated repo chore from main with a hint, without asking for \
+Approve. run_id is the escalated run (the newest of its chore). The hint says what the \
+model got wrong and what to do instead, in a few sentences. A chore takes at most two \
+advised reruns; after that, do it in a Claude session. Returns the new run's id."""
+
+
+def _advise(state, run_id: str, hint: str) -> str:
+    with connect(state.settings.database_url, autocommit=True) as conn:
+        return advise(conn, run_id, hint, "mcp", state.mercury.repos)
+
+
 def _refused(error: HTTPException) -> ToolError:
     """A refusal the HTTP route would answer with this status, as a tool
     error whose text reaches the client. Any other exception's text stays on
@@ -52,7 +66,8 @@ def build_mcp(app: FastAPI) -> MCPServer:
         name="mercury",
         instructions=(
             "Queue and read Mercury runs. Repo chores need approval on Telegram "
-            "unless the repo is marked auto_approve."
+            "unless the repo is marked auto_approve. An escalated chore takes a hint "
+            "through advise, at most twice."
         ),
     )
 
@@ -77,6 +92,14 @@ def build_mcp(app: FastAPI) -> MCPServer:
         except HTTPException as error:
             raise _refused(error) from None
         return created.model_dump()
+
+    @mcp.tool(name="advise", description=ADVISE)
+    async def advise_tool(run_id: str, hint: str) -> dict[str, Any]:
+        try:
+            new_id = await run_in_threadpool(_advise, app.state, run_id, hint)
+        except AdviceRefused as refused:
+            raise ToolError(f"422: {refused}") from None
+        return {"id": new_id, "status": "pending"}
 
     @mcp.tool(
         name="list_runs", description="List runs newest first, with the same fields as GET /runs."

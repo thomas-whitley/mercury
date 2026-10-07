@@ -9,6 +9,7 @@ from typing import Any
 import psycopg
 from opentelemetry import trace
 
+from app.advice import mark_if_needs_claude
 from app.budget import BudgetTrip, check_budget
 from app.chat import run_chat
 from app.config import (
@@ -367,6 +368,7 @@ def _run_chore(
         on_step=lambda: _step_landed(conn, run_id, settings.worker_id, telegram),
     )
     if result.status == "escalated":
+        mark_if_needs_claude(conn, run_id)
         announce_escalation(conn, telegram, owner_chat_id, run_id, settings.api_base_url)
     return result
 

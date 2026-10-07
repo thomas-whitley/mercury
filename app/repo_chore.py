@@ -109,16 +109,27 @@ def run_repo_chore(
     retry_attempts: int = DEFAULT_MODEL_RETRY_ATTEMPTS,
     retry_backoff_seconds: float = DEFAULT_MODEL_RETRY_BACKOFF_SECONDS,
 ) -> LoopResult:
-    instruction, tokens_used, source_run_id = conn.execute(
-        "SELECT task, tokens_used, source_run_id FROM runs WHERE id = %s", (run_id,)
+    instruction, tokens_used, source_run_id, hint = conn.execute(
+        "SELECT task, tokens_used, source_run_id, hint FROM runs WHERE id = %s", (run_id,)
     ).fetchone()
-    # Open it anyway: the diff of the failed run this one was created from.
+    # A run made from an earlier one is one of three things. With a hint it is
+    # an advised rerun (app/advice.py); from a run that ended in error it is an
+    # outage retry (app/outage.py), which carries any hint on. Both run from
+    # main with that context. Otherwise it is Open it anyway, which reapplies
+    # the earlier run's diff.
     source = None
+    advice = ""
     if source_run_id is not None:
-        row = conn.execute(
-            "SELECT output FROM steps WHERE run_id = %s AND kind = 'done'", (source_run_id,)
+        status, output = conn.execute(
+            "SELECT r.status, s.output FROM runs r "
+            "LEFT JOIN steps s ON s.run_id = r.id AND s.kind = 'done' WHERE r.id = %s",
+            (source_run_id,),
         ).fetchone()
-        source = (str(source_run_id), (row[0] or {}).get("diff", "") if row else "")
+        output = output or {}
+        if hint is not None or status == "error":
+            advice = _advice_block(hint, output)
+        else:
+            source = (str(source_run_id), output.get("diff", ""))
     # A takeover continues the step numbering rather than colliding with it.
     seq = conn.execute(
         "SELECT coalesce(max(seq), 0) FROM steps WHERE run_id = %s", (run_id,)
@@ -160,7 +171,9 @@ def run_repo_chore(
         with keepalive:
             if source is not None:
                 return _open_anyway(setup, run_id, instruction, workdir, write, close, source)
-            return _run(setup, run_id, instruction, workdir, write, close, ask, state, token_budget)
+            return _run(
+                setup, run_id, instruction, workdir, write, close, ask, state, token_budget, advice
+            )
     except LostLease:
         logger.warning("repo chore %s: lease lost, stopping", run_id, extra=fields)
         return LoopResult(status="lost", attempts=state["attempts"], tokens_used=state["tokens"])
@@ -175,7 +188,22 @@ def run_repo_chore(
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def _run(setup, run_id, instruction, workdir, write, close, ask, state, token_budget):
+def _advice_block(hint: str | None, output: dict) -> str:
+    """What an advised rerun or an outage retry adds after the instruction:
+    the owner's hint, and the failed attempt it follows, when there is one."""
+    block = f"\n\nThe owner's hint: {hint}" if hint else ""
+    diff, test_output = output.get("diff") or "", output.get("test_output") or ""
+    if diff.strip():
+        block += (
+            f"\n\nAn earlier attempt at this chore failed ({output.get('reason', 'escalated')}). "
+            f"Its diff, which is not applied:\n{diff[:MAX_DIFF_CHARS]}"
+        )
+        if test_output.strip():
+            block += f"\n\nIts test output ended:\n{test_output}"
+    return block
+
+
+def _run(setup, run_id, instruction, workdir, write, close, ask, state, token_budget, advice=""):
     git = _Git(workdir, setup)
     branch = f"agent/{run_id}"
     url = f"{setup.clone_base.rstrip('/')}/{setup.repo.name}.git"
@@ -196,7 +224,7 @@ def _run(setup, run_id, instruction, workdir, write, close, ask, state, token_bu
     if len(tree) > MAX_TREE_ENTRIES:
         listing += f"\n... and {len(tree) - MAX_TREE_ENTRIES} more"
     wanted = ask(
-        f"Instruction:\n{instruction}\n\nFiles in the repository:\n{listing}\n\n"
+        f"Instruction:\n{instruction}{advice}\n\nFiles in the repository:\n{listing}\n\n"
         f'Reply {{"read": ["path", ...]}} naming up to {MAX_FILES_READ} files you need to see.'
     )
     paths = [p for p in (wanted or {}).get("read") or [] if isinstance(p, str)]
@@ -207,7 +235,7 @@ def _run(setup, run_id, instruction, workdir, write, close, ask, state, token_bu
 
     files_block = "\n\n".join(f"=== {path} ===\n{body}" for path, body in shown.items())
     prompt = (
-        f"Instruction:\n{instruction}\n\nFiles in the repository:\n{listing}\n\n"
+        f"Instruction:\n{instruction}{advice}\n\nFiles in the repository:\n{listing}\n\n"
         f"Contents:\n{files_block or '(none)'}\n\n"
         'Reply {"files": {"path": "the full new contents"}, "summary": "one line"}, '
         "including only files you change or create."
@@ -266,7 +294,7 @@ def _run(setup, run_id, instruction, workdir, write, close, ask, state, token_bu
                 if path in written
             )
             prompt = (
-                f"Instruction:\n{instruction}\n\nFiles in the repository:\n{listing}\n\n"
+                f"Instruction:\n{instruction}{advice}\n\nFiles in the repository:\n{listing}\n\n"
                 f"Your change so far:\n{current}\n\n"
                 f"`{setup.repo.test_command}` passed, but your change removes or skips tests "
                 "the repository already has:\n" + "\n".join(problems) + "\n\n"
@@ -277,7 +305,7 @@ def _run(setup, run_id, instruction, workdir, write, close, ask, state, token_bu
             )
             continue
         prompt = (
-            f"Instruction:\n{instruction}\n\nFiles in the repository:\n{listing}\n\n"
+            f"Instruction:\n{instruction}{advice}\n\nFiles in the repository:\n{listing}\n\n"
             f"Your change so far:\n{current}\n\n"
             f"`{setup.repo.test_command}` failed. Its output ended:\n{test_output}\n\n"
             'Reply {"files": {"path": "the full new contents"}, "summary": "one line"} '

@@ -18,7 +18,15 @@ CHAT = 42
 TOKEN = "test-bearer-token"
 REPO = "thomas-whitley/mercury-fixture"
 TEST_FILE = "from solution import add\n\ndef test_add():\n    assert add(2, 3) == 5\n"
-TOOLS = {"create_run", "list_runs", "get_run", "get_run_events", "cancel_run", "status"}
+TOOLS = {
+    "create_run",
+    "list_runs",
+    "get_run",
+    "get_run_events",
+    "cancel_run",
+    "status",
+    "advise",
+}
 
 
 @pytest.fixture
@@ -73,7 +81,7 @@ def call(base_url: str, name: str, **arguments) -> Any:
     return session(base_url, calls)
 
 
-def test_the_tools_are_the_six_and_none_of_them_approves(api):
+def test_the_tools_are_listed_and_none_of_them_approves(api):
     async def calls(mcp):
         return (await mcp.list_tools()).tools
 
@@ -188,3 +196,38 @@ def test_create_run_refuses_a_paid_provider_and_says_only_free_ones_are_named(ap
     [create] = [tool for tool in tools if tool.name == "create_run"]
     assert "free" in create.description
     assert migrated_db.execute("SELECT count(*) FROM runs").fetchone() == (0,)
+
+
+def _escalated_on_the_portfolio_repo(conn) -> str:
+    from tests.test_escalation import escalated_chore
+
+    run_id = escalated_chore(conn, "tests still failing after 3 attempts")
+    conn.execute("UPDATE runs SET repo = %s WHERE id = %s", (REPO, run_id))
+    return run_id
+
+
+def test_advise_queues_a_rerun_of_an_escalated_chore(api, migrated_db):
+    failed = _escalated_on_the_portfolio_repo(migrated_db)
+
+    created = call(api, "advise", run_id=failed, hint="Use float division.")
+
+    assert created["status"] == "pending"
+    row = migrated_db.execute(
+        "SELECT source, hint, source_run_id::text FROM runs WHERE id = %s", (created["id"],)
+    ).fetchone()
+    assert row == ("mcp", "Use float division.", failed)
+
+
+def test_advise_on_a_chore_that_did_not_escalate_is_a_tool_error(api, migrated_db):
+    failed = _escalated_on_the_portfolio_repo(migrated_db)
+    migrated_db.execute("UPDATE runs SET status = 'succeeded' WHERE id = %s", (failed,))
+
+    async def calls(mcp):
+        return await mcp.call_tool("advise", {"run_id": failed, "hint": "a hint"})
+
+    result = session(api, calls)
+
+    assert result.is_error
+    assert "422" in result.content[0].text
+    assert "escalated" in result.content[0].text
+    assert migrated_db.execute("SELECT count(*) FROM runs").fetchone() == (1,)

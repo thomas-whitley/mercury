@@ -1,6 +1,6 @@
 # Build brief: Mercury as a cheap task runner, with evals and an escalation ladder
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement Phase 1 task by task (Thomas chose native execution, then one review of the whole branch). Steps use checkbox (`- [ ]`) syntax for tracking. Phase 2 was turned into Tasks 8 to 18 on 2026-10-07 and is done and live at `f453720` the same day. Phases 3, 4 and 5 are still specs, not tasks: each one is turned into tasks in its own session, after the phase before it has landed, except that Phase 5's part 5a comes before Phase 3. Part 5a was turned into Tasks 19 to 27 on 2026-10-07 and built the same day (live at `7ec6995`); by decision 46 the local rung runs in local compose, not live. Phase 3 is next.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement Phase 1 task by task (Thomas chose native execution, then one review of the whole branch). Steps use checkbox (`- [ ]`) syntax for tracking. Phase 2 was turned into Tasks 8 to 18 on 2026-10-07 and is done and live at `f453720` the same day. Phases 3, 4 and 5 are still specs, not tasks: each one is turned into tasks in its own session, after the phase before it has landed, except that Phase 5's part 5a comes before Phase 3. Part 5a was turned into Tasks 19 to 27 on 2026-10-07 and built the same day (live at `7ec6995`); by decision 46 the local rung runs in local compose, not live. Phase 3 was turned into Tasks 28 to 35 on 2026-10-07 (decisions 47 to 52) and is next to build.
 
 **Goal:** Mercury completes well defined chores on free models, proves how often it gets them right with tests the model never saw, and escalates what it cannot fix to Thomas and then to a Claude session.
 
@@ -2949,6 +2949,319 @@ where `_advise` opens a connection on `settings.database_url` and passes `app.st
 - Three repeats on a later day, reporting the mean pass rate and how many tasks passed at least once.
 - A `local-base` column for the untuned home model, through the `local` rung that Phase 5's part 5a builds first (decisions 21 to 23), run in the local compose stack (decision 46, `local/README.md`). It is the before figure for Phase 5. Its first single run was 2 of 11.
 - README: a section `## Evals` saying what a task is, that the grade test never reaches the model, that a result which drops `main`'s tests fails, how a run is graded, and the command to rerun it, with the column table pasted under it. A claims row `A free model completes well defined chores, graded by tests it never saw`, with the measured numbers whatever they are.
+
+### Phase 3 decisions (2026-10-07)
+
+Settled with Thomas on 2026-10-07, late evening, while detailing Phase 3 on Opus; do not re-ask them.
+
+47. **A chore that opened a pull request but failed the hidden grade can be advised, when it is an eval chore.** `advise` accepts a `succeeded` run whose source is `eval`, as well as any `escalated` run. Three of the 9 `local` failures and most of Phase 1's were of this kind, and refusing them would leave the rescue figure measuring only escalations. A succeeded chore now records its diff in its `done` step, so the rerun starts from `main` with the hint and that diff, as an escalated one does. No other source gains this.
+48. **An advised rerun of a quiet chore stays quiet and can stay on its column.** The rerun of an `eval` or `bank` chore keeps that source, so its escalation never reaches Telegram or the report. `POST /runs/{id}/advise` takes an optional free `provider`, so the eval reruns a chore on the column it failed on rather than on the type's first rung, which would measure gemini for every column.
+49. **The hint writer sees what an owner sees.** For each failed row the Claude session gets the instruction, the last diff, the tail of the repo's own test output and the reason it stopped. A row that opened a pull request says only that a check outside the repo's tests found it wrong. The grade test and its output never reach the hint writer, so a hint cannot carry the answer. One hint per row, at most 2,000 characters (`MAX_HINT_CHARS`).
+50. **Every column gets the rescue pass.** gemini, ollama and `local` through `advise`; `delegate:local` and `delegate:local-gpt` by rerunning `delegate.ps1` on a fresh clone with the same advice block appended to the instruction, since `advise` has no counterpart there.
+51. **`local-base` is a plain row in the README table,** labelled an untuned 7B model run in local compose, with no wording about improvement or fine tuning (decision 43).
+52. **The compose stack keeps using the real fixture.** It already does, and the runner closes every pull request and deletes every branch it causes. The column is still called `local` in the runner, since columns are provider names; the README labels it `local-base`.
+
+### Phase 3, as tasks
+
+Detailed into tasks on 2026-10-07, on Opus. Execute with superpowers:executing-plans and superpowers:test-driven-development, one task per commit, the full suite, `ruff check` and `ruff format --check` green before each commit (`.superpowers/t.sh`, `.superpowers/lint.sh`). Tasks 28 to 32 are code. Task 33 deploys. Task 34 is the measurement, on the desktop, and needs a Claude session on Opus for the hints. Task 35 writes the README and hands over.
+
+**Phase 3 Global Constraints.** Everything under Global Constraints above still applies. In addition:
+
+- A chore whose source is not `eval` or `bank` takes exactly the path it takes today, through `advise` and everywhere else.
+- No hint is written by anything but the Claude session (decision 4: no paid model, so no API call writes one). The runner only carries hints from a file.
+- The rescue brief never contains a grade test or any text from grading it (decision 49).
+- Every eval PR and branch, first run and rerun, is closed and deleted by the runner.
+
+**Phase 3 Review Focus.**
+
+- A succeeded chore that is not an eval chore (an `api` or `mcp` chore whose PR Thomas has not merged) must still be refused by `advise`. Test in Task 29.
+- An advised rerun of an eval chore that escalates must send nothing to Telegram. Before this phase its source became `mcp`, which would have announced it. Test in Task 29.
+- A rescue rerun whose PR is opened must be graded on its own branch, `agent/<new id>`, and that branch closed, not the first run's. Test in Task 31.
+- A row that ended `timeout`, `error` or `refused` failed for a reason no hint can fix; it is listed as not rescued, not briefed. Test in Task 31.
+- A hints file with a blank hint, a missing row, or a key no row has must not stop the pass; blank and missing rows are reported as not rescued, and an unknown key is an error naming it before any rerun is queued. Test in Task 31.
+
+---
+
+### Task 28: A home provider is for repo chores only
+
+The deferred minor from 5a: `RunRequest` accepts `provider: local` on a pytest, chat or digest run, where JSON mode breaks them.
+
+**Files:**
+- Modify: `app/run_request.py` (`only_a_model_run_names_a_provider`)
+- Test: `tests/test_run_source.py` or the file that already tests `RunRequest`'s provider rules (`grep -ln "takes no provider" tests/`)
+
+- [ ] **Step 1: Write the failing test.**
+
+```python
+@pytest.mark.parametrize("type_", ["pytest", "chat", "digest"])
+def test_a_home_provider_is_refused_on_anything_but_a_repo_chore(type_):
+    with pytest.raises(ValidationError, match="repo chore"):
+        RunRequest(type=type_, inputs={"task": "x"}, provider="local")
+
+
+def test_a_home_provider_is_accepted_on_a_repo_chore():
+    run = RunRequest(type="repo_chore", inputs={"task": "x", "repo": "o/r"}, provider="local")
+    assert run.provider == "local"
+```
+
+Skip any of the three types `TASK_TYPES` does not have, or that has no provider (it already gets "takes no provider").
+
+- [ ] **Step 2: Run it and see it fail.**
+
+- [ ] **Step 3: Implement.** In `only_a_model_run_names_a_provider`, after the existing check:
+
+```python
+        # A home provider answers in JSON mode (decision 23), which only a
+        # chore's reply format survives.
+        if self.provider in HOME_PROVIDERS and self.type != "repo_chore":
+            raise ValueError(f"{self.provider!r} runs only a repo chore")
+```
+
+importing `HOME_PROVIDERS` from `app.config`.
+
+- [ ] **Step 4: Full suite, lint, commit** `Refuse a home provider on anything but a repo chore`.
+
+### Task 29: `advise` takes an eval chore that opened a wrong pull request, and keeps it quiet
+
+**Files:**
+- Modify: `app/repo_chore.py` (the green path of `_run`, `_open_pull`, `_advice_block`), `app/advice.py`
+- Test: `tests/test_advice.py`, `tests/test_repo_chore.py`, `tests/test_escalation.py`
+
+**Interfaces:**
+- Produces: `advise(conn, run_id, hint, source, repos, provider: str | None = None) -> str`. A succeeded chore's `done` output is `{"status": "succeeded", "pr_url": ..., "diff": ...}`.
+
+- [ ] **Step 1: Write the failing tests** in `tests/test_advice.py`:
+
+```python
+def test_an_eval_chore_that_opened_a_pull_request_can_be_advised(migrated_db):
+    run_id = escalated_chore(migrated_db, "x")
+    migrated_db.execute(
+        "UPDATE runs SET status = 'succeeded', source = 'eval' WHERE id = %s", (run_id,)
+    )
+
+    new_id = advise(migrated_db, run_id, "Name it divide.", "api", REPOS)
+
+    assert run_row(migrated_db, new_id)["source_run_id"] == run_id
+
+
+def test_a_succeeded_chore_that_is_not_an_eval_chore_is_still_refused(migrated_db):
+    run_id = escalated_chore(migrated_db, "x")
+    migrated_db.execute("UPDATE runs SET status = 'succeeded' WHERE id = %s", (run_id,))
+
+    with pytest.raises(AdviceRefused, match="escalated"):
+        advise(migrated_db, run_id, "a hint", "mcp", REPOS)
+
+
+@pytest.mark.parametrize("quiet", ["eval", "bank"])
+def test_the_rerun_of_a_quiet_chore_keeps_its_source(migrated_db, quiet):
+    run_id = escalated_chore(migrated_db, "x")
+    migrated_db.execute("UPDATE runs SET source = %s WHERE id = %s", (quiet, run_id))
+
+    new_id = advise(migrated_db, run_id, "a hint", "mcp", REPOS)
+
+    assert run_row(migrated_db, new_id)["source"] == quiet
+
+
+def test_a_named_provider_runs_the_rerun(migrated_db):
+    run_id = escalated_chore(migrated_db, "x")
+
+    new_id = advise(migrated_db, run_id, "a hint", "api", REPOS, provider="ollama")
+
+    assert run_row(migrated_db, new_id)["provider"] == "ollama"
+
+
+def test_a_rerun_of_a_succeeded_eval_chore_counts_as_advice(migrated_db):
+    run_id = escalated_chore(migrated_db, "x")
+    migrated_db.execute(
+        "UPDATE runs SET status = 'succeeded', source = 'eval' WHERE id = %s", (run_id,)
+    )
+    new_id = advise(migrated_db, run_id, "a hint", "api", REPOS)
+
+    assert advised_count(migrated_db, new_id) == 1
+```
+
+Change the parametrize of `test_advice_on_a_chore_that_did_not_escalate_is_refused` only if it now fails for `succeeded`: it uses the default source, which is not `eval`, so it should still pass unchanged. In `tests/test_repo_chore.py`, next to the existing green chore test, assert the `done` step's output has `"diff"` containing the written file's path. And an `_advice_block` test:
+
+```python
+def test_advice_after_a_wrong_pull_request_says_so_and_shows_its_diff():
+    block = _advice_block("Name it divide.", {"status": "succeeded", "diff": "+def div"})
+
+    assert "opened a pull request" in block
+    assert "+def div" in block
+    assert "test output" not in block
+```
+
+In `tests/test_escalation.py`, assert that announcing the escalation of a rerun whose source is `eval` sends nothing (reuse the existing quiet source test with a run that has `source_run_id` and a hint).
+
+- [ ] **Step 2: Run them and see them fail.**
+
+- [ ] **Step 3: Record the diff on success.** In `_run`'s green path, after `git.run("add", ...)` and before the commit, take `diff = git.run("diff", "--cached", cwd=clone)` and pass it on: `return _open_pull(setup, run_id, instruction, branch, base, write, close, diff=diff)`. `_open_pull` gains `diff: str = ""` and closes with `close("succeeded", {"pr_url": url, "diff": diff[:MAX_DIFF_CHARS]})`. Open it anyway and a resumed chore pass nothing, so they record an empty diff.
+
+- [ ] **Step 4: Say what went wrong in the advice block.** In `_advice_block`, when `output.get("status") == "succeeded"`, the sentence before the diff is `An earlier attempt at this chore passed the repository's tests and opened a pull request, but a check outside those tests found it wrong. Its diff, which is not applied:` and no test output follows. Otherwise it is unchanged.
+
+- [ ] **Step 5: Widen `advise`.** In `app/advice.py`:
+
+```python
+# Sources whose chores tell nobody (app/escalation.py). Their advised reruns
+# keep the source, so the rerun is as quiet as the chore it follows.
+QUIET_SOURCES = ("eval", "bank")
+# A chore that opened a pull request is done unless its source grades it
+# against a test it never saw (decision 47 of docs/build-brief-evals.md).
+_GRADED_ELSEWHERE = ("eval",)
+```
+
+`_RUN` also selects `source`. The status check becomes: refused unless `status == "escalated"` or (`status == "succeeded"` and the source is in `_GRADED_ELSEWHERE`), with the same message. The rerun's source is the run's own when it is in `QUIET_SOURCES`, else the `source` argument. A `provider` argument, when given, is the rerun's provider; otherwise the existing home provider rule applies. `_ADVISED` counts `prior.status IN ('escalated', 'succeeded')`, still requiring `r.hint IS NOT NULL`. Update the module docstring: an advised rerun follows an escalated chore, or an eval chore whose pull request failed its grade. If `app/escalation.py` has its own `("eval", "bank")` tuple, import `QUIET_SOURCES` there instead; leave the SQL literals in `app/outage.py`, `app/report.py` and `app/telegram_webhook.py` as they are.
+
+- [ ] **Step 6: Full suite, lint, commit** `Advise an eval chore whose pull request failed its grade, keep a quiet chore's rerun quiet, and let the caller name its provider`.
+
+### Task 30: `POST /runs/{id}/advise`
+
+The runner talks HTTP, and `advise` is reached today only from MCP and Telegram.
+
+**Files:**
+- Modify: `app/main.py`, `app/run_api.py`
+- Test: `tests/test_advice.py` (route tests use the same client fixture as the cancel route's tests; `grep -n "cancel" tests/test_runs.py` to find it)
+
+**Interfaces:**
+- Produces: `POST /runs/{run_id}/advise` with body `{"hint": str, "provider": str | None}`, behind the bearer token. 201 `{"id": <new id>, "status": "pending"}`. 422 with the refusal's text for an `AdviceRefused`, a provider that is unknown or not free, or a blank hint. 401 without the bearer.
+
+- [ ] **Step 1: Write the failing tests:** an escalated chore advised over the route returns 201 and a pending run with the hint; no bearer is 401 and creates nothing; a run that is `running` is 422 with `escalated` in the detail; `provider: "nope"` is 422; the rerun's source is `api` for an `api` chore and `eval` for an eval chore.
+
+- [ ] **Step 2: Run them and see them fail.**
+
+- [ ] **Step 3: Implement.** In `app/run_api.py`:
+
+```python
+class AdviceRequest(BaseModel):
+    hint: str
+    # A free provider for the rerun. The eval names the column the chore
+    # failed on (decision 48); leave it out for the usual rung.
+    provider: str | None = None
+
+    @field_validator("provider")
+    @classmethod
+    def provider_must_be_free(cls, value: str | None) -> str | None:
+        return RunRequest.provider_must_be_registered(value)
+
+
+def _advise(state, run_id: str, advice: AdviceRequest) -> RunCreated:
+    with connect(state.settings.database_url, autocommit=True) as conn:
+        try:
+            new_id = advise(
+                conn, run_id, advice.hint, "api", state.mercury.repos, advice.provider
+            )
+        except AdviceRefused as refused:
+            raise HTTPException(status_code=422, detail=str(refused)) from None
+    return RunCreated(id=new_id, status="pending")
+
+
+async def advise_run(state, run_id: str, advice: AdviceRequest) -> RunCreated:
+    return await run_in_threadpool(_advise, state, run_id, advice)
+```
+
+If calling the pydantic classmethod directly does not work, move the body of `provider_must_be_registered` into a module function in `app/run_request.py` and call it from both. In `app/main.py`, beside cancel:
+
+```python
+    @app.post("/runs/{run_id}/advise", status_code=201, response_model=RunCreated)
+    async def advise_one_run(
+        run_id: uuid.UUID, advice: AdviceRequest, request: Request
+    ) -> RunCreated:
+        require_bearer_token(request)
+        return await advise_run(request.app.state, str(run_id), advice)
+```
+
+- [ ] **Step 4: Full suite, lint, commit** `Advise a chore over POST /runs/{id}/advise`.
+
+### Task 31: The rescue pass
+
+**Files:**
+- Modify: `evals/runner.py` (`EvalRow`, `run_one` split into `post_chore` and `follow`, `run_delegate`, `main`)
+- Create: `evals/rescue.py`
+- Test: `tests/test_eval_runner.py`, `tests/test_eval_rescue.py`
+
+**Interfaces:**
+- Consumes: `POST /runs/{id}/advise` (Task 30); the `done` event's `output.diff` and `output.test_output`, as `GET /runs/{id}/events` returns them (`[{"id", "kind", "seq", "output"}, ...]`).
+- Produces: `EvalRow` gains, after `unusable`, `repeat: int = 1`, `diff: str = ""`, `test_tail: str = ""`, `rescue_hint: str | None = None`, `rescue: "EvalRow | None" = None` (stored in the JSON as a nested dict; `load_rows(path) -> list[EvalRow]` rebuilds it). `row_key(row) -> str` is `f"{row.task}/{row.provider}/{row.repeat}"`. `RESCUABLE = {"succeeded", "escalated", "failed"}`. `follow(api, github, task, column, run_id, clone_base, token, *, timeout_seconds, poll_seconds, sleep, clock) -> EvalRow` polls, grades, cleans up and returns the row, as `run_one` does today after its POST. `run_delegate(task, model, clone_url, *, instruction: str | None = None, ...)` runs `instruction or task.instruction`.
+
+**Evidence for the hint writer.** `follow` fetches `GET /runs/{id}/events` once the run is final and takes the `done` event's `diff` and `test_output` into `row.diff` (at most 6,000 characters) and `row.test_tail` (the last 2,000). A delegate row takes `git add -A` then `git diff --cached` in its checkout before grading, and the repo test output on a red result. Neither field ever takes text from `grade_dir` or `grade_branch`; those go to `detail`, as now.
+
+**`evals/rescue.py`**, three commands:
+
+1. `python -m evals.rescue brief evals/results/<stamp>.json` writes `<stamp>.rescue.md` and `<stamp>.hints.yaml` beside it. The brief has one section per row that is not graded and whose status is in `RESCUABLE`, headed by `row_key`, with the instruction, the reason (`detail` for an escalated row, `tests still failing` for a failed delegate row, and `It opened a pull request; a check outside the repo's tests found it wrong.` for a succeeded one), the diff in a fenced block, and the test tail. It never prints `detail` for a succeeded row, because there it is grading output. The hints file maps each briefed key to an empty string. Rows that failed but are not rescuable are listed at the end with their status, as not rescued.
+2. The Claude session reads the brief and fills the hints file. Each hint says what the model got wrong and what to do instead, in a few sentences, without guessing at a hidden test.
+3. `python -m evals.rescue apply evals/results/<stamp>.json evals/results/<stamp>.hints.yaml [--timeout 900]` checks the hints file first: a key that matches no briefed row is an error naming it, before any rerun. Then, for each non blank hint: a Mercury row is advised with `POST /runs/{run_id}/advise` `{"hint": hint, "provider": row.provider}` and followed with `follow` on the new id; a delegate row runs `run_delegate` with `instruction = task.instruction + advice_block(hint, {"status": "escalated", "reason": row.detail, "diff": row.diff, "test_output": row.test_tail})`, where `advice_block` is `app.repo_chore._advice_block` renamed public (update its callers). The rerun's row goes into `row.rescue` with `row.rescue_hint = hint`. A 422 from advise is recorded as a rescue row with status `refused` and the detail. The JSON is rewritten in place and the Markdown summary regenerated (Task 32). The same `EvalAborted` rules apply: a refused run stops the pass, keeping what is done.
+
+`apply` reads `MERCURY_URL`, `MERCURY_BEARER_TOKEN` and `MERCURY_GITHUB_TOKEN` as the runner does. Run it against the same Mercury that ran the rows: live for gemini and ollama, compose for `local`, either for delegate rows.
+
+- [ ] **Step 1: Write the failing tests.** In `tests/test_eval_rescue.py`, with fake `api` and `github` objects built the way `tests/test_eval_runner.py` builds them:
+  - the brief of a succeeded, ungraded row contains its diff and the PR sentence, and not its `detail` (seed `detail` with `grade_hidden` text and assert `"grade_hidden" not in brief`);
+  - the brief lists a `timeout` row and an `error` row as not rescued, and the hints file has no key for them;
+  - `apply` with a hint for a gemini row posts to `/runs/<id>/advise` with `provider: "gemini"`, follows the new id, grades `agent/<new id>`, and closes that branch (assert on the fake GitHub's deleted refs);
+  - `apply` with an unknown key raises before any POST;
+  - a blank hint posts nothing and leaves `rescue` as `None`;
+  - a delegate row's rerun gets an instruction that starts with the task's and contains the hint and the earlier diff (pass a fake `delegate` callable and capture its instruction);
+  - `load_rows` round trips a row with a nested rescue.
+  In `tests/test_eval_runner.py`: an escalated Mercury row carries the `done` event's diff and test tail, and a row from a green chore carries the diff and never the grade output.
+
+- [ ] **Step 2: Run them and see them fail.**
+
+- [ ] **Step 3: Implement** the `EvalRow` fields, `follow`, the evidence capture, `load_rows`, `row_key`, and `evals/rescue.py`. `main` in the runner sets `repeat` on each row from its loop. Keep `run_one`'s signature, implemented as the POST then `follow`, so the existing tests pass unchanged.
+
+- [ ] **Step 4: Full suite, lint, commit** `Add the eval's rescue pass: a brief of each failure for a Claude session, and its hints sent through advise or delegate.ps1 and graded`.
+
+### Task 32: The summary reports first time, after one hint, and repeats
+
+**Files:**
+- Modify: `evals/runner.py` (`summarise`), `evals/rescue.py` (a `table` command)
+- Test: `tests/test_eval_runner.py`
+
+**Interfaces:**
+- Produces: the column table's header is `| Column | Passed first time | Passed after one hint | Mean pass rate | Passed at least once | Opened a PR | Median tokens | Median seconds | Cost USD | Fell back | Weakened tests | Unusable replies |`. `python -m evals.rescue table a.json b.json ...` prints the summary of all their rows together, for the README.
+
+**The figures, per column:**
+- Passed first time: `graded` rows of `n` rows, as `Passed the hidden test` was.
+- Passed after one hint: rows graded first time plus rows whose `rescue` is graded, of `n`; `n/a` when no row of the column has a `rescue_hint`.
+- Mean pass rate: the mean over repeats of (graded rows in that repeat / rows in that repeat), as a percentage with no decimals; first time only.
+- Passed at least once: distinct tasks with at least one graded row (first time), of distinct tasks.
+- Cost, tokens, seconds, fell back, weakened and unusable count first time rows only; the rescue's own tokens are left out of the table and kept in the JSON.
+
+The per task table gains a `Repeat` column and a `After hint` column (`pass`, `fail`, or blank when not rescued).
+
+- [ ] **Step 1: Write the failing tests:** two repeats of two tasks where one task passes in repeat 1 only gives `Mean pass rate` 25% (half of repeat 1, none of repeat 2) and `Passed at least once` `1 of 2`; a failed row with a graded rescue makes `Passed after one hint` one more than first time; a column with no hints shows `n/a`. Update the existing summary tests' expected header and line endings to the new columns.
+
+- [ ] **Step 2: Run them and see them fail.**
+
+- [ ] **Step 3: Implement.**
+
+- [ ] **Step 4: Full suite, lint, commit** `Report each column's first time and after one hint figures, its mean pass rate and the tasks it passed at least once`.
+
+### Task 33: Deploy
+
+- [ ] **Step 1:** Push `main`, wait for CI and Publish (`gh run list -c <full sha>`), then run the `mercury-config` script that bumps `PUBLIC_SHA` with `--yes`, and watch its Deploy. Check `/health` is 200.
+- [ ] **Step 2: Smoke the route live.** Queue one eval chore with the runner, `--columns ollama --only divide`, and confirm its row. Then advise a chore that cannot succeed: post a chore with `source: eval` on the fixture whose instruction contradicts its own tests (as in Task 18), wait for `escalated`, call `POST /runs/<id>/advise` with a hint and `provider: ollama`, and check the rerun is `eval`, on ollama, and sends nothing to Telegram. Close any PR and branch it leaves.
+- [ ] **Step 3:** Rebuild the compose stack on the desktop so `local` gets the same code: `docker compose -f docker-compose.yml -f local/compose.local.yml up -d --build db api proxy worker`.
+
+### Task 34: The measurement
+
+On the Windows desktop, on one day, after Task 33. The runner needs `PYTHONUTF8=1` and the repo `.env` sourced (never print it); its output is buffered until it ends.
+
+- [ ] **Step 1: The cap.** 3 repeats of 11 chores on gemini and ollama is 66 live runs, and the rescues add up to one per failure; at 40 a day the batch would stop part way. Set the `mercury-config` Actions variable `MAX_RUNS_PER_DAY` to 100 and rerun its Deploy (if the classifier blocks it, hand Thomas `! gh variable set MAX_RUNS_PER_DAY --body 100 -R thomas-whitley/mercury-config`). It goes back to 40 in Step 6.
+- [ ] **Step 2: Three runs of three repeats.** Each is its own results file:
+  - live: `MERCURY_URL=<live> uv run python -m evals.runner --columns gemini,ollama --repeats 3`
+  - compose: `MERCURY_URL=http://localhost:8001 uv run python -m evals.runner --columns local --repeats 3`
+  - desktop: `uv run python -m evals.runner --columns delegate:local,delegate:local-gpt --repeats 3`
+  Run them one after another, not at once: the compose and delegate columns share the GPU.
+- [ ] **Step 3: Briefs.** `python -m evals.rescue brief <file>.json` for each. Read each brief in this session (Opus) and write one hint per briefed row into its hints file, following decision 49: from the instruction, the diff and the test output only.
+- [ ] **Step 4: Apply.** `python -m evals.rescue apply` for each file, against the same Mercury that ran it (live, compose, and either for delegate).
+- [ ] **Step 5: The table.** `python -m evals.rescue table <the three json files>` gives the combined table. Commit the results, briefs and hints: `Measure Phase 3: <column> <first> then <after hint> of 33, ...`.
+- [ ] **Step 6:** Set `MAX_RUNS_PER_DAY` back to 40 and rerun the Deploy. List the fixture's open PRs and branches (`gh pr list -R thomas-whitley/mercury-fixture`, `gh api repos/thomas-whitley/mercury-fixture/branches`) and confirm only `main` is left.
+
+### Task 35: The README, the claims row, and the handoff
+
+- [ ] **Step 1: `## Evals` in the README,** before `## When a chore escalates`, in the README's own voice: what a task is (a YAML file with a repo, an instruction naming every file and function, and a grade test); that the grade test never reaches the model; that a result which drops one of `main`'s tests, or skips one, fails; how a row is graded (keeps main's test ids, passes its own tests, passes the grade test); the rescue pass (one hint per failure from a Claude session, which sees the diff and test output but never the grade); the commands to rerun it (`evals.runner`, `evals.rescue brief`, `apply`, `table`); then the combined table from Task 34, pasted. The `local` row is labelled an untuned 7B model (`qwen2.5-coder:7b`) on an RTX 4060, run in local compose (decision 51). Write no sentence about the numbers that the table does not show.
+- [ ] **Step 2: The claims row:** `| A free model completes well defined chores, graded by tests it never saw | evals/runner.py, evals/rescue.py, tests/test_eval_runner.py, tests/test_eval_rescue.py, and the table under Evals | gemini <a> of 33 first time, <b> after one hint; ollama ... |` with the measured numbers whatever they are.
+- [ ] **Step 3: Docs.** `docs/mercury.md` gains `POST /runs/{id}/advise` and decisions 47 to 48. Check every changed line against the writing rules.
+- [ ] **Step 4: Hand over.** A dated section at the top of `docs/handoff.md`: the live `PUBLIC_SHA`, the table, what the rescues showed per column, and that 5b (the bank) is next. Mark Phase 3 done in this brief's header. Rewrite `NEXT.md`. Commit `Hand over Phase 3: the eval with one Claude hint per failure, and the README's evals section`.
 
 ## Phase 4 spec: findings become chores
 

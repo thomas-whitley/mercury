@@ -5,8 +5,9 @@ every step's input and output, and every event's output, so a reconnect a month
 later still replays each step's seq and kind and the done event's status, the
 same shape a caller with no token sees (app/stream.py without_body). A
 site_check keeps everything, because its step 1 is the summary the digest
-compares week over week. A run older than runs_days goes, steps and events
-with it.
+compares week over week. A chore's model calls go at the same age, except
+a bank run's, which are Phase 5's training data. A run older than runs_days
+goes, steps, events and model calls with it.
 
 Both statements only touch rows that still have something to remove, so a
 second pass in the same hour finds nothing.
@@ -63,6 +64,16 @@ WITH doomed AS (
 DELETE FROM runs WHERE id IN (SELECT id FROM doomed)
 """
 
+# A chore's model calls go when its bodies do, except a bank run's, which are
+# Phase 5's training data (decision 28 of docs/build-brief-evals.md). A bank
+# run's calls go with the run itself after a year, by the cascade.
+_DROP_CALLS = """
+DELETE FROM model_calls c USING runs r
+WHERE c.run_id = r.id
+  AND r.source <> 'bank'
+  AND r.finished_at < now() - make_interval(days => %s)
+"""
+
 
 @dataclass(frozen=True)
 class CleanupResult:
@@ -80,6 +91,7 @@ def run_cleanup(
         if stripped:
             conn.execute(_STRIP_STEPS, (stripped,))
             conn.execute(_STRIP_EVENTS, (stripped,))
+        conn.execute(_DROP_CALLS, (event_bodies_days,))
         deleted = conn.execute(_DELETE_RUNS, (runs_days,)).rowcount
 
     result = CleanupResult(runs_stripped=len(stripped), runs_deleted=deleted)

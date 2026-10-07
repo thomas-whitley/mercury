@@ -142,3 +142,29 @@ def test_the_windows_come_from_the_arguments(migrated_db):
     run_cleanup(migrated_db, event_bodies_days=7, runs_days=365)
 
     assert _payloads(migrated_db, run_id)[0] == {"seq": 1, "kind": "act"}
+
+
+def _chore_with_a_call(conn, source: str, *, age_days: int) -> str:
+    run_id = conn.execute(
+        "INSERT INTO runs (task, type, source) VALUES ('x', 'repo_chore', %s) RETURNING id::text",
+        (source,),
+    ).fetchone()[0]
+    conn.execute(
+        "INSERT INTO model_calls (run_id, seq, provider, system, prompt, reply, tokens) "
+        "VALUES (%s, 2, 'local', 's', 'p', 'r', 10)",
+        (run_id,),
+    )
+    finish_run(conn, run_id, "succeeded", 10)
+    _age(conn, run_id, age_days)
+    return run_id
+
+
+def test_model_calls_go_with_the_bodies_except_a_bank_runs(migrated_db):
+    _chore_with_a_call(migrated_db, "api", age_days=31)
+    bank = _chore_with_a_call(migrated_db, "bank", age_days=31)
+    fresh = _chore_with_a_call(migrated_db, "api", age_days=1)
+
+    run_cleanup(migrated_db)
+
+    left = {row[0] for row in migrated_db.execute("SELECT run_id::text FROM model_calls")}
+    assert left == {bank, fresh}

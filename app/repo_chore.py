@@ -74,6 +74,13 @@ WEAKENED = "weakened tests"
 UNCHANGED = "no change to the repository"
 OUTAGE = "providers unavailable"
 
+# The rung that answered is the run's provider by now: a fallback rewrites it
+# before the retry that reaches the next rung (app/worker.py _with_fallback).
+_RECORD_CALL = """
+INSERT INTO model_calls (run_id, seq, provider, system, prompt, reply, tokens)
+SELECT id, %s, provider, %s, %s, %s, %s FROM runs WHERE id = %s
+"""
+
 SYSTEM = """You change a git repository to carry out one instruction from its owner. \
 Answer with a single JSON object and nothing else."""
 
@@ -164,6 +171,10 @@ def run_repo_chore(
         reply = _complete_with_retry(model, SYSTEM, prompt, retry_attempts, retry_backoff_seconds)
         state["tokens"] += reply.tokens
         state["last_tokens"] = reply.tokens
+        conn.execute(
+            _RECORD_CALL,
+            (state["seq"] + 1, SYSTEM, prompt, reply.text, reply.tokens, run_id),
+        )
         return _parse(reply.text)
 
     def was_cancelled() -> bool:

@@ -21,6 +21,7 @@ from app.model import StubModel
 from app.repo_chore import (
     OUTAGE,
     RED,
+    SYSTEM,
     UNCHANGED,
     UNUSABLE,
     WEAKENED,
@@ -820,3 +821,28 @@ def test_the_worker_announces_an_escalation_for_a_run_id_it_claimed_as_a_uuid(
 
     [message] = fake_telegram.sent()
     assert f"escalated ({run_id[:8]})" in message["text"]
+
+
+def test_every_model_call_is_recorded_with_its_prompt_and_reply(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = chore_run(migrated_db)
+    migrated_db.execute("UPDATE runs SET provider = 'local' WHERE id = %s", (run_id,))
+    replies = [pick("calc.py"), change(GOOD_CALC)]
+
+    run_repo_chore(
+        migrated_db, run_id, StubModel(replies=replies), setup(tmp_path, github), worker_id=WORKER
+    )
+
+    rows = migrated_db.execute(
+        "SELECT seq, provider, system, prompt, reply, tokens FROM model_calls "
+        "WHERE run_id = %s ORDER BY id",
+        (run_id,),
+    ).fetchall()
+    assert [row[0] for row in rows] == [2, 3]  # the read step, then the first edit
+    assert {row[1] for row in rows} == {"local"}
+    assert {row[2] for row in rows} == {SYSTEM}
+    assert "Instruction:\nAdd subtract to calc.py" in rows[0][3]
+    assert "=== calc.py ===" in rows[1][3]
+    assert [row[4] for row in rows] == replies
+    assert [row[5] for row in rows] == [100, 100]

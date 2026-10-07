@@ -579,8 +579,9 @@ The private repo now has secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
 token is a new one, generated on 2026-09-23 straight into the secret and into the
 local `.env` on the Windows machine (gitignored), where the checks worker will read
 it. This repo's `MERCURY_BEARER_TOKEN`, `MODEL_API_KEY` and `AZURE_*` secrets are
-now unused and stale. `DATABASE_URL` and `DEPLOY_ENABLED` are still read by
-`keepalive.yml`.
+now unused and stale. `DATABASE_URL` and `DEPLOY_ENABLED` were read only by
+`keepalive.yml`, removed on 2026-10-07 because the hourly scheduler Job already
+keeps Supabase awake.
 
 What went wrong on the way, so it is not repeated:
 

@@ -1,0 +1,5 @@
+# Mercury's local rung before any training (decision 20 of
+# docs/build-brief-evals.md). Ollama's default context window would cut a
+# chore prompt short without an error, so it is set here.
+FROM qwen2.5-coder:7b
+PARAMETER num_ctx 16384

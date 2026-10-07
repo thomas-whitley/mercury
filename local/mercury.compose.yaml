@@ -1,0 +1,33 @@
+# Mercury's config for measuring the home model through the local compose
+# stack (Task 25 of docs/build-brief-evals.md). No secret lives here; the
+# GitHub token and the bearer come from the environment.
+
+telegram:
+  chat_id: 0            # no bot in compose; the fixture is auto_approve, so nothing asks
+  timezone: Australia/Melbourne
+
+tasks:
+  pytest:
+    ladder: [gemini, ollama]
+    budget_tokens: 50000
+  chat:
+    ladder: [ollama, gemini]
+    budget_tokens: 20000
+  repo_chore:
+    ladder: [gemini, ollama]
+    budget_tokens: 50000
+  digest:
+    ladder: [gemini, ollama]
+    budget_tokens: 20000
+
+portfolio:
+  repos:
+    - name: thomas-whitley/mercury-fixture
+      test_command: python -m unittest -v
+      auto_approve: true
+  sites: []
+  pages: []
+
+retention:
+  event_bodies_days: 30
+  runs_days: 365

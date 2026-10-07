@@ -1,0 +1,35 @@
+# Measures the home model through Mercury's own chore path (Task 25 of
+# docs/build-brief-evals.md), layered over docker-compose.yml so CI's compose
+# job is unchanged:
+#
+#   docker compose -f docker-compose.yml -f local/compose.local.yml up -d --build db api proxy worker
+#   MERCURY_URL=http://localhost:8001 uv run python -m evals.runner --columns local
+#
+# The worker reaches Ollama on this machine through the host gateway. Ollama
+# ignores the bearer, but the provider needs one set.
+services:
+  # 8001, so this stack can run beside another on 8000 (WSL's own Docker
+  # engine keeps one there on this machine).
+  proxy:
+    ports: !override
+      - "8001:8000"
+
+  api:
+    environment:
+      MERCURY_CONFIG_PATH: /config/mercury.yaml
+    volumes:
+      - ./local/mercury.compose.yaml:/config/mercury.yaml:ro
+
+  worker:
+    environment:
+      MODEL: ${MODEL:-gemini-3.5-flash-lite}
+      MERCURY_CONFIG_PATH: /config/mercury.yaml
+      MERCURY_GITHUB_TOKEN: ${MERCURY_GITHUB_TOKEN:-}
+      LOCAL_MODEL_URL: ${LOCAL_MODEL_URL:-http://host.docker.internal:11434/v1}
+      LOCAL_MODEL_TOKEN: ${LOCAL_MODEL_TOKEN:-unused-by-ollama-but-the-provider-needs-one}
+      LOCAL_MODEL: ${LOCAL_MODEL:-mercury-local:base}
+      MAX_LOCAL_RUNS_PER_DAY: ${MAX_LOCAL_RUNS_PER_DAY:-200}
+    volumes:
+      - ./local/mercury.compose.yaml:/config/mercury.yaml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

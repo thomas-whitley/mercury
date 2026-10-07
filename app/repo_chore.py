@@ -261,7 +261,7 @@ def _run(setup, run_id, instruction, workdir, write, close, ask, state, token_bu
             write("guard", {"attempt": attempt, "problems": problems})
             # The model has overwritten these files, so show it the repository's own.
             originals = "\n\n".join(
-                f"=== {path} ===\n{git.run('show', f'HEAD:{path}', cwd=clone)}"
+                f"=== {path} ===\n{git.run('show', f'HEAD:{path}', cwd=clone)[:MAX_FILE_CHARS]}"
                 for path in sorted({problem.split(": ", 1)[0] for problem in problems})
                 if path in written
             )

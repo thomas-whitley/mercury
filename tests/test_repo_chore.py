@@ -793,3 +793,30 @@ def test_three_attempts_that_change_nothing_escalate_rather_than_error(
     assert result.status == "escalated"
     assert done(migrated_db, run_id)["reason"] == UNCHANGED
     assert remote_branches(remote) == ["main"]
+
+
+def test_the_worker_announces_an_escalation_for_a_run_id_it_claimed_as_a_uuid(
+    migrated_db, clean_db, remote, github, fake_telegram, tmp_path, monkeypatch
+):
+    """claim_next_run hands process_run the id as the database returns it, a
+    UUID. The live worker crashed on run_id[:8] with exactly that on 2026-10-07."""
+    from app.worker import process_run
+
+    tmp_path.joinpath(".db-url").write_text(clean_db)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    monkeypatch.setenv("TELEGRAM_API_URL", fake_telegram.url)
+    settings = worker_settings(tmp_path, github, monkeypatch)
+    run_id = chore_run(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), change(BAD_CALC)])
+
+    process_run(
+        migrated_db,
+        uuid.UUID(run_id),
+        settings,
+        model_builder=lambda settings, provider: model,
+        owner_chat_id=CHAT,
+        repos=(RepoConfig(name=REPO, test_command=TEST_COMMAND),),
+    )
+
+    [message] = fake_telegram.sent()
+    assert f"escalated ({run_id[:8]})" in message["text"]

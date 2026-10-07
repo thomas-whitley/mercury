@@ -207,6 +207,9 @@ def process_run(
     instead of leaving it claimed and running with no way to close its
     stream.
     """
+    # claim_next_run returns the id as the database does, a UUID. Everything
+    # below formats it (run_id[:8] in every message), so it is a str from here.
+    run_id = str(run_id)
     task_type_name = _run_type(conn, run_id)
     telegram = telegram_client(settings)
     try:

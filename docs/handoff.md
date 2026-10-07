@@ -1,4 +1,51 @@
-# Handoff: eval Phase 2 live, the escalation ladder (2026-10-07)
+# Handoff: Phase 5 part 5a built, the home model measured at 2 of 11 (2026-10-07)
+
+## Phase 5 part 5a, Tasks 19 to 27 of `docs/build-brief-evals.md` (2026-10-07, evening)
+
+Live is `7ec6995` (`mercury-config` pins it). Phase 5 was settled the same evening in
+five rounds of questions (decisions 20 to 46 in the brief), detailed into Tasks 19 to
+27, and built on Opus in one session, native execution, with one fresh reviewer on
+Opus over the whole branch. Its three Important findings were fixed behind tests that
+failed first (`7ec6995`); five minors are deferred, listed below.
+
+What is new on the live deploy: `source: bank`, as quiet as `eval` everywhere (no
+Telegram, no outage retry, not in the report's escalations, not matched by a reply);
+the `local` provider (`PROVIDERS["local"]`: address and tag from `LOCAL_MODEL_URL` and
+`LOCAL_MODEL`, JSON mode, a 120 second timeout, 8,192 output tokens), which is refused
+live because no `LOCAL_MODEL_URL` is set; a run on a home provider gets its own daily
+cap (`MAX_LOCAL_RUNS_PER_DAY`, 200), no daily token cap and no fallback, and an
+advised rerun or outage retry keeps it on that provider; the `model_calls` table
+(migration 015), every prompt and raw reply of every chore, with a bank run's calls
+kept past the 30 day cleanup; `inputs.base` on a `repo_chore` (a full sha, migration
+016), kept through advice and outage retries; `unusable_replies` on every run in
+`GET /runs`, and an Unusable replies column in the eval summary.
+
+Decision 46: the local rung runs only in the local compose stack on the desktop, not
+live. Thomas chose not to give the desktop a public address. `local/README.md` says how
+to run it; the Funnel and Caddy files are parked in `local/parked/`; Tailscale inside
+the worker is the route if the live deploy ever needs the GPU. The
+`LOCAL_MODEL_TOKEN` secret in `mercury-config` is set but unused.
+
+The first measurement (`evals/results/2026-10-07T1019Z`, through Mercury in compose,
+`mercury-local:base` = `qwen2.5-coder:7b` with a 16K context, 5.75 GB of VRAM, 100% on
+the GPU): 2 of 11, 0 unusable replies. Six chores stayed red after three attempts, one
+weakened the repo's tests, and three opened a pull request whose hidden grade could
+not import the name the instruction asked for. Gemini is 11 and `qwen3-coder:30b` 10.
+The gate in decision 21 (at least 2) was met at the boundary, so `qwen3:8b` was not
+tried.
+
+On this desktop, WSL's own Docker engine holds port 8000 with an older stack whose api
+is down, so `local/compose.local.yml` moves the proxy to 8001. Tests run against WSL's
+database on 5432 as before.
+
+Next: Phase 3, with a `local-base` column run in compose, detailed into tasks in its
+own session on Opus. Then 5b, the bank mined from real commits. Deferred minors from
+the review: `model_calls` rows can duplicate after a takeover (the 5b export should
+take the newest row per run and seq, or add a worker id); a hung, not stopped, Ollama
+holds a run about 24 minutes (pass `max_retries=0` for home providers); `RunRequest`
+accepts `provider=local` for pytest, chat and digest, where JSON mode fails them; the
+report's runs today line counts local runs against `max_runs_per_day`; Open it anyway
+ignores `base_sha`.
 
 ## Phase 2, Tasks 8 to 18 of `docs/build-brief-evals.md` (2026-10-07)
 

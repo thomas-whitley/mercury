@@ -79,7 +79,8 @@ def escalation_text(
         "",
         f"{page_base_url.rstrip('/')}/#/runs/{run_id}",
         "",
-        "Reply to this message with a hint and I will rerun it from main with your hint.",
+        "Reply to this message with a hint and I will rerun it from main with your hint. "
+        "Or send /hint followed by the hint.",
     ]
     return "\n".join(lines)
 

@@ -296,3 +296,39 @@ def test_a_reply_from_another_chat_is_ignored(advising_bot, fake_telegram, migra
 
     assert fake_telegram.sent() == []
     assert migrated_db.execute("SELECT count(*) FROM runs").fetchone() == (1,)
+
+
+def test_slash_hint_advises_the_newest_chore_waiting_for_one(
+    advising_bot, fake_telegram, migrated_db
+):
+    older = announced_chore(migrated_db, 70)
+    migrated_db.execute(
+        "UPDATE runs SET created_at = now() - interval '1 hour' WHERE id = %s", (older,)
+    )
+    newest = announced_chore(migrated_db, 77)
+
+    post(advising_bot, update("/hint Use float division."))
+
+    row = migrated_db.execute(
+        "SELECT source, hint FROM runs WHERE source_run_id = %s", (newest,)
+    ).fetchone()
+    assert row == ("telegram", "Use float division.")
+    assert replies(fake_telegram) == [f"Rerunning {newest[:8]} from main with your hint."]
+    assert migrated_db.execute(
+        "SELECT count(*) FROM runs WHERE source_run_id = %s", (older,)
+    ).fetchone() == (0,)
+
+
+def test_slash_hint_with_nothing_waiting_says_so(advising_bot, fake_telegram, migrated_db):
+    post(advising_bot, update("/hint Use float division."))
+
+    assert replies(fake_telegram) == ["No chore is waiting for a hint."]
+
+
+def test_slash_hint_with_no_text_says_how(advising_bot, fake_telegram, migrated_db):
+    announced_chore(migrated_db, 77)
+
+    post(advising_bot, update("/hint"))
+
+    assert replies(fake_telegram) == ["Usage: /hint <what to do differently>"]
+    assert migrated_db.execute("SELECT count(*) FROM runs").fetchone() == (1,)

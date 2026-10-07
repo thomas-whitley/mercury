@@ -3,7 +3,8 @@
 Telegram's secret token header is checked first and fails closed when no
 secret is configured. Then the chat id is checked against the allowlist of
 one; any other sender gets a 200 and no reply at all. A reply to a chore's
-escalation message is a hint for it (app/advice.py). /status, /runs and
+escalation message is a hint for it (app/advice.py), and so is /hint <text>,
+which goes to the newest chore waiting for one. /status, /runs and
 /cancel are answered here with no model call. Anything else becomes a chat
 run for the worker (app/chat.py).
 
@@ -71,6 +72,15 @@ ORDER BY created_at DESC LIMIT 1
 _SUSPENDED_NAMES = "SELECT name FROM schedule_state WHERE suspended ORDER BY name"
 _ESCALATED_BY_MESSAGE = "SELECT id FROM runs WHERE escalation_message_id = %s"
 _REPORT_ON = "UPDATE runs SET telegram_chat_id = %s, telegram_message_id = %s WHERE id = %s"
+# The newest escalated chore with no rerun yet, outside the evals.
+_NEWEST_WAITING = """
+SELECT id FROM runs r
+WHERE r.type = 'repo_chore' AND r.status = 'escalated' AND r.source <> 'eval'
+  AND NOT r.needs_claude
+  AND NOT EXISTS (SELECT 1 FROM runs n WHERE n.source_run_id = r.id)
+ORDER BY r.created_at DESC LIMIT 1
+"""
+HINT_USAGE = "Usage: /hint <what to do differently>"
 RESUME_USAGE = "Usage: /resume <site>"
 UPTIME_PREFIX = "site_uptime:"
 
@@ -108,14 +118,18 @@ async def telegram_webhook(request: Request) -> dict:
     if replied_to is not None:
         advised = await _advise_from_reply(request, replied_to, text)
         if advised is not None:
-            answer, new_id = advised
-            message_id = await _send(request, chat_id, answer)
-            if new_id is not None and message_id is not None:
-                # The rerun reports on this message, as a chore asked for in
-                # chat does, so the owner sees how it ends.
-                async with request.app.state.pool.connection() as conn:
-                    await conn.execute(_REPORT_ON, (chat_id, message_id, new_id))
+            await _send_advice(request, chat_id, advised)
             return {}
+    # /hint is the same without the reply: it advises the newest chore waiting.
+    command, _, argument = text.partition(" ")
+    if command.split("@", 1)[0].lower() == "/hint":
+        hint = argument.strip()
+        if not hint:
+            await _send(request, chat_id, HINT_USAGE)
+            return {}
+        state = request.app.state
+        await _send_advice(request, chat_id, await run_in_threadpool(_advise_newest, state, hint))
+        return {}
 
     if text.startswith("/"):
         reply = await _answer(request, text)
@@ -142,22 +156,43 @@ async def telegram_webhook(request: Request) -> dict:
     return {}
 
 
+def _advise_run(conn, state, run_id: str, hint: str) -> tuple[str, str | None]:
+    """The answer and the new run's id, None when advice was refused."""
+    try:
+        new_id = advise(conn, run_id, hint, "telegram", state.mercury.repos)
+    except AdviceRefused as refused:
+        return str(refused), None
+    logger.info("advised run %s from Telegram", run_id, extra={"run_id": run_id})
+    return f"Rerunning {run_id[:8]} from main with your hint.", new_id
+
+
 def _advise_on_escalation(state, message_id: int, hint: str) -> tuple[str, str | None] | None:
-    """The answer and the new run's id (None when refused), or None when no
-    chore's escalation message has this id, so the reply is ordinary chat.
-    Only the one allowed chat gets here, so the id is enough."""
+    """None when no chore's escalation message has this id, so the reply is
+    ordinary chat. Only the one allowed chat gets here, so the id is enough."""
     with connect(state.settings.database_url, autocommit=True) as conn:
         row = conn.execute(_ESCALATED_BY_MESSAGE, (message_id,)).fetchone()
         if row is None:
             logger.info("a reply to message %s matches no escalation", message_id)
             return None
-        run_id = str(row[0])
-        try:
-            new_id = advise(conn, run_id, hint, "telegram", state.mercury.repos)
-        except AdviceRefused as refused:
-            return str(refused), None
-    logger.info("advised run %s from a Telegram reply", run_id, extra={"run_id": run_id})
-    return f"Rerunning {run_id[:8]} from main with your hint.", new_id
+        return _advise_run(conn, state, str(row[0]), hint)
+
+
+def _advise_newest(state, hint: str) -> tuple[str, str | None]:
+    with connect(state.settings.database_url, autocommit=True) as conn:
+        row = conn.execute(_NEWEST_WAITING).fetchone()
+        if row is None:
+            return "No chore is waiting for a hint.", None
+        return _advise_run(conn, state, str(row[0]), hint)
+
+
+async def _send_advice(request: Request, chat_id: int, advised: tuple[str, str | None]) -> None:
+    answer, new_id = advised
+    message_id = await _send(request, chat_id, answer)
+    if new_id is not None and message_id is not None:
+        # The rerun reports on this message, as a chore asked for in chat
+        # does, so the owner sees how it ends.
+        async with request.app.state.pool.connection() as conn:
+            await conn.execute(_REPORT_ON, (chat_id, message_id, new_id))
 
 
 async def _advise_from_reply(

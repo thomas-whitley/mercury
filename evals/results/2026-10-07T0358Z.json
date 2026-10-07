@@ -1,0 +1,26 @@
+[
+  {
+    "task": "clamp",
+    "provider": "ollama",
+    "answered_by": "ollama",
+    "run_id": "1c0f4949-2851-439d-973d-a096ca905c93",
+    "status": "succeeded",
+    "graded": true,
+    "tokens": 1317,
+    "seconds": 13.880986,
+    "usd": 0.0,
+    "detail": "test_bad_range (grade_hidden.Grade.test_bad_range) ... ok\ntest_edges (grade_hidden.Grade.test_edges) ... ok\ntest_inside (grade_hidden.Grade.test_inside) ... ok\n\n----------------------------------------------------------------------\nRan 3 tests in 0.000s\n\nOK\n"
+  },
+  {
+    "task": "divide",
+    "provider": "ollama",
+    "answered_by": "ollama",
+    "run_id": "f94d3754-bcac-4cde-8418-d7ac42ef8ec4",
+    "status": "succeeded",
+    "graded": true,
+    "tokens": 4501,
+    "seconds": 20.266046,
+    "usd": 0.0,
+    "detail": "test_divides (grade_hidden.Grade.test_divides) ... ok\ntest_zero (grade_hidden.Grade.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n"
+  }
+]

@@ -62,6 +62,7 @@ def test_an_escalated_chore_sends_one_message_with_its_reason_output_and_page(
     assert "assert 8 == 2" in sent["text"]
     assert f"{PAGE}/#/runs/{run_id}" in sent["text"]
     assert "Reply to this message with a hint" in sent["text"]
+    assert "/hint" in sent["text"]
     assert "Open it anyway" in json.dumps(sent["reply_markup"])
     stored = migrated_db.execute(
         "SELECT escalation_message_id FROM runs WHERE id = %s", (run_id,)

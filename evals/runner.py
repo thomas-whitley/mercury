@@ -484,8 +484,8 @@ def contained(run: Callable[[], EvalRow], task_id: str, column: str, token: str 
 def summarise(rows: list[EvalRow]) -> str:
     lines = [
         "| Column | Passed the hidden test | Opened a PR | Median tokens | Median seconds "
-        "| Cost USD | Fell back |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| Cost USD | Fell back | Weakened tests |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for column in sorted({row.provider for row in rows}):
         mine = [row for row in rows if row.provider == column]
@@ -497,7 +497,9 @@ def summarise(rows: list[EvalRow]) -> str:
             f"| {f'{statistics.median(tokens):.0f}' if tokens else 'n/a'} "
             f"| {f'{statistics.median(seconds):.0f}' if seconds else 'n/a'} "
             f"| {sum(r.usd for r in mine):.4f} "
-            f"| {sum(r.answered_by not in (None, r.provider) for r in mine)} |"
+            f"| {sum(r.answered_by not in (None, r.provider) for r in mine)} "
+            # Chores Mercury's test guard escalated (app/test_guard.py).
+            f"| {sum(r.detail == 'weakened tests' for r in mine)} |"
         )
     lines += [
         "",

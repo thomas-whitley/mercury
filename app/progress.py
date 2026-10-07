@@ -62,6 +62,10 @@ def _step_line(seq: int, kind: str, output: dict[str, Any] | None) -> str:
         text = f"attempt {output.get('attempt')} {changed}"
     elif kind == "test":
         text = "tests passed" if output.get("passed") else "tests failed"
+    elif kind == "guard":
+        # The count only: the module keeps code and test names out of messages.
+        count = len(output.get("problems") or [])
+        text = f"attempt {output.get('attempt')} dropped or skipped {count} of main's tests"
     elif kind == "apply":
         text = f"reapplied the diff from {str(output.get('source_run'))[:8]}"
     elif kind == "push":

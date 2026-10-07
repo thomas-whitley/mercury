@@ -49,6 +49,7 @@ from app.loop import (
 from app.mercury_config import RepoConfig
 from app.model import Model
 from app.runs import finish_run, heartbeat, record_step
+from app.test_guard import weakened_tests
 
 logger = logging.getLogger("agent_runs.repo_chore")
 
@@ -215,6 +216,8 @@ def _run(setup, run_id, instruction, workdir, write, close, ask, state, token_bu
     test_output = ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         state["attempts"] = attempt
+        # What this attempt dropped or skipped of main's tests, if it was green.
+        state["weakened"] = None
         reply = ask(prompt)
         files = (reply or {}).get("files")
         refused = _refused_paths(files)
@@ -245,11 +248,34 @@ def _run(setup, run_id, instruction, workdir, write, close, ask, state, token_bu
 
         passed, exit_code, test_output = _run_tests(clone, setup, workdir)
         write("test", {"attempt": attempt, "passed": passed, "exit_code": exit_code})
-        if passed:
-            break
         current = "\n\n".join(
             f"=== {path} ===\n{(clone / path).read_text()}" for path in sorted(written)
         )
+        if passed:
+            # Green is not enough: the change may not drop or skip main's tests.
+            git.run("add", "--", *sorted(written), cwd=clone)
+            problems = weakened_tests(git.run("diff", "--cached", cwd=clone))
+            if not problems:
+                break
+            state["weakened"] = problems
+            write("guard", {"attempt": attempt, "problems": problems})
+            # The model has overwritten these files, so show it the repository's own.
+            originals = "\n\n".join(
+                f"=== {path} ===\n{git.run('show', f'HEAD:{path}', cwd=clone)}"
+                for path in sorted({problem.split(": ", 1)[0] for problem in problems})
+                if path in written
+            )
+            prompt = (
+                f"Instruction:\n{instruction}\n\nFiles in the repository:\n{listing}\n\n"
+                f"Your change so far:\n{current}\n\n"
+                f"`{setup.repo.test_command}` passed, but your change removes or skips tests "
+                "the repository already has:\n" + "\n".join(problems) + "\n\n"
+                f"The repository's own version of those files:\n{originals}\n\n"
+                "Keep every existing test as it is, with the same name, and add new tests "
+                'beside them. Reply {"files": {"path": "the full new contents"}, '
+                '"summary": "one line"} with the corrected files.'
+            )
+            continue
         prompt = (
             f"Instruction:\n{instruction}\n\nFiles in the repository:\n{listing}\n\n"
             f"Your change so far:\n{current}\n\n"
@@ -260,13 +286,15 @@ def _run(setup, run_id, instruction, workdir, write, close, ask, state, token_bu
     else:
         git.run("add", "--", *sorted(written), cwd=clone) if written else None
         diff = git.run("diff", "--cached", cwd=clone) if written else ""
+        if state["weakened"]:
+            output = {"reason": WEAKENED, "problems": state["weakened"]}
+        elif state["unusable"] == MAX_ATTEMPTS:
+            output = {"reason": UNUSABLE}
+        else:
+            output = {"reason": RED}
         return close(
             "escalated",
-            {
-                "reason": UNUSABLE if state["unusable"] == MAX_ATTEMPTS else RED,
-                "diff": diff[:MAX_DIFF_CHARS],
-                "test_output": test_output,
-            },
+            {**output, "diff": diff[:MAX_DIFF_CHARS], "test_output": test_output},
         )
 
     git.run("add", "--", *sorted(written), cwd=clone)

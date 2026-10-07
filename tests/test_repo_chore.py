@@ -18,7 +18,7 @@ import pytest
 from app.github import GitHubClient
 from app.mercury_config import RepoConfig
 from app.model import StubModel
-from app.repo_chore import OUTAGE, RED, UNUSABLE, ChoreSetup, run_repo_chore
+from app.repo_chore import OUTAGE, RED, UNUSABLE, WEAKENED, ChoreSetup, run_repo_chore
 from app.runs import claim_run
 from tests.github_fake import FakeGitHub
 from tests.test_fallback import _Failing
@@ -575,3 +575,59 @@ def test_a_model_that_never_answers_ends_in_error_as_an_outage(
 
     assert result.status == "error"
     assert done(migrated_db, run_id)["reason"] == OUTAGE
+
+
+REWRITTEN_TEST_CALC = (
+    "from calc import subtract\n\n\ndef test_subtract():\n    assert subtract(5, 3) == 2\n"
+)
+
+
+def drop_add(calc: str) -> str:
+    """A green change that replaces main's test_add with a test of its own."""
+    return json.dumps(
+        {"files": {"calc.py": calc, "test_calc.py": REWRITTEN_TEST_CALC}, "summary": "x"}
+    )
+
+
+def test_a_green_change_that_drops_a_test_is_retried_with_the_test_named(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = chore_run(migrated_db)
+    restored = json.dumps(
+        {
+            "files": {
+                "calc.py": GOOD_CALC,
+                "test_calc.py": TEST_ADD,
+                "test_subtract.py": TEST_SUBTRACT,
+            },
+            "summary": "x",
+        }
+    )
+    model = StubModel(replies=[pick("calc.py"), drop_add(GOOD_CALC), restored])
+
+    result = run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert result.status == "succeeded"
+    assert "removed test_add" in model.prompts[2]
+    assert "Keep every existing test" in model.prompts[2]
+    # main's own test file, which the first attempt overwrote, is shown back.
+    assert TEST_ADD.strip() in model.prompts[2]
+    assert kinds(migrated_db, run_id).count("guard") == 1
+    branch = f"agent/{run_id}"
+    assert "def test_add" in git("show", f"{branch}:test_calc.py", cwd=remote)
+
+
+def test_three_attempts_that_drop_a_test_escalate_as_weakened_and_push_nothing(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = chore_run(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), drop_add(GOOD_CALC)])
+
+    result = run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert result.status == "escalated"
+    output = done(migrated_db, run_id)
+    assert output["reason"] == WEAKENED
+    assert output["problems"] == ["test_calc.py: removed test_add"]
+    assert remote_branches(remote) == ["main"]
+    assert github.pulls == []

@@ -762,3 +762,17 @@ def test_an_escalated_chore_records_its_reason_as_the_detail(monkeypatch):
     row = _run(api, _GitHub())
 
     assert (row.status, row.graded, row.detail) == ("escalated", False, "weakened tests")
+
+
+def test_the_summary_counts_chores_the_test_guard_escalated():
+    weakened = EvalRow(
+        "t1", "ollama", "ollama", "id", "escalated", False, 1000, 30.0, 0.0, "weakened tests"
+    )
+    red = EvalRow(
+        "t2", "ollama", "ollama", "id", "escalated", False, 1000, 30.0, 0.0, "tests still failing"
+    )
+
+    table = summarise([weakened, red, _row("ollama", True)])
+
+    assert "| Weakened tests |" in table.splitlines()[0]
+    assert "| ollama | 1 of 3 | 1 of 3 | 1000 | 30 | 0.0000 | 0 | 1 |" in table

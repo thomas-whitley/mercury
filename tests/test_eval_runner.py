@@ -170,9 +170,10 @@ class _Api:
     """POST /runs answers created; GET /runs/{id} walks through statuses,
     repeating the last one."""
 
-    def __init__(self, created: _Response, statuses: list[dict]) -> None:
+    def __init__(self, created: _Response, statuses: list[dict], events=None) -> None:
         self.created, self.statuses, self.posted = created, list(statuses), []
         self.cancelled: list[str] = []
+        self.events = events or []
 
     def post(self, path: str, json: dict | None = None) -> _Response:
         if path.endswith("/cancel"):
@@ -182,6 +183,8 @@ class _Api:
         return self.created
 
     def get(self, path: str) -> _Response:
+        if path.endswith("/events"):
+            return _Response(200, self.events)
         status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
         return _Response(200, status)
 
@@ -788,3 +791,47 @@ def test_the_summary_counts_unusable_replies_per_column():
 
     assert lines[0].endswith("| Unusable replies |")
     assert lines[2].endswith("| 3 |")
+
+
+def _done_event(output: dict) -> list[dict]:
+    return [
+        {"id": 1, "kind": "edit", "seq": 3, "output": {"attempt": 1}},
+        {"id": 2, "kind": "done", "seq": 9, "output": output},
+    ]
+
+
+def test_an_escalated_chore_keeps_its_last_diff_and_test_output_for_the_rescue():
+    events = _done_event(
+        {"status": "escalated", "reason": "x", "diff": "+def div\n", "test_output": "boom"}
+    )
+    api = _Api(PENDING, [{**DONE, "status": "escalated", "escalation_reason": "x"}], events)
+
+    row = _run(api, _GitHub())
+
+    assert (row.diff, row.test_tail) == ("+def div\n", "boom")
+
+
+def test_a_green_chore_keeps_its_diff_and_never_its_grade_output(monkeypatch):
+    monkeypatch.setattr(runner, "grade_branch", lambda *a, **k: (False, "grade_hidden ERROR"))
+    events = _done_event({"status": "succeeded", "pr_url": "u", "diff": "+def div\n"})
+    api = _Api(PENDING, [DONE], events)
+
+    row = _run(api, _GitHub())
+
+    assert row.diff == "+def div\n"
+    assert "grade_hidden" not in row.diff + row.test_tail
+    assert "grade_hidden" in row.detail
+
+
+def test_a_red_delegate_change_keeps_its_diff_and_test_output(tmp_path):
+    def breaks_add(work, instruction, model, timeout):
+        (work / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    row = run_delegate(
+        TASK, "local", remote(tmp_path, seed_test=True), delegate=breaks_add, timeout_seconds=60
+    )
+
+    assert row.status == "failed"
+    assert "-    return a + b" in row.diff
+    assert "FAILED" in row.test_tail

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from app.advice_text import advice_block
 from app.github import GitHubClient
 from app.mercury_config import RepoConfig
 from app.model import StubModel
@@ -26,7 +27,6 @@ from app.repo_chore import (
     UNUSABLE,
     WEAKENED,
     ChoreSetup,
-    _advice_block,
     run_repo_chore,
 )
 from app.runs import claim_run
@@ -913,7 +913,7 @@ def test_a_nul_byte_in_a_reply_is_recorded_without_it_and_the_chore_carries_on(
 
 
 def test_advice_after_a_wrong_pull_request_says_so_and_shows_its_diff():
-    block = _advice_block("Name it divide.", {"status": "succeeded", "diff": "+def div"})
+    block = advice_block("Name it divide.", {"status": "succeeded", "diff": "+def div"})
 
     assert "opened a pull request" in block
     assert "+def div" in block

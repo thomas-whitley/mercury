@@ -37,6 +37,13 @@ import yaml
 from app.config import PROVIDERS
 
 OPEN = {"pending", "running", "awaiting_approval"}
+# Final statuses a hint might fix: a wrong pull request, an escalation, or a
+# delegate change that stayed red. A timeout, an error or a refusal is not
+# the model's answer, so it is not rescued (Phase 3 of docs/build-brief-evals.md).
+RESCUABLE = {"succeeded", "escalated", "failed"}
+# How much of a failed attempt the rescue brief shows.
+EVIDENCE_DIFF_CHARS = 6000
+EVIDENCE_TAIL_CHARS = 2000
 GRADE_MODULE = "grade_hidden"
 HERE = Path(__file__).parent
 FIXTURE_URL = "https://github.com/thomas-whitley/mercury-fixture.git"
@@ -96,6 +103,28 @@ class EvalRow:
     # Replies the chore could not use (app/repo_chore.py). None where the
     # column cannot count them.
     unusable: int | None = None
+    repeat: int = 1
+    # The last attempt's diff and the tail of the repo's own test output, for
+    # the rescue brief. Never text from grading, which goes to detail.
+    diff: str = ""
+    test_tail: str = ""
+    # The one Claude hint this row got in the rescue pass, and the rerun's row.
+    rescue_hint: str | None = None
+    rescue: "EvalRow | None" = None
+
+
+def row_key(row: EvalRow) -> str:
+    return f"{row.task}/{row.provider}/{row.repeat}"
+
+
+def row_from_dict(data: dict) -> EvalRow:
+    data = dict(data)
+    rescue = data.pop("rescue", None)
+    return EvalRow(**data, rescue=row_from_dict(rescue) if rescue else None)
+
+
+def load_rows(path: Path) -> list[EvalRow]:
+    return [row_from_dict(d) for d in json.loads(path.read_text(encoding="utf-8"))]
 
 
 def load_tasks(directory: Path) -> list[EvalTask]:
@@ -328,14 +357,24 @@ def run_delegate(
     delegate: Callable[[Path, str, str, float], subprocess.CompletedProcess] | None = None,
     timeout_seconds: float = 1800,
     clock: Callable[[], float] = time.monotonic,
+    instruction: str | None = None,
 ) -> EvalRow:
+    """instruction replaces the task's own, as the rescue pass does to add a hint."""
     column = f"delegate:{model}"
     delegate = delegate or _call_delegate_script
 
-    def row(status: str, graded: bool, seconds: float | None, detail: str) -> EvalRow:
+    def row(
+        status: str,
+        graded: bool,
+        seconds: float | None,
+        detail: str,
+        diff: str = "",
+        tail: str = "",
+    ) -> EvalRow:
         return EvalRow(
-            task.id, column, column, None, status, graded, None, seconds, 0.0, detail[-2000:]
-        )
+            task.id, column, column, None, status, graded, None, seconds, 0.0, detail[-2000:],
+            diff=diff[:EVIDENCE_DIFF_CHARS], test_tail=tail[-EVIDENCE_TAIL_CHARS:],
+        )  # fmt: skip
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
         work = Path(home) / "work"
@@ -350,27 +389,40 @@ def run_delegate(
                 return row("error", False, None, f"test discovery failed on main: {crash}")
             start = clock()
             try:
-                result = delegate(work, task.instruction, model, timeout_seconds)
+                result = delegate(work, instruction or task.instruction, model, timeout_seconds)
             except subprocess.TimeoutExpired:
                 return row("timeout", False, clock() - start, "delegate.ps1 timed out")
             except FileNotFoundError as missing:
                 return row("error", False, clock() - start, f"could not start pwsh: {missing}")
             seconds = clock() - start
             if result.returncode != 0:
-                return row("failed", False, seconds, (result.stderr or "")[-2000:])
+                stderr = (result.stderr or "")[-2000:]
+                return row("failed", False, seconds, stderr, tail=stderr)
             changed = subprocess.run(
                 ["git", "status", "--porcelain"], cwd=work, env=_env(home, None), **_TEXT
             )
             if not [line for line in changed.stdout.splitlines() if "__pycache__" not in line]:
                 return row("failed", False, seconds, "no change")
+            diff = _staged_diff(work, home)
             # Mercury opens a pull request only when the repo's own tests pass.
             tests = subprocess.run(REPO_TESTS, cwd=work, env=_env(home, None), timeout=600, **_TEXT)
             if tests.returncode not in (0, NO_TESTS_RAN):
-                return row("failed", False, seconds, tests.stdout + tests.stderr)
+                output = tests.stdout + tests.stderr
+                return row("failed", False, seconds, output, diff, output)
             graded, detail = grade_dir(work, task.grade, base_ids)
-            return row("succeeded", graded, seconds, detail)
+            return row("succeeded", graded, seconds, detail, diff)
         except subprocess.TimeoutExpired:
             return row("timeout", False, seconds, "a clone, test listing or test run timed out")
+
+
+def _staged_diff(work: Path, home: str) -> str:
+    """The delegate's change as a diff, new files included, before any
+    grade file is written into the checkout."""
+    env = _env(home, None)
+    subprocess.run(
+        ["git", "add", "-A", "--", ".", ":(exclude)**/__pycache__/**"], cwd=work, env=env, **_TEXT
+    )
+    return subprocess.run(["git", "diff", "--cached"], cwd=work, env=env, **_TEXT).stdout
 
 
 def run_one(
@@ -405,7 +457,29 @@ def run_one(
             f"run {run['id']} is waiting for Approve: {task.repo} is not auto_approve in the "
             "live mercury.yaml. Decline it on Telegram, set auto_approve, and run again."
         )
-    run_id = run["id"]
+    return follow(
+        api, github, task, provider, run["id"], clone_base, token,
+        timeout_seconds=timeout_seconds, poll_seconds=poll_seconds, sleep=sleep, clock=clock,
+    )  # fmt: skip
+
+
+def follow(
+    api,
+    github,
+    task: EvalTask,
+    column: str,
+    run_id: str,
+    clone_base: str,
+    token: str | None,
+    *,
+    timeout_seconds: float,
+    poll_seconds: float,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> EvalRow:
+    """Wait for a queued chore to finish, grade it on its own branch, close
+    its pull request and branch, and return its row. The rescue pass follows
+    an advised rerun the same way."""
     # The clock for the run itself starts once it leaves pending, so time spent
     # queued behind other runs does not count against it. A run that never
     # leaves pending still ends, after three timeouts of waiting.
@@ -455,9 +529,10 @@ def run_one(
     tokens = run.get("tokens") or 0
     answered = run.get("provider")
     rate = PROVIDERS[answered].usd_per_million_tokens if answered in PROVIDERS else 0.0
+    diff, test_tail = _evidence(api, run_id)
     return EvalRow(
         task.id,
-        provider,
+        column,
         answered,
         run_id,
         run["status"],
@@ -467,6 +542,22 @@ def run_one(
         tokens * rate / 1_000_000,
         detail[-2000:],
         unusable=run.get("unusable_replies"),
+        diff=diff,
+        test_tail=test_tail,
+    )
+
+
+def _evidence(api, run_id: str) -> tuple[str, str]:
+    """The done step's diff and test output tail, for the rescue brief. A
+    run whose events cannot be read keeps its row, with no evidence."""
+    response = api.get(f"/runs/{run_id}/events")
+    if response.status_code != 200:
+        return "", ""
+    done = [event.get("output") or {} for event in response.json() if event.get("kind") == "done"]
+    output = done[-1] if done else {}
+    return (
+        (output.get("diff") or "")[:EVIDENCE_DIFF_CHARS],
+        (output.get("test_output") or "")[-EVIDENCE_TAIL_CHARS:],
     )
 
 
@@ -520,15 +611,19 @@ def summarise(rows: list[EvalRow]) -> str:
     return "\n".join(lines)
 
 
-def write_results(rows: list[EvalRow], out: Path) -> Path:
-    out.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%MZ")
-    (out / f"{stamp}.json").write_text(
-        json.dumps([asdict(r) for r in rows], indent=2) + "\n", encoding="utf-8"
-    )
-    report = out / f"{stamp}.md"
+def write_rows(rows: list[EvalRow], path: Path) -> Path:
+    """Write the rows to path (.json) and their summary beside it (.md),
+    and return the summary's path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([asdict(r) for r in rows], indent=2) + "\n", encoding="utf-8")
+    report = path.with_suffix(".md")
     report.write_text(summarise(rows) + "\n", encoding="utf-8")
     return report
+
+
+def write_results(rows: list[EvalRow], out: Path) -> Path:
+    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%MZ")
+    return write_rows(rows, out / f"{stamp}.json")
 
 
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives the live deploy
@@ -565,7 +660,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives the
         )
     rows: list[EvalRow] = []
     try:
-        for _ in range(args.repeats):
+        for repeat in range(1, args.repeats + 1):
             for task in tasks:
                 for column in columns:
                     row = contained(
@@ -574,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives the
                         column,
                         token,
                     )
+                    row.repeat = repeat
                     rows.append(row)
                     print(
                         f"{task.id} {column}->{row.answered_by} {row.status} "

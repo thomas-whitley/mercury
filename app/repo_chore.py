@@ -39,6 +39,7 @@ from pathlib import Path, PurePosixPath
 
 import psycopg
 
+from app.advice_text import MAX_DIFF_CHARS, advice_block
 from app.github import GitHubClient, GitHubError
 from app.loop import (
     DEFAULT_MODEL_RETRY_ATTEMPTS,
@@ -58,7 +59,6 @@ MAX_TREE_ENTRIES = 500
 MAX_FILES_READ = 10
 MAX_FILE_CHARS = 20_000
 MAX_OUTPUT_CHARS = 4_000
-MAX_DIFF_CHARS = 20_000
 HEARTBEAT_SECONDS = 30.0
 GIT_TIMEOUT_SECONDS = 120.0
 AUTHOR = ("mercury", "mercury@users.noreply.github.com")
@@ -136,7 +136,7 @@ def run_repo_chore(
         ).fetchone()
         output = output or {}
         if hint is not None or status == "error":
-            advice = _advice_block(hint, output)
+            advice = advice_block(hint, output)
         else:
             source = (str(source_run_id), output.get("diff", ""))
     # A takeover continues the step numbering rather than colliding with it.
@@ -216,28 +216,6 @@ def run_repo_chore(
         return close("error", {"reason": str(error)})
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
-
-
-def _advice_block(hint: str | None, output: dict) -> str:
-    """What an advised rerun or an outage retry adds after the instruction:
-    the owner's hint, and the failed attempt it follows, when there is one."""
-    block = f"\n\nThe owner's hint: {hint}" if hint else ""
-    diff, test_output = output.get("diff") or "", output.get("test_output") or ""
-    if diff.strip() and output.get("status") == "succeeded":
-        # An eval chore whose pull request failed a grade it never saw.
-        block += (
-            "\n\nAn earlier attempt at this chore passed the repository's tests and opened a "
-            "pull request, but a check outside those tests found it wrong. "
-            f"Its diff, which is not applied:\n{diff[:MAX_DIFF_CHARS]}"
-        )
-    elif diff.strip():
-        block += (
-            f"\n\nAn earlier attempt at this chore failed ({output.get('reason', 'escalated')}). "
-            f"Its diff, which is not applied:\n{diff[:MAX_DIFF_CHARS]}"
-        )
-        if test_output.strip():
-            block += f"\n\nIts test output ended:\n{test_output}"
-    return block
 
 
 def _run(

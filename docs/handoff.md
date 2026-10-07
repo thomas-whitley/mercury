@@ -4,8 +4,8 @@
 
 Live is `f453720` (`mercury-config` pins it; Deploy green, `/health` 200). Built on
 Opus in one session, native execution, one self review of the whole branch (no
-reviewer subagent; Thomas can ask for one). The ledger's rulings are in the final
-section of this note.
+reviewer subagent; Thomas can ask for one). The calls made off the brief are in the
+commit messages and in the brief's Phase 2 decisions.
 
 What is live: each type's provider ladder from `tasks:` in `mercury.yaml` (the private
 config dropped its unread `providers:` and `budgets:`; the new loader refuses them);

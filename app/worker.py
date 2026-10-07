@@ -9,7 +9,6 @@ from typing import Any
 import psycopg
 from opentelemetry import trace
 
-from app.approvals import ask
 from app.budget import BudgetTrip, check_budget
 from app.chat import run_chat
 from app.config import (
@@ -21,6 +20,7 @@ from app.config import (
 )
 from app.corpus import load_corpus
 from app.digest import run_digest
+from app.escalation import announce_escalation
 from app.github import GitHubClient
 from app.logging_setup import configure_logging
 from app.loop import LoopResult, run_agent_loop
@@ -305,7 +305,9 @@ def _process_run(
     model = _with_fallback(conn, run_id, model, task_type, settings, model_builder, provider)
 
     if task_type_name == "repo_chore":
-        return _run_chore(conn, run_id, model, settings, repos, telegram, task_type.budget_tokens)
+        return _run_chore(
+            conn, run_id, model, settings, repos, telegram, task_type.budget_tokens, owner_chat_id
+        )
 
     if task_type_name == "digest":
         tokens = run_digest(
@@ -339,6 +341,7 @@ def _run_chore(
     repos: tuple[RepoConfig, ...],
     telegram: TelegramClient | None,
     token_budget: int,
+    owner_chat_id: int | None = None,
 ) -> LoopResult | None:
     name = conn.execute("SELECT repo FROM runs WHERE id = %s", (run_id,)).fetchone()[0]
     repo = next((r for r in repos if r.name == name and r.test_command), None)
@@ -364,28 +367,8 @@ def _run_chore(
         on_step=lambda: _step_landed(conn, run_id, settings.worker_id, telegram),
     )
     if result.status == "escalated":
-        _offer_open_anyway(conn, run_id, telegram)
+        announce_escalation(conn, telegram, owner_chat_id, run_id, settings.api_base_url)
     return result
-
-
-def _offer_open_anyway(
-    conn: psycopg.Connection, run_id: str, telegram: TelegramClient | None
-) -> None:
-    """A chore asked for from Telegram that ended red offers one button that
-    opens the pull request regardless, per docs/mercury.md."""
-    chat_id, repo = conn.execute(
-        "SELECT telegram_chat_id, repo FROM runs WHERE id = %s", (run_id,)
-    ).fetchone()
-    if telegram is None or chat_id is None:
-        return
-    text = (
-        f"The chore on {repo} ({run_id[:8]}) still failed its tests after 3 attempts, "
-        "so no pull request was opened."
-    )
-    try:
-        ask(conn, telegram, chat_id, "open_anyway", text, run_id=run_id)
-    except TelegramError as error:
-        logger.error("could not offer open it anyway: %s", error, extra={"run_id": run_id})
 
 
 def rungs_after(ladder: tuple[str, ...], provider: str) -> tuple[str, ...]:

@@ -420,8 +420,9 @@ def test_open_anyway_pushes_the_failed_diff_and_says_the_tests_failed(
     assert kinds(migrated_db, run_id) == ["clone", "apply", "push", "pr", "done"]
 
 
-def test_a_failed_chore_from_telegram_offers_open_anyway(
-    migrated_db, clean_db, remote, github, fake_telegram, tmp_path, monkeypatch
+@pytest.mark.parametrize("source", ["api", "n8n", "mcp", "telegram"])
+def test_an_escalated_chore_tells_the_owner_whatever_its_source(
+    migrated_db, clean_db, remote, github, fake_telegram, tmp_path, monkeypatch, source
 ):
     from app.worker import process_run
 
@@ -430,10 +431,7 @@ def test_a_failed_chore_from_telegram_offers_open_anyway(
     monkeypatch.setenv("TELEGRAM_API_URL", fake_telegram.url)
     settings = worker_settings(tmp_path, github, monkeypatch)
     run_id = chore_run(migrated_db)
-    migrated_db.execute(
-        "UPDATE runs SET telegram_chat_id = %s, telegram_message_id = 7 WHERE id = %s",
-        (CHAT, run_id),
-    )
+    migrated_db.execute("UPDATE runs SET source = %s WHERE id = %s", (source, run_id))
     model = StubModel(replies=[pick("calc.py"), change(BAD_CALC)])
 
     process_run(
@@ -441,14 +439,22 @@ def test_a_failed_chore_from_telegram_offers_open_anyway(
         run_id,
         settings,
         model_builder=lambda settings, provider: model,
+        owner_chat_id=CHAT,
         repos=(RepoConfig(name=REPO, test_command=TEST_COMMAND),),
     )
 
-    [question] = fake_telegram.sent()
-    [[button, _]] = question["reply_markup"]["inline_keyboard"]
+    [message] = fake_telegram.sent()
+    assert message["chat_id"] == CHAT
+    assert RED in message["text"]
+    [[button, _]] = message["reply_markup"]["inline_keyboard"]
     assert button["text"] == "Open it anyway"
     row = migrated_db.execute("SELECT action, run_id FROM approvals").fetchone()
     assert row == ("open_anyway", uuid.UUID(run_id))
+    stored = migrated_db.execute(
+        "SELECT escalation_message_id FROM runs WHERE id = %s", (run_id,)
+    ).fetchone()
+    # The fake numbers its messages from 1, and this is the only one sent.
+    assert stored == (1,)
 
 
 def test_a_succeeded_chore_offers_nothing(
@@ -472,6 +478,7 @@ def test_a_succeeded_chore_offers_nothing(
         run_id,
         settings,
         model_builder=lambda settings, provider: model,
+        owner_chat_id=CHAT,
         repos=(RepoConfig(name=REPO, test_command=TEST_COMMAND),),
     )
 

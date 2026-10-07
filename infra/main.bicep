@@ -452,6 +452,11 @@ resource worker 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'OTEL_SERVICE_NAME'
               value: '${name}-worker'
             }
+            {
+              // The run page an escalation message links to (app/escalation.py).
+              name: 'API_BASE_URL'
+              value: 'https://${api.properties.configuration.ingress.fqdn}'
+            }
           ], modelEnvironment, workerCheckEnvironment, configEnvironment, telegramTokenEnvironment, githubTokenEnvironment, ollamaEnvironment)
         }
       ]

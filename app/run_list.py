@@ -19,7 +19,10 @@ MAX_LIMIT = 200
 _COLUMNS = """
 SELECT id, type, provider, executor, status, tokens_used,
        extract(epoch from (finished_at - created_at)) AS duration_seconds,
-       created_at, source, escalation_reason
+       created_at, source, escalation_reason,
+       (SELECT count(*) FROM steps s
+        WHERE s.run_id = runs.id AND s.kind = 'edit' AND s.output ? 'problem'
+       ) AS unusable_replies
 FROM runs
 """
 # GET /runs/{id}: one row, the same fields as the list.
@@ -47,6 +50,7 @@ def serialize_run_row(row: tuple) -> dict:
         created_at,
         source,
         escalation_reason,
+        unusable_replies,
     ) = row
     return {
         "id": str(run_id),
@@ -61,6 +65,10 @@ def serialize_run_row(row: tuple) -> dict:
         "created_at": created_at.isoformat(),
         "source": source,
         "escalation_reason": escalation_reason,
+        # Chore replies that were not the JSON asked for, or named a path
+        # outside the repo (app/repo_chore.py). 0 once the cleanup has
+        # stripped the run's step bodies.
+        "unusable_replies": unusable_replies,
     }
 
 

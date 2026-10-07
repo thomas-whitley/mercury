@@ -7,6 +7,9 @@ before any direct insert against the runs table.
 import httpx2
 import psycopg
 
+from app.run_list import ONE_RUN, serialize_run_row
+from app.runs import record_step
+
 
 def test_runs_are_listed_newest_first_with_metadata_only(start_server, clean_db):
     base_url = start_server()
@@ -38,6 +41,7 @@ def test_runs_are_listed_newest_first_with_metadata_only(start_server, clean_db)
         "created_at",
         "source",
         "escalation_reason",
+        "unusable_replies",
     }
     # A row written without a source, as every row before migration 012 was.
     assert run["source"] == "api"
@@ -202,3 +206,18 @@ def test_an_escalated_run_shows_why(start_server, clean_db):
         "weakened tests",
         "eval",
     )
+
+
+def test_a_run_counts_its_unusable_replies(migrated_db):
+    run_id = migrated_db.execute(
+        "INSERT INTO runs (task, type) VALUES ('x', 'repo_chore') RETURNING id::text"
+    ).fetchone()[0]
+    record_step(
+        migrated_db, run_id, 1, "edit",
+        output={"attempt": 1, "files": [], "problem": "Your reply was not the JSON asked for."},
+    )  # fmt: skip
+    record_step(migrated_db, run_id, 2, "edit", output={"attempt": 2, "files": ["calc.py"]})
+
+    row = migrated_db.execute(ONE_RUN, (run_id,)).fetchone()
+
+    assert serialize_run_row(row)["unusable_replies"] == 1

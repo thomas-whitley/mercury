@@ -93,6 +93,9 @@ class EvalRow:
     seconds: float | None
     usd: float
     detail: str = ""
+    # Replies the chore could not use (app/repo_chore.py). None where the
+    # column cannot count them.
+    unusable: int | None = None
 
 
 def load_tasks(directory: Path) -> list[EvalTask]:
@@ -463,6 +466,7 @@ def run_one(
         run.get("duration_seconds"),
         tokens * rate / 1_000_000,
         detail[-2000:],
+        unusable=run.get("unusable_replies"),
     )
 
 
@@ -484,8 +488,8 @@ def contained(run: Callable[[], EvalRow], task_id: str, column: str, token: str 
 def summarise(rows: list[EvalRow]) -> str:
     lines = [
         "| Column | Passed the hidden test | Opened a PR | Median tokens | Median seconds "
-        "| Cost USD | Fell back | Weakened tests |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Cost USD | Fell back | Weakened tests | Unusable replies |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for column in sorted({row.provider for row in rows}):
         mine = [row for row in rows if row.provider == column]
@@ -499,7 +503,8 @@ def summarise(rows: list[EvalRow]) -> str:
             f"| {sum(r.usd for r in mine):.4f} "
             f"| {sum(r.answered_by not in (None, r.provider) for r in mine)} "
             # Chores Mercury's test guard escalated (app/test_guard.py).
-            f"| {sum(r.detail == 'weakened tests' for r in mine)} |"
+            f"| {sum(r.detail == 'weakened tests' for r in mine)} "
+            f"| {sum(r.unusable or 0 for r in mine)} |"
         )
     lines += [
         "",

@@ -776,3 +776,15 @@ def test_the_summary_counts_chores_the_test_guard_escalated():
 
     assert "| Weakened tests |" in table.splitlines()[0]
     assert "| ollama | 1 of 3 | 1 of 3 | 1000 | 30 | 0.0000 | 0 | 1 |" in table
+
+
+def test_the_summary_counts_unusable_replies_per_column():
+    unusable = EvalRow(
+        "t", "local", "local", "id", "escalated", False, 900, 30.0, 0.0,
+        "three unusable replies", unusable=3,
+    )  # fmt: skip
+
+    lines = summarise([unusable, _row("local", True)]).splitlines()
+
+    assert lines[0].endswith("| Unusable replies |")
+    assert lines[2].endswith("| 3 |")

@@ -110,10 +110,14 @@ def announce_escalation(
             with conn.transaction():
                 approval_id = ask(conn, telegram, chat_id, "open_anyway", text, run_id=run_id)
                 row = conn.execute(_SET_MESSAGE_FROM_APPROVAL, (approval_id, run_id)).fetchone()
+            logger.info(
+                "escalation of %s sent as message %s", run_id, row[0], extra={"run_id": run_id}
+            )
             return row[0]
         message_id = telegram.send_message(chat_id, text)
     except TelegramError as error:
         logger.error("escalation of %s not sent: %s", run_id, error, extra={"run_id": run_id})
         return None
     conn.execute(_SET_MESSAGE, (message_id, run_id))
+    logger.info("escalation of %s sent as message %s", run_id, message_id, extra={"run_id": run_id})
     return message_id

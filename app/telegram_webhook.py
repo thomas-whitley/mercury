@@ -149,6 +149,7 @@ def _advise_on_escalation(state, message_id: int, hint: str) -> tuple[str, str |
     with connect(state.settings.database_url, autocommit=True) as conn:
         row = conn.execute(_ESCALATED_BY_MESSAGE, (message_id,)).fetchone()
         if row is None:
+            logger.info("a reply to message %s matches no escalation", message_id)
             return None
         run_id = str(row[0])
         try:

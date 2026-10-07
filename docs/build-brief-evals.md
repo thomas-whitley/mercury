@@ -1,6 +1,6 @@
 # Build brief: Mercury as a cheap task runner, with evals and an escalation ladder
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement Phase 1 task by task (Thomas chose native execution, then one review of the whole branch). Steps use checkbox (`- [ ]`) syntax for tracking. Phase 2 was turned into Tasks 8 to 18 on 2026-10-07 and is done and live at `f453720` the same day. Phases 3, 4 and 5 are still specs, not tasks: each one is turned into tasks in its own session, after the phase before it has landed, except that Phase 5's part 5a comes before Phase 3.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement Phase 1 task by task (Thomas chose native execution, then one review of the whole branch). Steps use checkbox (`- [ ]`) syntax for tracking. Phase 2 was turned into Tasks 8 to 18 on 2026-10-07 and is done and live at `f453720` the same day. Phases 3, 4 and 5 are still specs, not tasks: each one is turned into tasks in its own session, after the phase before it has landed, except that Phase 5's part 5a comes before Phase 3. Part 5a was turned into Tasks 19 to 27 on 2026-10-07 and is next.
 
 **Goal:** Mercury completes well defined chores on free models, proves how often it gets them right with tests the model never saw, and escalates what it cannot fix to Thomas and then to a Claude session.
 
@@ -2973,11 +2973,11 @@ Settled with Thomas on 2026-10-07 over five rounds of questions; do not re-ask t
 20. **The base model is small and trained at home.** `qwen2.5-coder:7b` (Apache 2.0, 4.7 GB in Ollama, 32K context) is the model that improves, and `qwen3-coder:30b` (10 of 11 in Phase 1 through `delegate.ps1`) is the baseline to beat. A 30B model cannot be QLoRA trained in 8 GB of VRAM; a 7B one can, at Unsloth's stated minimum of about 5 GB.
 21. **The first measurement goes through Mercury's own format.** Before any tunnel exists, Mercury runs in the local compose stack with a `local` provider pointed at `localhost:11434`, and the eval runner (`MERCURY_URL` set to it) runs `qwen2.5-coder:7b` on the 11 eval chores. The report counts unparseable replies per column as their own figure. Below 2 of 11, the same run is repeated with `qwen3:8b`. If that is also below 2 of 11, Phase 5 stops and goes back to Thomas, because nearly all training data would then come from reference solutions alone, which is a different project.
 22. **Mercury reaches the home GPU through Tailscale Funnel.** Tailscale is already installed on the desktop, Funnel gives a free `*.ts.net` HTTPS address, and the repo's rule against a custom domain rules out a named Cloudflare Tunnel. Ollama has no authentication of its own, so Caddy sits in front of it, proxies `/v1/chat/completions` only, and rejects any request without the `LOCAL_MODEL_TOKEN` bearer. The token is a new secret in `mercury-config`.
-23. **`local` is a provider and a ladder rung.** A `local` entry in `PROVIDERS` (`openai_compatible`, the Funnel URL, `LOCAL_MODEL_TOKEN`, $0) with a 50 second timeout per call and 2 attempts, which keeps a model step inside the 120 second lease. The `local` rung asks for a reply matching a JSON schema (constrained decoding), so a 7B model cannot return broken JSON. No other rung changes, so Phase 1's baseline stays comparable.
+23. **`local` is a provider and a ladder rung.** A `local` entry in `PROVIDERS` (`openai_compatible`, $0, its address from `LOCAL_MODEL_URL`, its tag from `LOCAL_MODEL`, the bearer from `LOCAL_MODEL_TOKEN`) with a 120 second timeout per call and 8,192 output tokens, because a cold load plus a whole file reply from a 7B model runs long and a chore's own heartbeat thread keeps the lease meanwhile. The tag `mercury-local:base` is `qwen2.5-coder:7b` with a 16K context window, since Ollama's default would cut a chore prompt short. The `local` rung asks Ollama for JSON mode (`response_format` `json_object`), so a 7B model cannot return broken JSON; a schema per call would change every model's interface for little more. No other rung changes, so Phase 1's baseline stays comparable. (Corrected while detailing 5a: the first wording asked for a schema, 50 seconds and 2 attempts.)
 24. **The reply format stays full file JSON.** Weaker models do better replacing whole files than writing diffs, which need an exact match, and the bank's files are tens to a few hundred lines. Changing the format would change production for every rung and void the baseline. Parse failures are reported per column so a format problem cannot hide inside the pass rate.
 25. **Local runs have their own cap.** `MAX_LOCAL_RUNS_PER_DAY` is 200, an Actions variable beside `MAX_RUNS_PER_DAY`, which keeps protecting the free cloud tiers at 40.
 26. **Where `local` runs.** Bank runs and eval columns only. A bank run is pinned to `local` and never falls through to gemini, because a gemini answer would enter the training data as a local success. Real chores keep `gemini → ollama` until a promoted local tag beats gemini on the 11 eval chores, and then Thomas decides.
-27. **Bank chores are silent.** A run posted with `source: bank` sends nothing to Telegram. Its escalations reach the report only, as `source: eval` does (decision 18).
+27. **Bank chores are quiet, exactly as eval chores are (decision 18).** A run posted with `source: bank` sends nothing to Telegram, is never retried after an outage, is left out of the report's escalations and cannot be advised by a Telegram reply. The rescue script in 5b reads them itself.
 28. **Every model call of a `repo_chore` is recorded.** A `model_calls` table holds the run id, step, rung, system prompt, prompt, raw reply and tokens, for every chore and not only bank chores, since it also makes an escalation easier to read. Bank rows are exempt from the 30 day cleanup. Training examples are built from these rows, so the prompt the model trains on is the prompt it is served.
 29. **A run can start from a commit.** `POST /runs` takes an optional `base` sha on a `repo_chore`, and `app/repo_chore.py` checks it out before it branches. The run row records it, so every result can be reproduced.
 30. **The bank is mined from real commits.** Claude does not invent chores. A chore is a real commit from a small Python library: its parent is the base, the tests the commit added are the hidden grade, and the commit is the reference solution. Claude writes only the instruction, one paragraph, from the diff, and never names the tests.
@@ -3020,6 +3020,996 @@ Decisions 40 and 41, measured as `local-tuned` and `local-tuned+memory` columns.
 - A rescued example must not contain the hint, and no example may come from a validation chore or one of the 11. Tests in 5b.
 - A chore whose grade passes on its base measures nothing and must be dropped by the gate. Test in 5b.
 - Memory must never retrieve a validation chore or one of the 11. Test in 5c.
+
+### Part 5a, as tasks
+
+Detailed into tasks on 2026-10-07, on Opus, in the session that settled Phase 5. Execute with superpowers:executing-plans, one task per commit, the full suite, `ruff check` and `ruff format --check` green before each commit. Tasks 19 to 24 are code and run anywhere the suite runs. Task 25 needs the Windows desktop with the RTX 4060. Task 26 needs the desktop and Thomas for two secrets. Task 27 hands over.
+
+**5a Global Constraints.** Everything under Global Constraints above still applies. In addition:
+
+- No other rung's behaviour changes. A run that does not name `local` must take exactly the path it takes today.
+- `LOCAL_MODEL_TOKEN` is never logged, never in a commit, never in a URL, and never printed by a script. Scripts read it from `~/mercury-local-token.txt`.
+- Migrations are new files (`014_`, `015_`, `016_`); no existing migration is edited.
+
+**5a Review Focus.** The failure modes below are the ones most likely to bite and that no spec decision names. Each has its test or its check in the task named.
+
+- An empty `LOCAL_MODEL_TOKEN` makes Caddy's header matcher accept the literal `Bearer `, so anyone could reach the GPU. `local/start.ps1` refuses a token under 32 characters. Check in Task 26.
+- Ollama's default context window is far smaller than a chore prompt and truncates it without an error. The `mercury-local:base` tag sets `num_ctx` to 16384. Task 25.
+- A cold model load plus a whole file reply can outlast a 25 second timeout. The `local` provider has its own 120 second timeout and 8,192 output tokens. Test in Task 20.
+- A `base` sha that is not in the repo's history must end the chore in `error` with git's message, not crash the worker. Test in Task 23.
+- A `local` run while the desktop is off must end `error` with `providers unavailable` within seconds, not fall through to gemini and not hang. Test in Task 21, checked live in Task 26.
+
+**Decision corrections made while detailing.** Decision 23 now asks for JSON mode rather than a JSON schema, and a 120 second timeout with the usual retries rather than 50 seconds and 2 attempts. A schema differs per call (read, then edit), which would change every model's interface, while JSON mode alone stops broken JSON; and a chore already heartbeats every 30 seconds on its own thread (`_Keepalive` in `app/repo_chore.py`), so the lease does not bound a chore's model call. Decision 27 now says bank chores are quiet in every way eval chores are, which is what "as `source: eval` does" meant.
+
+---
+
+### Task 19: `bank` is a quiet source, like `eval`
+
+**Files:**
+- Create: `migrations/014_bank_source.sql`
+- Modify: `app/run_request.py` (`PostedSource`), `app/escalation.py:100`, `app/outage.py:45`, `app/report.py:56`, `app/telegram_webhook.py:78`
+- Test: `tests/test_run_source.py`, `tests/test_escalation.py`, `tests/test_outage.py`
+
+**Interfaces:**
+- Produces: `source: "bank"` accepted by `POST /runs`. A bank chore is never announced on Telegram, never retried after an outage, never in the report's escalations and never matched by a Telegram reply.
+
+- [ ] **Step 1: Write the failing tests.** In `tests/test_run_source.py` change the parametrize of `test_a_caller_may_name_its_source` to `["api", "n8n", "scheduler", "eval", "bank"]`. In `tests/test_escalation.py` add:
+
+```python
+def test_a_bank_chore_is_never_announced(migrated_db, fake_telegram):
+    run_id = escalated_chore(migrated_db, RED, source="bank")
+
+    assert announce_escalation(migrated_db, client(fake_telegram), CHAT, run_id, PAGE) is None
+    assert fake_telegram.sent() == []
+```
+
+In `tests/test_outage.py` turn `test_an_eval_chore_is_never_retried` into a parametrized test:
+
+```python
+@pytest.mark.parametrize("source", ["eval", "bank"])
+def test_a_quiet_chore_is_never_retried(migrated_db, fake_telegram, source):
+    """The eval runner and the bank script have already recorded the row and
+    moved on, so a later retry could open a pull request nobody closes."""
+    failed = outage_run(migrated_db, source=source)
+
+    queued = retry_outages(migrated_db, TelegramClient("123:abc", fake_telegram.url), CHAT, PAGE)
+
+    assert queued == []
+    assert retries_of(migrated_db, failed) == []
+    status = migrated_db.execute("SELECT status FROM runs WHERE id = %s", (failed,)).fetchone()
+    assert status == ("error",)
+    assert fake_telegram.sent() == []
+```
+
+and add `import pytest` at the top of that file.
+
+- [ ] **Step 2: Run them and see them fail.** `uv run pytest tests/test_run_source.py tests/test_escalation.py tests/test_outage.py -q`. Expected: the `bank` cases fail (422 from `POST /runs`, a check constraint violation from the inserts).
+
+- [ ] **Step 3: Write the migration.** `migrations/014_bank_source.sql`:
+
+```sql
+-- Phase 5 (decision 27 of docs/build-brief-evals.md). Bank chores are quiet
+-- in every way eval chores are: no Telegram, no outage retry, no place in the
+-- report's escalations. The rescue script in part 5b reads them itself.
+ALTER TABLE runs DROP CONSTRAINT runs_source_check;
+ALTER TABLE runs ADD CONSTRAINT runs_source_check
+    CHECK (source IN ('telegram', 'mcp', 'n8n', 'api', 'scheduler', 'eval', 'bank'));
+```
+
+- [ ] **Step 4: Accept and honour the source.** In `app/run_request.py` make `PostedSource = Literal["api", "n8n", "scheduler", "eval", "bank"]` and add to its comment: `bank is the Phase 5 chore bank (part 5b), quiet in the same ways as eval.` In `app/escalation.py:100` change `source == "eval"` to `source in ("eval", "bank")`. In `app/outage.py:45`, `app/report.py:56` and `app/telegram_webhook.py:78` change `r.source <> 'eval'` to `r.source NOT IN ('eval', 'bank')`. Then `grep -rn "'eval'\|\"eval\"" app --include=*.py` must show only these and `app/run_request.py`.
+
+- [ ] **Step 5: Run the three files, then the full suite.** Expected: all pass.
+
+- [ ] **Step 6: Commit.** `Treat bank chores as quiet as eval chores: no Telegram, no outage retry, no report entry`.
+
+### Task 20: The `local` provider, with JSON mode and its own timeout
+
+**Files:**
+- Modify: `app/config.py` (`ProviderConfig`, `PROVIDERS`), `app/model.py` (`OpenAICompatibleModel`), `app/worker.py` (`build_model`)
+- Test: `tests/test_model.py`, `tests/test_worker.py`
+
+**Interfaces:**
+- Produces: `PROVIDERS["local"]` with `home=True`; `ProviderConfig` fields `home: bool`, `base_url_env: str | None`, `model_env: str | None`, `timeout_seconds: float | None`, `max_tokens: int`, `json_mode: bool`, all defaulted so the three existing entries are unchanged; `OpenAICompatibleModel(..., json_mode: bool = False)`. Task 21 reads `PROVIDERS[name].home`.
+
+- [ ] **Step 1: Write the failing tests.** In `tests/test_model.py`:
+
+```python
+def test_json_mode_asks_the_endpoint_for_a_json_object():
+    from app.model import OpenAICompatibleModel
+
+    client = _FakeOpenAIClient(content='{"read": []}')
+    OpenAICompatibleModel(model="m", client=client, json_mode=True).complete("s", "p")
+
+    assert client.chat.completions.calls[0]["response_format"] == {"type": "json_object"}
+
+
+def test_without_json_mode_no_response_format_is_sent():
+    from app.model import OpenAICompatibleModel
+
+    client = _FakeOpenAIClient()
+    OpenAICompatibleModel(model="m", client=client).complete("s", "p")
+
+    assert "response_format" not in client.chat.completions.calls[0]
+```
+
+In `tests/test_worker.py`:
+
+```python
+def test_build_model_reads_the_local_address_and_tag_from_the_environment(monkeypatch):
+    monkeypatch.setenv("LOCAL_MODEL_TOKEN", "t" * 32)
+    monkeypatch.setenv("LOCAL_MODEL_URL", "http://127.0.0.1:11434/v1")
+    monkeypatch.setenv("LOCAL_MODEL", "mercury-local:v1")
+
+    model = build_model(settings_with(model="gemini-3.5-flash-lite"), "local")
+
+    assert isinstance(model, OpenAICompatibleModel)
+    assert model._model == "mercury-local:v1"
+    assert model._max_tokens == 8192
+    assert model._json_mode is True
+    assert str(model._client.base_url).startswith("http://127.0.0.1:11434/v1")
+    assert model._client.timeout == 120.0
+
+
+def test_build_model_refuses_local_without_an_address(monkeypatch):
+    monkeypatch.setenv("LOCAL_MODEL_TOKEN", "t" * 32)
+    monkeypatch.delenv("LOCAL_MODEL_URL", raising=False)
+
+    with pytest.raises(RuntimeError, match="LOCAL_MODEL_URL"):
+        build_model(settings_with(model="gemini-3.5-flash-lite"), "local")
+
+
+def test_the_local_tag_defaults_to_the_base_model(monkeypatch):
+    monkeypatch.setenv("LOCAL_MODEL_TOKEN", "t" * 32)
+    monkeypatch.setenv("LOCAL_MODEL_URL", "http://127.0.0.1:11434/v1")
+    monkeypatch.delenv("LOCAL_MODEL", raising=False)
+
+    model = build_model(settings_with(model="gemini-3.5-flash-lite"), "local")
+
+    assert model._model == "mercury-local:base"
+```
+
+If the OpenAI SDK in the lock file exposes `timeout` as an `httpx.Timeout` rather than a float, compare `model._client.timeout` against what `OpenAI(timeout=120.0).timeout` returns instead of the literal.
+
+- [ ] **Step 2: Run them and see them fail.** `uv run pytest tests/test_model.py tests/test_worker.py -q`. Expected: `TypeError` on `json_mode`, and `no provider registered as 'local'`.
+
+- [ ] **Step 3: Extend `ProviderConfig` and add the entry.** In `app/config.py`, after `usd_per_million_tokens`:
+
+```python
+    # A provider on Thomas's own machine (Phase 5, decisions 23, 25 and 26 of
+    # docs/build-brief-evals.md). Its runs count against
+    # MAX_LOCAL_RUNS_PER_DAY instead of MAX_RUNS_PER_DAY, its tokens against no
+    # daily cap, and a run on it never falls back to a cloud rung.
+    home: bool = False
+    # Read when the model is built, for an address and a tag that differ per machine.
+    base_url_env: str | None = None
+    model_env: str | None = None
+    # None takes MODEL_TIMEOUT_SECONDS.
+    timeout_seconds: float | None = None
+    max_tokens: int = 2048
+    # Ask the endpoint for a JSON object, so the reply always parses.
+    json_mode: bool = False
+```
+
+and add to `PROVIDERS`, after `ollama`:
+
+```python
+    "local": ProviderConfig(
+        kind="openai_compatible",
+        base_url=None,
+        api_key_env="LOCAL_MODEL_TOKEN",
+        # qwen2.5-coder:7b with a 16K context window (local/Modelfile.base).
+        model="mercury-local:base",
+        home=True,
+        base_url_env="LOCAL_MODEL_URL",
+        model_env="LOCAL_MODEL",
+        # A cold load plus a whole file reply on the 4060. The chore's own
+        # heartbeat thread keeps the lease meanwhile.
+        timeout_seconds=120.0,
+        max_tokens=8192,
+        json_mode=True,
+    ),
+```
+
+Extend the comment above `PROVIDERS` with: `LOCAL_MODEL_TOKEN is the bearer Caddy checks in front of Ollama on the home PC (local/README.md).`
+
+- [ ] **Step 4: Teach the client JSON mode.** In `app/model.py`, `OpenAICompatibleModel.__init__` takes `json_mode: bool = False` and stores `self._json_mode = json_mode`. In `complete`:
+
+```python
+        extra = {"response_format": {"type": "json_object"}} if self._json_mode else {}
+        response = self._client.chat.completions.create(
+            model=self._model,
+            max_tokens=self._max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            **extra,
+        )
+```
+
+- [ ] **Step 5: Build it from the environment.** In `app/worker.py`, replace the tail of `build_model` after the Anthropic branch with:
+
+```python
+    from app.model import OpenAICompatibleModel
+
+    base_url = provider.base_url
+    if provider.base_url_env:
+        base_url = os.environ.get(provider.base_url_env) or None
+        if base_url is None:
+            raise RuntimeError(f"no model address: set {provider.base_url_env}")
+    model_name = (os.environ.get(provider.model_env) if provider.model_env else None) or provider.model
+    return OpenAICompatibleModel(
+        model=model_name,
+        api_key=api_key,
+        base_url=base_url,
+        max_tokens=provider.max_tokens,
+        json_mode=provider.json_mode,
+        timeout_seconds=provider.timeout_seconds or settings.model_timeout_seconds,
+    )
+```
+
+- [ ] **Step 6: Run the two files, then the full suite.** Expected: all pass, including `test_build_model_uses_the_openai_compatible_client_for_gemini` unchanged.
+
+- [ ] **Step 7: Commit.** `Add the local provider: an Ollama address and tag from the environment, JSON mode, a 120 second timeout`.
+
+### Task 21: A run on a home provider never falls back and has its own caps
+
+**Files:**
+- Modify: `app/config.py` (`Settings`, `load_settings`), `app/worker.py` (`_STARTED_TODAY`, `runs_started_today`, `_process_run`), `app/budget.py` (`check_budget`)
+- Test: `tests/test_worker.py`, `tests/test_budget.py`
+
+**Interfaces:**
+- Consumes: `PROVIDERS[name].home` from Task 20.
+- Produces: `Settings.max_local_runs_per_day: int = 200` from `MAX_LOCAL_RUNS_PER_DAY`; `home_runs_started_today(conn) -> int` in `app/worker.py`.
+
+- [ ] **Step 1: Write the failing tests.** In `tests/test_worker.py`:
+
+```python
+def local_run(conn, task: str = PASSING_TEST) -> str:
+    return conn.execute(
+        "INSERT INTO runs (task, provider) VALUES (%s, 'local') RETURNING id", (task,)
+    ).fetchone()[0]
+
+
+def test_local_runs_have_their_own_daily_limit(migrated_db):
+    """max_runs_per_day=0 would refuse the first run if local runs counted toward it."""
+    settings = settings_with(max_runs_per_day=0, max_local_runs_per_day=2)
+
+    statuses = []
+    for _ in range(3):
+        run_id = local_run(migrated_db)
+        claim_next_run(migrated_db, "worker-test")
+        process_run(migrated_db, run_id, settings, model_builder=stub_model_builder())
+        statuses.append(
+            migrated_db.execute("SELECT status FROM runs WHERE id = %s", (run_id,)).fetchone()[0]
+        )
+
+    assert statuses == ["succeeded", "succeeded", "refused"]
+
+
+def test_local_runs_do_not_count_toward_the_cloud_limit(migrated_db):
+    migrated_db.execute(
+        "INSERT INTO runs (task, provider, claimed_by) VALUES (%s, 'local', 'worker-a')",
+        (PASSING_TEST,),
+    )
+    migrated_db.execute(
+        "INSERT INTO runs (task, claimed_by) VALUES (%s, 'worker-a')", (PASSING_TEST,)
+    )
+
+    assert runs_started_today(migrated_db) == 1
+    assert home_runs_started_today(migrated_db) == 1
+
+
+def test_a_local_run_gets_no_fallback(migrated_db):
+    """A gemini answer would enter the bank's training data as a local success."""
+    run_id = local_run(migrated_db)
+    claim_next_run(migrated_db, "worker-test")
+    seen: list[str] = []
+
+    def builder(settings, provider_name):
+        seen.append(provider_name)
+        return StubModel(replies=[CORRECT])
+
+    process_run(migrated_db, run_id, settings_with(), model_builder=builder)
+
+    assert seen == ["local"]
+```
+
+Add `home_runs_started_today` to the `from app.worker import ...` line. In `tests/test_budget.py`:
+
+```python
+def test_a_home_provider_has_no_daily_token_cap(migrated_db):
+    for provider in ("local", "gemini"):
+        run_id = migrated_db.execute(
+            "INSERT INTO runs (task, provider) VALUES ('x', %s) RETURNING id", (provider,)
+        ).fetchone()[0]
+        record_step(migrated_db, run_id, 1, "act", tokens=10_000)
+
+    assert check_budget(migrated_db, "local", daily_tokens=1_000, monthly_usd=5.0) is None
+    assert check_budget(migrated_db, "gemini", daily_tokens=1_000, monthly_usd=5.0).cap == (
+        "daily_tokens"
+    )
+```
+
+importing `record_step` from `app.runs` and `check_budget` from `app.budget` if the file does not already.
+
+- [ ] **Step 2: Run them and see them fail.** Expected: `TypeError` on `max_local_runs_per_day`, an `ImportError` for `home_runs_started_today`, `seen == ["local", "gemini", "ollama"]`, and a daily cap trip on `local`.
+
+- [ ] **Step 3: The setting.** In `app/config.py` add `max_local_runs_per_day: int = 200` to `Settings` after `osv_api_url`, and to `load_settings`:
+
+```python
+        max_local_runs_per_day=int(os.environ.get("MAX_LOCAL_RUNS_PER_DAY", "200")),
+```
+
+- [ ] **Step 4: Two counts.** In `app/worker.py` replace `_STARTED_TODAY` and `runs_started_today` with:
+
+```python
+# The providers on Thomas's own machine, counted apart (decision 25).
+HOME_PROVIDERS = [name for name, provider in PROVIDERS.items() if provider.home]
+
+# site_check makes no model call, and the checks worker claims it too, so it
+# is left out of the limit that protects the model key. A run on a home
+# provider costs no key either, and has its own limit.
+_STARTED_TODAY = """
+SELECT count(*) FROM runs
+WHERE claimed_by IS NOT NULL
+  AND type <> 'site_check'
+  AND created_at >= date_trunc('day', now())
+  AND (provider IS NULL OR NOT (provider = ANY(%s)))
+"""
+_HOME_STARTED_TODAY = """
+SELECT count(*) FROM runs
+WHERE claimed_by IS NOT NULL
+  AND created_at >= date_trunc('day', now())
+  AND provider = ANY(%s)
+"""
+
+
+def runs_started_today(conn: psycopg.Connection) -> int:
+    return conn.execute(_STARTED_TODAY, (HOME_PROVIDERS,)).fetchone()[0]
+
+
+def home_runs_started_today(conn: psycopg.Connection) -> int:
+    return conn.execute(_HOME_STARTED_TODAY, (HOME_PROVIDERS,)).fetchone()[0]
+```
+
+- [ ] **Step 5: Use them, and skip the ladder.** In `_process_run`, move the provider lookup above the daily limit check and branch on it. The block from `# Check then act` down to `model = _with_fallback(...)` becomes:
+
+```python
+    task_type = TASK_TYPES.get(task_type_name)
+    # The row's provider is the type's own unless the caller named one.
+    provider = conn.execute("SELECT provider FROM runs WHERE id = %s", (run_id,)).fetchone()[0] or (
+        task_type.provider if task_type else None
+    )
+    home = provider in HOME_PROVIDERS
+
+    # Check then act, which is safe only because the worker runs at one replica
+    # (maxReplicas is 1 in the Bicep). Two workers could both pass this.
+    if home and home_runs_started_today(conn) > settings.max_local_runs_per_day:
+        limit = f"daily limit of {settings.max_local_runs_per_day} local runs reached"
+    elif not home and runs_started_today(conn) > settings.max_runs_per_day:
+        limit = f"daily limit of {settings.max_runs_per_day} runs reached"
+    else:
+        limit = None
+    if limit is not None:
+        logger.warning(
+            "refusing run %s: %s", run_id, limit,
+            extra={"run_id": run_id, "worker_id": settings.worker_id},
+        )  # fmt: skip
+        refuse_run(conn, run_id, limit)
+        return None
+```
+
+keep the `_RUNNABLE_TYPES` refusal next as it is, then the budget check and `model_builder` call as they are (drop the now duplicated `task_type = TASK_TYPES[task_type_name]` and provider lines), and replace the `_with_fallback` line with:
+
+```python
+    if not home:
+        # A run on a home provider never falls back (decision 26).
+        model = _with_fallback(conn, run_id, model, task_type, settings, model_builder, provider)
+```
+
+`test_the_daily_limit_refuses_the_run_and_closes_its_stream` must still pass with its reason text unchanged.
+
+- [ ] **Step 6: No daily token cap at home.** In `app/budget.py` `check_budget`, wrap the daily check:
+
+```python
+    config = PROVIDERS.get(provider)
+    # A home provider costs nothing and has no quota to protect (decision 25).
+    if not (config and config.home):
+        today = conn.execute(_TODAY, (provider,)).fetchone()[0]
+        if today >= daily_tokens:
+            return BudgetTrip(
+                cap="daily_tokens",
+                message=f"{provider} has used {today:,} of its {daily_tokens:,} tokens today.",
+            )
+```
+
+- [ ] **Step 7: Run both files, then the full suite.** Expected: all pass, including every test in `tests/test_fallback.py` unchanged.
+
+- [ ] **Step 8: Commit.** `Give local runs their own daily limit, no daily token cap and no fallback to a cloud rung`.
+
+### Task 22: Every model call of a chore is recorded
+
+**Files:**
+- Create: `migrations/015_model_calls.sql`
+- Modify: `app/repo_chore.py` (`run_repo_chore`'s `ask`), `app/cleanup.py` (`run_cleanup`)
+- Test: `tests/test_repo_chore.py`, `tests/test_cleanup.py`
+
+**Interfaces:**
+- Produces: table `model_calls (id, run_id, seq, provider, system, prompt, reply, tokens, created_at)`. `seq` is the step the reply led to; `provider` is the rung that answered. Part 5b's example export reads it.
+
+- [ ] **Step 1: Write the failing tests.** In `tests/test_repo_chore.py`, importing `SYSTEM` from `app.repo_chore`:
+
+```python
+def test_every_model_call_is_recorded_with_its_prompt_and_reply(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = chore_run(migrated_db)
+    migrated_db.execute("UPDATE runs SET provider = 'local' WHERE id = %s", (run_id,))
+    replies = [pick("calc.py"), change(GOOD_CALC)]
+
+    run_repo_chore(
+        migrated_db, run_id, StubModel(replies=replies), setup(tmp_path, github), worker_id=WORKER
+    )
+
+    rows = migrated_db.execute(
+        "SELECT seq, provider, system, prompt, reply, tokens FROM model_calls "
+        "WHERE run_id = %s ORDER BY id",
+        (run_id,),
+    ).fetchall()
+    assert [row[0] for row in rows] == [2, 3]  # the read step, then the first edit
+    assert {row[1] for row in rows} == {"local"}
+    assert {row[2] for row in rows} == {SYSTEM}
+    assert "Instruction:\nAdd subtract to calc.py" in rows[0][3]
+    assert "=== calc.py ===" in rows[1][3]
+    assert [row[4] for row in rows] == replies
+    assert [row[5] for row in rows] == [100, 100]
+```
+
+In `tests/test_cleanup.py`:
+
+```python
+def _chore_with_a_call(conn, source: str, *, age_days: int) -> str:
+    run_id = conn.execute(
+        "INSERT INTO runs (task, type, source) VALUES ('x', 'repo_chore', %s) RETURNING id::text",
+        (source,),
+    ).fetchone()[0]
+    conn.execute(
+        "INSERT INTO model_calls (run_id, seq, provider, system, prompt, reply, tokens) "
+        "VALUES (%s, 2, 'local', 's', 'p', 'r', 10)",
+        (run_id,),
+    )
+    finish_run(conn, run_id, "succeeded", 10)
+    _age(conn, run_id, age_days)
+    return run_id
+
+
+def test_model_calls_go_with_the_bodies_except_a_bank_runs(migrated_db):
+    _chore_with_a_call(migrated_db, "api", age_days=31)
+    bank = _chore_with_a_call(migrated_db, "bank", age_days=31)
+    fresh = _chore_with_a_call(migrated_db, "api", age_days=1)
+
+    run_cleanup(migrated_db)
+
+    left = {row[0] for row in migrated_db.execute("SELECT run_id::text FROM model_calls")}
+    assert left == {bank, fresh}
+```
+
+- [ ] **Step 2: Run them and see them fail.** Expected: `relation "model_calls" does not exist`.
+
+- [ ] **Step 3: The table.** `migrations/015_model_calls.sql`:
+
+```sql
+-- Phase 5 (decision 28 of docs/build-brief-evals.md). Every model call a
+-- repo_chore makes, as the model saw it and as it answered, so training
+-- examples are built from the prompt the model is served. seq is the step
+-- the reply led to; provider is the rung that answered. A bank run's calls
+-- outlive the 30 day cleanup (app/cleanup.py); the rest go then.
+CREATE TABLE model_calls (
+    id         bigserial PRIMARY KEY,
+    run_id     uuid NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+    seq        integer NOT NULL,
+    provider   text,
+    system     text NOT NULL,
+    prompt     text NOT NULL,
+    reply      text NOT NULL,
+    tokens     integer NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX model_calls_run_idx ON model_calls (run_id, seq);
+```
+
+Check the type of `runs.id` in `migrations/001_*.sql` first; if it is not `uuid`, use the same type it has.
+
+- [ ] **Step 4: Record in `ask`.** In `app/repo_chore.py` add beside the other constants:
+
+```python
+# The rung that answered is the run's provider by now: a fallback rewrites it
+# before the retry that reaches the next rung (app/worker.py _with_fallback).
+_RECORD_CALL = """
+INSERT INTO model_calls (run_id, seq, provider, system, prompt, reply, tokens)
+SELECT id, %s, provider, %s, %s, %s, %s FROM runs WHERE id = %s
+"""
+```
+
+and in `run_repo_chore`'s `ask`, after the token lines:
+
+```python
+        conn.execute(
+            _RECORD_CALL,
+            (state["seq"] + 1, SYSTEM, prompt, reply.text, reply.tokens, run_id),
+        )
+```
+
+- [ ] **Step 5: Clean them up.** In `app/cleanup.py` add:
+
+```python
+# A chore's model calls go when its bodies do, except a bank run's, which are
+# Phase 5's training data (decision 28 of docs/build-brief-evals.md). A bank
+# run's calls go with the run itself after a year, by the cascade.
+_DROP_CALLS = """
+DELETE FROM model_calls c USING runs r
+WHERE c.run_id = r.id
+  AND r.source <> 'bank'
+  AND r.finished_at < now() - make_interval(days => %s)
+"""
+```
+
+call `conn.execute(_DROP_CALLS, (event_bodies_days,))` inside the transaction in `run_cleanup`, after the strip statements, and add one sentence about model calls to the module docstring.
+
+- [ ] **Step 6: Run both files, then the full suite.** Expected: all pass.
+
+- [ ] **Step 7: Commit.** `Record every model call a chore makes, and keep a bank run's calls past the 30 day cleanup`.
+
+### Task 23: A chore can start from a given commit
+
+**Files:**
+- Create: `migrations/016_run_base.sql`, `tests/test_run_base.py`
+- Modify: `app/run_request.py`, `app/run_api.py` (`_request_chore`), `app/chores.py` (`_CREATE`, `_CREATE_STARTED`, `start_chore`, `request_chore`), `app/advice.py` (`_RUN`, `_CREATE`, `advise`), `app/outage.py` (`_RETRY`), `app/repo_chore.py` (`run_repo_chore`, `_run`)
+- Test: `tests/test_run_base.py`, `tests/test_repo_chore.py`, `tests/test_outage.py`
+
+**Interfaces:**
+- Produces: `inputs.base` on a `repo_chore` (a full 40 character sha), stored as `runs.base_sha`. `start_chore(..., base: str | None = None)` and `request_chore(..., base: str | None = None)`. Advised reruns and outage retries keep the base.
+
+- [ ] **Step 1: Write the failing tests.** `tests/test_run_base.py`:
+
+```python
+"""A repo chore may name the commit it starts from (decision 29 of
+docs/build-brief-evals.md). The bank's chores each start from the parent of
+a mined commit."""
+
+import pytest
+from pydantic import ValidationError
+
+from app.advice import advise
+from app.mercury_config import RepoConfig
+from app.run_request import RunRequest
+
+SHA = "a" * 40
+REPOS = (RepoConfig(name="owner/fixture", test_command="true"),)
+
+
+def test_a_chore_may_name_a_full_commit_as_its_base():
+    run = RunRequest(type="repo_chore", inputs={"task": "x", "repo": "owner/fixture", "base": SHA})
+
+    assert run.inputs["base"] == SHA
+
+
+@pytest.mark.parametrize("base", ["abc1234", "g" * 40, "A" * 40, 7])
+def test_a_base_that_is_not_a_full_lowercase_sha_is_refused(base):
+    with pytest.raises(ValidationError):
+        RunRequest(type="repo_chore", inputs={"task": "x", "repo": "owner/fixture", "base": base})
+
+
+def test_only_a_chore_takes_a_base():
+    with pytest.raises(ValidationError):
+        RunRequest(type="pytest", inputs={"task": "x", "base": SHA})
+
+
+def test_an_advised_rerun_starts_from_the_same_base(migrated_db):
+    run_id = migrated_db.execute(
+        "INSERT INTO runs (task, type, repo, status, base_sha) "
+        "VALUES ('x', 'repo_chore', 'owner/fixture', 'escalated', %s) RETURNING id::text",
+        (SHA,),
+    ).fetchone()[0]
+
+    new_id = advise(migrated_db, run_id, "try the other file", "mcp", REPOS)
+
+    base = migrated_db.execute("SELECT base_sha FROM runs WHERE id = %s", (new_id,)).fetchone()
+    assert base == (SHA,)
+```
+
+In `tests/test_repo_chore.py`:
+
+```python
+def push_commit(remote: Path, tmp_path: Path, name: str, body: str) -> str:
+    """Add one commit to the bare remote's main and return its sha."""
+    work = tmp_path / f"push-{name}"
+    git("clone", "-q", str(remote), str(work), cwd=tmp_path)
+    (work / name).write_text(body)
+    git("add", name, cwd=work)
+    git("-c", "user.name=seed", "-c", "user.email=seed@example.com", "commit", "-qm", name, cwd=work)
+    git("push", "-q", "origin", "main", cwd=work)
+    return git("rev-parse", "HEAD", cwd=work)
+
+
+def test_a_chore_with_a_base_starts_from_that_commit(migrated_db, remote, github, tmp_path):
+    base = git("rev-parse", "main", cwd=remote)
+    push_commit(remote, tmp_path, "later.py", "X = 1\n")
+    run_id = chore_run(migrated_db)
+    migrated_db.execute("UPDATE runs SET base_sha = %s WHERE id = %s", (base, run_id))
+    model = StubModel(replies=[pick("calc.py"), change(GOOD_CALC)])
+
+    result = run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert result.status == "succeeded"
+    assert "later.py" not in model.prompts[0]
+    assert git("rev-parse", f"agent/{run_id}~1", cwd=remote) == base
+
+
+def test_a_base_that_is_not_in_the_repo_ends_the_chore_in_error(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = chore_run(migrated_db)
+    migrated_db.execute("UPDATE runs SET base_sha = %s WHERE id = %s", ("0" * 40, run_id))
+
+    result = run_repo_chore(
+        migrated_db, run_id, StubModel(replies=[pick("calc.py")]), setup(tmp_path, github),
+        worker_id=WORKER,
+    )  # fmt: skip
+
+    assert result.status == "error"
+    assert "git checkout failed" in done(migrated_db, run_id)["reason"]
+    assert TOKEN not in json.dumps(done(migrated_db, run_id))
+```
+
+In `tests/test_outage.py`, in `test_an_outage_older_than_half_an_hour_is_retried_once`, set a base on the failed run and check the retry keeps it:
+
+```python
+    failed = outage_run(migrated_db, hint="use floats")
+    migrated_db.execute("UPDATE runs SET base_sha = %s WHERE id = %s", ("b" * 40, failed))
+    ...
+    base = migrated_db.execute(
+        "SELECT base_sha FROM runs WHERE source_run_id = %s", (failed,)
+    ).fetchone()
+    assert base == ("b" * 40,)
+```
+
+- [ ] **Step 2: Run them and see them fail.** Expected: `RunRequest` accepts anything in `base`, and `column "base_sha" does not exist`.
+
+- [ ] **Step 3: The column.** `migrations/016_run_base.sql`:
+
+```sql
+-- Phase 5 (decision 29 of docs/build-brief-evals.md). The commit a repo
+-- chore starts from, when it is not the tip of the default branch. NULL is
+-- the tip, as every chore before this migration started.
+ALTER TABLE runs ADD COLUMN base_sha text;
+```
+
+- [ ] **Step 4: Validate it.** In `app/run_request.py`, `import re`, add `_SHA = re.compile(r"[0-9a-f]{40}")` and:
+
+```python
+    @model_validator(mode="after")
+    def only_a_chore_has_a_base(self) -> "RunRequest":
+        base = self.inputs.get("base")
+        if base is None:
+            return self
+        if self.type != "repo_chore":
+            raise ValueError("inputs.base is only for repo_chore")
+        if not isinstance(base, str) or not _SHA.fullmatch(base):
+            raise ValueError("inputs.base must be a full 40 character commit sha")
+        return self
+```
+
+- [ ] **Step 5: Store it.** In `app/chores.py` add `base_sha` to both inserts (`_CREATE` gains it after `source`, `_CREATE_STARTED` likewise), give `start_chore` and `request_chore` a keyword `base: str | None = None` and pass it as the last value. In `app/run_api.py` `_request_chore`, pass `base=run.inputs.get("base")` to both. In `app/advice.py` select `base_sha` in `_RUN`, insert it in `_CREATE`, and pass it through in `advise`. In `app/outage.py` `_RETRY`, add `base_sha` to the column list and to the `SELECT`.
+
+- [ ] **Step 6: Check it out.** In `app/repo_chore.py` `run_repo_chore`, select `base_sha` with the rest (`SELECT task, tokens_used, source_run_id, hint, base_sha`), pass it to `_run` as a new last parameter `base_sha: str | None = None`, and in `_run` replace the fresh clone's checkout with:
+
+```python
+    git.run("clone", "-q", url, str(clone), cwd=workdir)
+    if base_sha:
+        # A bank chore starts from the parent of the commit it was mined from
+        # (decision 29). The pull request still targets the default branch, and
+        # shows only this chore's change, since base_sha is its merge base.
+        git.run("checkout", "-q", base_sha, cwd=clone)
+    git.run("checkout", "-q", "-b", branch, cwd=clone)
+```
+
+`_open_anyway` reapplies an earlier diff and is not given a base; leave it.
+
+- [ ] **Step 7: Run the four files, then the full suite.** Expected: all pass.
+
+- [ ] **Step 8: Commit.** `Let a repo chore start from a named commit, and keep it through advised reruns and outage retries`.
+
+### Task 24: The eval counts unusable replies per column
+
+**Files:**
+- Modify: `app/run_list.py` (`_COLUMNS`, `serialize_run_row`), `evals/runner.py` (`EvalRow`, `run_one`, `summarise`)
+- Test: `tests/test_run_list.py`, `tests/test_eval_runner.py`
+
+**Interfaces:**
+- Produces: `unusable_replies: int` on every run in `GET /runs` and `GET /runs/{id}`; `EvalRow.unusable: int | None = None`; a last column `Unusable replies` in the summary table.
+
+- [ ] **Step 1: Write the failing tests.** In `tests/test_run_list.py` add `"unusable_replies"` to the expected key set, and:
+
+```python
+def test_a_run_counts_its_unusable_replies(migrated_db):
+    run_id = migrated_db.execute(
+        "INSERT INTO runs (task, type) VALUES ('x', 'repo_chore') RETURNING id::text"
+    ).fetchone()[0]
+    record_step(
+        migrated_db, run_id, 1, "edit",
+        output={"attempt": 1, "files": [], "problem": "Your reply was not the JSON asked for."},
+    )  # fmt: skip
+    record_step(migrated_db, run_id, 2, "edit", output={"attempt": 2, "files": ["calc.py"]})
+
+    row = migrated_db.execute(ONE_RUN, (run_id,)).fetchone()
+
+    assert serialize_run_row(row)["unusable_replies"] == 1
+```
+
+importing `ONE_RUN` and `serialize_run_row` from `app.run_list` and `record_step` from `app.runs`. In `tests/test_eval_runner.py`:
+
+```python
+def test_the_summary_counts_unusable_replies_per_column():
+    unusable = EvalRow(
+        "t", "local", "local", "id", "escalated", False, 900, 30.0, 0.0,
+        "three unusable replies", unusable=3,
+    )  # fmt: skip
+
+    lines = summarise([unusable, _row("local", True)]).splitlines()
+
+    assert lines[0].endswith("| Unusable replies |")
+    assert lines[2].endswith("| 3 |")
+```
+
+- [ ] **Step 2: Run them and see them fail.**
+
+- [ ] **Step 3: Count them in the run row.** In `app/run_list.py` make `_COLUMNS`:
+
+```python
+_COLUMNS = """
+SELECT id, type, provider, executor, status, tokens_used,
+       extract(epoch from (finished_at - created_at)) AS duration_seconds,
+       created_at, source, escalation_reason,
+       (SELECT count(*) FROM steps s
+        WHERE s.run_id = runs.id AND s.kind = 'edit' AND s.output ? 'problem'
+       ) AS unusable_replies
+FROM runs
+"""
+```
+
+and add `unusable_replies` to the unpacking and `"unusable_replies": unusable_replies` to the dict, with a comment that it counts chore replies that were not the JSON asked for or named a path outside the repo (`app/repo_chore.py`), and reads 0 for a run whose bodies the cleanup has stripped. `encode_cursor(rows[-1][7], ...)` in `app/run_api.py` still indexes `created_at`, which has not moved.
+
+- [ ] **Step 4: Carry it into the eval.** In `evals/runner.py` add `unusable: int | None = None` as the last field of `EvalRow`, set `unusable=run.get("unusable_replies")` in `run_one`'s return, and in `summarise` append `"| Unusable replies |"` to the header line, one more `| --- ` to the rule, and to each column line:
+
+```python
+            f"| {sum(r.unusable or 0 for r in mine)} |"
+```
+
+replacing the closing `|"` of the weakened tests cell with `"`.
+
+- [ ] **Step 5: Run both files, then the full suite.** Expected: all pass; the existing summary assertions match on prefixes and are unchanged.
+
+- [ ] **Step 6: Commit.** `Report unusable replies per run and per eval column`.
+
+### Task 25: Measure the home model through Mercury in compose (decision 21)
+
+On the Windows desktop. Nothing here deploys.
+
+**Files:**
+- Create: `local/Modelfile.base`, `local/mercury.compose.yaml`
+- Modify: `docker-compose.yml` (the `api` and `worker` services), `.gitignore` if needed
+- Results: `evals/results/<stamp>.md` and `.json`
+
+- [ ] **Step 1: The base tag.** `ollama pull qwen2.5-coder:7b`. Write `local/Modelfile.base`:
+
+```
+# Mercury's local rung before any training (decision 20 of
+# docs/build-brief-evals.md). Ollama's default context window would cut a
+# chore prompt short without an error, so it is set here.
+FROM qwen2.5-coder:7b
+PARAMETER num_ctx 16384
+```
+
+then `ollama create mercury-local:base -f local/Modelfile.base` and `ollama show mercury-local:base` (expect `num_ctx 16384`). Run `nvidia-smi` while the next step's request is answering; record the VRAM used in the handoff. If it does not fit in 8 GB, drop `num_ctx` to 12288 and note it.
+
+- [ ] **Step 2: Check JSON mode on this Ollama.**
+
+```bash
+curl -s http://localhost:11434/v1/chat/completions -H "Content-Type: application/json" -d '{"model":"mercury-local:base","response_format":{"type":"json_object"},"messages":[{"role":"system","content":"Answer with a single JSON object and nothing else."},{"role":"user","content":"Reply {\"files\": {\"a.py\": \"print(\\\"hi\\\")\\n\"}, \"summary\": \"one line\"}"}]}' | python -c "import json,sys; print(json.loads(json.load(sys.stdin)['choices'][0]['message']['content']))"
+```
+
+Expected: a dict prints. If Ollama rejects `response_format`, stop and hand back: decision 23 needs another route.
+
+- [ ] **Step 3: Compose config.** Copy `config/mercury.sample.yaml` to `local/mercury.compose.yaml` and edit it so `portfolio.repos` holds only:
+
+```yaml
+    - name: thomas-whitley/mercury-fixture
+      test_command: python -m unittest -v
+      auto_approve: true
+```
+
+with no Telegram chat id, and the `tasks:` ladders as in the live config. It holds no secret and is committed. In `docker-compose.yml`, give the `api` service `MERCURY_CONFIG_PATH: /config/mercury.yaml` and the volume `./local/mercury.compose.yaml:/config/mercury.yaml:ro`. Give the `worker` service the same two, plus:
+
+```yaml
+      # The local rung (Phase 5): Ollama on this machine, reached from the
+      # container through the host gateway. Ollama ignores the token.
+      LOCAL_MODEL_URL: ${LOCAL_MODEL_URL:-http://host.docker.internal:11434/v1}
+      LOCAL_MODEL_TOKEN: ${LOCAL_MODEL_TOKEN:-unused-by-ollama-but-required-32ch}
+      LOCAL_MODEL: ${LOCAL_MODEL:-mercury-local:base}
+      MAX_LOCAL_RUNS_PER_DAY: ${MAX_LOCAL_RUNS_PER_DAY:-200}
+      MERCURY_GITHUB_TOKEN: ${MERCURY_GITHUB_TOKEN:-}
+```
+
+and `extra_hosts: ["host.docker.internal:host-gateway"]`. Check CI's compose job still passes with these defaults: the stub model never builds the `local` provider.
+
+- [ ] **Step 4: Run the eleven.** With Docker Desktop started and the repo `.env` loaded (it holds `MERCURY_BEARER_TOKEN` and `MERCURY_GITHUB_TOKEN`; never print them): `MODEL=gemini-3.5-flash-lite docker compose up -d --build db api proxy worker`, then from the Windows checkout `MERCURY_URL=http://localhost:8000 uv run python -m evals.runner --columns local --repeats 1`. The runner closes every pull request and branch it causes on the fixture.
+
+- [ ] **Step 5: Apply the gate.** Read the report. At 2 of 11 or better, `qwen2.5-coder:7b` stays. Below 2, write `local/Modelfile.qwen3` (`FROM qwen3:8b`, the same `num_ctx`), create `mercury-local:qwen3`, rerun Step 4 with `LOCAL_MODEL=mercury-local:qwen3` in the worker's environment, and keep whichever scores higher by retagging it `mercury-local:base`. If both are below 2 of 11, stop here and hand back to Thomas (decision 21). Record the unusable reply counts too: if most failures are unusable replies, say so in the handoff, since that is a format finding for decision 24 rather than a capability one.
+
+- [ ] **Step 6: Commit.** `docker compose down`. Commit the Modelfiles, `local/mercury.compose.yaml`, the compose changes and the results: `Measure the home model through Mercury in compose: <model> <n> of 11, <u> unusable replies`.
+
+### Task 26: The rung goes live through Tailscale Funnel and Caddy
+
+On the desktop. Thomas sets one secret and approves Funnel; everything else Claude runs, per the standing rule that Claude runs the `mercury-config` deploys itself.
+
+**Files:**
+- Create: `local/Caddyfile`, `local/start.ps1`, `local/stop.ps1`, `local/README.md`
+- Modify: `infra/main.bicep`, `infra/deploy.sh`, and in `thomas-whitley/mercury-config`, `.github/workflows/deploy.yml`
+
+- [ ] **Step 1: Caddy.** `winget install --id CaddyServer.Caddy -e` (if the id has changed, `winget search caddy`). `local/Caddyfile`:
+
+```
+# Mercury's local rung (decision 22 of docs/build-brief-evals.md). Tailscale
+# Funnel sends https://<machine>.<tailnet>.ts.net to this port. Only a POST to
+# chat completions carrying the bearer reaches Ollama; anything else is a 403.
+# start.ps1 refuses to start with a short token, because an empty one would
+# make the matcher accept the bare word Bearer.
+:8080 {
+	@allowed {
+		method POST
+		path /v1/chat/completions
+		header Authorization "Bearer {$LOCAL_MODEL_TOKEN}"
+	}
+	handle @allowed {
+		reverse_proxy 127.0.0.1:11434 {
+			header_up Host 127.0.0.1:11434
+			header_up -Authorization
+		}
+	}
+	respond 403
+}
+```
+
+- [ ] **Step 2: Start and stop scripts.** `local/start.ps1`:
+
+```powershell
+# Starts Mercury's local rung: Caddy in front of Ollama, then Tailscale
+# Funnel to Caddy. The token never leaves this process's environment.
+$ErrorActionPreference = 'Stop'
+$tokenFile = Join-Path $HOME 'mercury-local-token.txt'
+$token = (Get-Content $tokenFile -Raw).Trim()
+if ($token.Length -lt 32) { throw "$tokenFile must hold LOCAL_MODEL_TOKEN, at least 32 characters" }
+$env:LOCAL_MODEL_TOKEN = $token
+Start-Process caddy -ArgumentList 'run', '--config', (Join-Path $PSScriptRoot 'Caddyfile'), '--adapter', 'caddyfile' -WindowStyle Hidden
+tailscale funnel --bg 8080
+tailscale funnel status
+```
+
+`local/stop.ps1`:
+
+```powershell
+# Stops Mercury's local rung. A local run queued while it is down ends in
+# error with "providers unavailable" and never falls back to a cloud rung.
+tailscale funnel reset
+Get-Process caddy -ErrorAction SilentlyContinue | Stop-Process
+```
+
+- [ ] **Step 3: The token, Thomas's step.** Claude generates it straight into the file without printing it: `python -c "import secrets; print(secrets.token_urlsafe(32))" > ~/mercury-local-token.txt`. Thomas runs `! gh secret set LOCAL_MODEL_TOKEN -R thomas-whitley/mercury-config < ~/mercury-local-token.txt`, because the classifier refuses secret writes from Claude.
+
+- [ ] **Step 4: Funnel, Thomas approves.** Run `local/start.ps1`. The first `tailscale funnel` prints a link to enable Funnel for the tailnet; Thomas opens it and approves, then the script is run again. Record the `https://<machine>.<tailnet>.ts.net` address it prints. `LOCAL_MODEL_URL` is that address plus `/v1`.
+
+- [ ] **Step 5: Check the door by hand.** With `T` read from the token file inside the same command, never echoed:
+
+```bash
+U=https://<machine>.<tailnet>.ts.net
+curl -s -o /dev/null -w "%{http_code}\n" -X POST $U/v1/chat/completions                      # 403
+curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $(cat ~/mercury-local-token.txt)" $U/api/tags   # 403
+curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Authorization: Bearer $(cat ~/mercury-local-token.txt)" -H "Content-Type: application/json" -d '{"model":"mercury-local:base","messages":[{"role":"user","content":"Say ok"}]}' $U/v1/chat/completions   # 200
+```
+
+Write the three results into `local/README.md`.
+
+- [ ] **Step 6: Bicep and deploy script.** In `infra/main.bicep`, after the `ollamaApiKey` parameter:
+
+```bicep
+@description('The home GPU rung: Tailscale Funnel to Caddy to Ollama, ending in /v1 (decision 22). Empty refuses every local run.')
+param localModelUrl string = ''
+
+@description('Bearer Caddy checks in front of the home Ollama. Empty refuses every local run.')
+@secure()
+param localModelToken string = ''
+
+@description('The Ollama tag the local rung serves.')
+param localModel string = 'mercury-local:base'
+
+@description('Daily cap on runs on a home provider, apart from maxRunsPerDay (decision 25).')
+param maxLocalRunsPerDay int = 200
+```
+
+after the `ollamaEnvironment` variable:
+
+```bicep
+// The worker alone calls a model, so the local rung's settings go to it alone.
+var localSecret = empty(localModelToken)
+  ? []
+  : [
+      {
+        name: 'local-model-token'
+        value: localModelToken
+      }
+    ]
+
+var localEnvironment = concat(
+  empty(localModelToken)
+    ? []
+    : [
+        {
+          name: 'LOCAL_MODEL_TOKEN'
+          secretRef: 'local-model-token'
+        }
+      ],
+  [
+    {
+      name: 'LOCAL_MODEL_URL'
+      value: localModelUrl
+    }
+    {
+      name: 'LOCAL_MODEL'
+      value: localModel
+    }
+    {
+      name: 'MAX_LOCAL_RUNS_PER_DAY'
+      value: string(maxLocalRunsPerDay)
+    }
+  ]
+)
+```
+
+and add `localSecret` beside `ollamaSecret` in the worker's secret list (line 269) and `localEnvironment` beside `ollamaEnvironment` in the worker's environment `concat` (line 460). If `az` is installed, `az bicep build --file infra/main.bicep --stdout > /dev/null` must succeed. In `infra/deploy.sh` add after the `maxRunsPerDay` line:
+
+```bash
+      localModelUrl="${LOCAL_MODEL_URL:-}" \
+      localModelToken="${LOCAL_MODEL_TOKEN:-}" \
+      localModel="${LOCAL_MODEL:-mercury-local:base}" \
+      maxLocalRunsPerDay="${MAX_LOCAL_RUNS_PER_DAY:-200}" \
+```
+
+Commit `Wire the local rung into the Bicep: its address, bearer, tag and daily cap reach the worker` and push. Wait for CI and Publish.
+
+- [ ] **Step 7: The private config.** In a clone of `thomas-whitley/mercury-config`, add to the Deploy step's `env:` in `.github/workflows/deploy.yml`:
+
+```yaml
+          LOCAL_MODEL_URL: ${{ vars.LOCAL_MODEL_URL }}
+          LOCAL_MODEL_TOKEN: ${{ secrets.LOCAL_MODEL_TOKEN }}
+          LOCAL_MODEL: ${{ vars.LOCAL_MODEL || 'mercury-local:base' }}
+          MAX_LOCAL_RUNS_PER_DAY: ${{ vars.MAX_LOCAL_RUNS_PER_DAY || '200' }}
+```
+
+Set the variable with `gh variable set LOCAL_MODEL_URL -R thomas-whitley/mercury-config --body "<address>/v1"` (if the classifier refuses it, hand Thomas the line). Bump `PUBLIC_SHA` to the Step 6 commit in the same push, and watch Deploy go green.
+
+- [ ] **Step 8: Smoke test live.** With `local/start.ps1` running: `uv run python -m evals.runner --columns local --only clamp` against the live URL; expect a row answered by `local`. Then run `local/stop.ps1` and repeat; expect `error` with `providers unavailable` within a minute, answered by `local`, and no gemini call in the worker's logs (the Logs workflow, `ContainerAppConsoleLogs_CL | where Log_s has "<run id>"`). Run `local/start.ps1` again afterwards. Close anything left on the fixture.
+
+- [ ] **Step 9: README for the folder.** `local/README.md` says what the rung is, the three scripts, where the token lives, the door checks from Step 5 with their results, what happens when the desktop is off, and that nothing here runs in CI. In the repo's writing rules.
+
+- [ ] **Step 10: Commit.** `Put the local rung live through Tailscale Funnel and Caddy, with the door checked by hand`.
+
+### Task 27: Hand over 5a
+
+- [ ] **Step 1: Handoff.** A dated section at the top of `docs/handoff.md`: the live `PUBLIC_SHA`, the Task 25 numbers (model, pass count, unusable replies, VRAM used), the Funnel address's shape without the tailnet name, the Step 8 smoke results, and that Phase 3 is next with a `local` column, detailed into tasks in its own session on Opus. Mark part 5a done in this brief's header.
+
+- [ ] **Step 2: Commit.** `Hand over part 5a: the home model is a live rung and measured at <n> of 11`.
 
 ## What not to do
 

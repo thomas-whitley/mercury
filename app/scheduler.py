@@ -35,6 +35,7 @@ from app.github import GitHubClient, GitHubError
 from app.logging_setup import configure_logging
 from app.mercury_config import load_mercury_config
 from app.migrations import apply_migrations
+from app.outage import retry_outages
 from app.runs import finish_run, record_step
 from app.schedule_state import SUSPEND_AFTER, is_suspended, record_failure, record_success
 from app.tasks import SCHEDULER_CHECK_KINDS, SELF_HOSTED_CHECK_KINDS, configure_task_types
@@ -460,6 +461,7 @@ def main() -> None:  # pragma: no cover - the process entry point
     telegram = telegram_client(settings)
     with psycopg.connect(settings.database_url, autocommit=True) as conn:
         expire_due(conn, telegram)
+        retry_outages(conn, telegram, config.telegram_chat_id, settings.api_base_url)
         created = run_due_checks(
             conn,
             config.sites,

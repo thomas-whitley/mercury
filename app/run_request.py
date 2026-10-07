@@ -20,6 +20,17 @@ _SHA = re.compile(r"[0-9a-f]{40}")
 PostedSource = Literal["api", "n8n", "scheduler", "eval", "bank"]
 
 
+def free_provider(value: str | None) -> str | None:
+    """A key of app.config.PROVIDERS that costs nothing, or None. A caller
+    cannot spend money by naming one: a paid provider is only ever a type's
+    own choice."""
+    if value is not None and value not in PROVIDERS:
+        raise ValueError(f"unknown provider {value!r}")
+    if value is not None and PROVIDERS[value].usd_per_million_tokens != 0:
+        raise ValueError(f"{value!r} is not free, and a caller may only name a free provider")
+    return value
+
+
 class RunRequest(BaseModel):
     type: str
     inputs: dict[str, Any]
@@ -32,11 +43,7 @@ class RunRequest(BaseModel):
     @field_validator("provider")
     @classmethod
     def provider_must_be_registered(cls, value: str | None) -> str | None:
-        if value is not None and value not in PROVIDERS:
-            raise ValueError(f"unknown provider {value!r}")
-        if value is not None and PROVIDERS[value].usd_per_million_tokens != 0:
-            raise ValueError(f"{value!r} is not free, and a caller may only name a free provider")
-        return value
+        return free_provider(value)
 
     @model_validator(mode="after")
     def only_a_model_run_names_a_provider(self) -> "RunRequest":

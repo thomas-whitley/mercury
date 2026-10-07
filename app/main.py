@@ -14,7 +14,16 @@ from app.logging_setup import configure_logging
 from app.mcp_server import mount_mcp
 from app.mercury_config import MercuryConfig, load_mercury_config
 from app.migrations import apply_migrations
-from app.run_api import RunCreated, cancel, create_run, get_run, list_runs, report_text
+from app.run_api import (
+    AdviceRequest,
+    RunCreated,
+    advise_run,
+    cancel,
+    create_run,
+    get_run,
+    list_runs,
+    report_text,
+)
 from app.run_list import DEFAULT_LIMIT, MAX_LIMIT
 from app.run_request import RunRequest
 from app.stream import event_stream, parse_last_event_id
@@ -101,6 +110,13 @@ def create_app() -> FastAPI:
     async def cancel_one_run(run_id: uuid.UUID, request: Request) -> dict:
         require_bearer_token(request)
         return await cancel(request.app.state, str(run_id))
+
+    @app.post("/runs/{run_id}/advise", status_code=201, response_model=RunCreated)
+    async def advise_one_run(
+        run_id: uuid.UUID, advice: AdviceRequest, request: Request
+    ) -> RunCreated:
+        require_bearer_token(request)
+        return await advise_run(request.app.state, str(run_id), advice)
 
     app.state.mcp = mount_mcp(app)
 

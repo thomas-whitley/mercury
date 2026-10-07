@@ -10,13 +10,14 @@ from datetime import date, timedelta
 
 from fastapi import HTTPException
 from psycopg import connect
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from starlette.concurrency import run_in_threadpool
 
+from app.advice import AdviceRefused, advise
 from app.chores import ChoreRefused, find_repo, request_chore, start_chore, starts_unasked
 from app.report import build_report
 from app.run_list import ONE_RUN, build_query, encode_cursor, serialize_run_row
-from app.run_request import RunRequest
+from app.run_request import RunRequest, free_provider
 from app.runs import cancel_run
 from app.tasks import TASK_TYPES
 from app.telegram import TelegramClient, TelegramError
@@ -32,6 +33,33 @@ _EVENTS = "SELECT id, payload FROM events WHERE run_id = %s AND id > %s ORDER BY
 class RunCreated(BaseModel):
     id: str
     status: str
+
+
+class AdviceRequest(BaseModel):
+    hint: str
+    # A free provider for the rerun. The eval names the column the chore
+    # failed on (decision 48 of docs/build-brief-evals.md); leave it out for
+    # the usual rung.
+    provider: str | None = None
+
+    @field_validator("provider")
+    @classmethod
+    def provider_must_be_free(cls, value: str | None) -> str | None:
+        return free_provider(value)
+
+
+def _advise(state, run_id: str, advice: AdviceRequest) -> RunCreated:
+    with connect(state.settings.database_url, autocommit=True) as conn:
+        try:
+            new_id = advise(conn, run_id, advice.hint, "api", state.mercury.repos, advice.provider)
+        except AdviceRefused as refused:
+            raise HTTPException(status_code=422, detail=str(refused)) from None
+    return RunCreated(id=new_id, status="pending")
+
+
+async def advise_run(state, run_id: str, advice: AdviceRequest) -> RunCreated:
+    """Queue an advised rerun (app/advice.py). A refusal is a 422 saying why."""
+    return await run_in_threadpool(_advise, state, run_id, advice)
 
 
 async def create_run(state, run: RunRequest, source: str) -> RunCreated:

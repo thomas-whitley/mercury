@@ -8,12 +8,15 @@ import json
 
 from psycopg.types.json import Jsonb
 
+from app.advice import advise
 from app.escalation import announce_escalation, chain_root
+from app.mercury_config import RepoConfig
 from app.repo_chore import RED, UNUSABLE
 from app.telegram import TelegramClient
 
 CHAT = 42
 PAGE = "https://mercury.test"
+REPOS = (RepoConfig(name="owner/fixture", test_command="true"),)
 
 
 def client(fake) -> TelegramClient:
@@ -137,3 +140,12 @@ def test_the_root_of_a_chain_is_its_first_run(migrated_db):
 
     assert chain_root(migrated_db, third) == first
     assert chain_root(migrated_db, first) == first
+
+
+def test_an_advised_rerun_of_an_eval_chore_is_never_announced(migrated_db, fake_telegram):
+    first = escalated_chore(migrated_db, RED, source="eval")
+    rerun = advise(migrated_db, first, "a hint", "mcp", REPOS)
+    migrated_db.execute("UPDATE runs SET status = 'escalated' WHERE id = %s", (rerun,))
+
+    assert announce_escalation(migrated_db, client(fake_telegram), CHAT, rerun, PAGE) is None
+    assert fake_telegram.sent() == []

@@ -5,7 +5,13 @@ is marked for a Claude session and advise refuses a third."""
 
 import pytest
 
-from app.advice import MAX_ADVISED, AdviceRefused, advise, mark_if_needs_claude
+from app.advice import (
+    MAX_ADVISED,
+    AdviceRefused,
+    advise,
+    advised_count,
+    mark_if_needs_claude,
+)
 from app.mercury_config import RepoConfig
 from tests.test_escalation import escalated_chore
 
@@ -119,3 +125,46 @@ def test_the_second_failed_advised_rerun_is_marked_for_a_claude_session(migrated
         )
     )
     assert flags == {one: False, two: True}
+
+
+def test_an_eval_chore_that_opened_a_pull_request_can_be_advised(migrated_db):
+    run_id = escalated_chore(migrated_db, "x", source="eval")
+    migrated_db.execute("UPDATE runs SET status = 'succeeded' WHERE id = %s", (run_id,))
+
+    new_id = advise(migrated_db, run_id, "Name it divide.", "api", REPOS)
+
+    assert run_row(migrated_db, new_id)["source_run_id"] == run_id
+
+
+def test_a_succeeded_chore_that_is_not_an_eval_chore_is_still_refused(migrated_db):
+    run_id = escalated_chore(migrated_db, "x", source="bank")
+    migrated_db.execute("UPDATE runs SET status = 'succeeded' WHERE id = %s", (run_id,))
+
+    with pytest.raises(AdviceRefused, match="escalated"):
+        advise(migrated_db, run_id, "a hint", "mcp", REPOS)
+
+
+@pytest.mark.parametrize("quiet", ["eval", "bank"])
+def test_the_rerun_of_a_quiet_chore_keeps_its_source(migrated_db, quiet):
+    run_id = escalated_chore(migrated_db, "x", source=quiet)
+
+    new_id = advise(migrated_db, run_id, "a hint", "mcp", REPOS)
+
+    assert run_row(migrated_db, new_id)["source"] == quiet
+
+
+def test_a_named_provider_runs_the_rerun(migrated_db):
+    run_id = escalated_chore(migrated_db, "x")
+
+    new_id = advise(migrated_db, run_id, "a hint", "api", REPOS, provider="ollama")
+
+    assert run_row(migrated_db, new_id)["provider"] == "ollama"
+
+
+def test_a_rerun_of_a_succeeded_eval_chore_counts_as_advice(migrated_db):
+    run_id = escalated_chore(migrated_db, "x", source="eval")
+    migrated_db.execute("UPDATE runs SET status = 'succeeded' WHERE id = %s", (run_id,))
+
+    new_id = advise(migrated_db, run_id, "a hint", "api", REPOS)
+
+    assert advised_count(migrated_db, new_id) == 1

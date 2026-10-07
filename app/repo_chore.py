@@ -223,7 +223,14 @@ def _advice_block(hint: str | None, output: dict) -> str:
     the owner's hint, and the failed attempt it follows, when there is one."""
     block = f"\n\nThe owner's hint: {hint}" if hint else ""
     diff, test_output = output.get("diff") or "", output.get("test_output") or ""
-    if diff.strip():
+    if diff.strip() and output.get("status") == "succeeded":
+        # An eval chore whose pull request failed a grade it never saw.
+        block += (
+            "\n\nAn earlier attempt at this chore passed the repository's tests and opened a "
+            "pull request, but a check outside those tests found it wrong. "
+            f"Its diff, which is not applied:\n{diff[:MAX_DIFF_CHARS]}"
+        )
+    elif diff.strip():
         block += (
             f"\n\nAn earlier attempt at this chore failed ({output.get('reason', 'escalated')}). "
             f"Its diff, which is not applied:\n{diff[:MAX_DIFF_CHARS]}"
@@ -381,12 +388,13 @@ def _run(
         )
 
     git.run("add", "--", *sorted(written), cwd=clone)
+    diff = git.run("diff", "--cached", cwd=clone)
     git.run(
         "-c", f"user.name={AUTHOR[0]}", "-c", f"user.email={AUTHOR[1]}",
         "commit", "-q", "-m", _title(instruction), cwd=clone,
     )  # fmt: skip
     _push(git, clone, branch, write, was_cancelled)
-    return _open_pull(setup, run_id, instruction, branch, base, write, close)
+    return _open_pull(setup, run_id, instruction, branch, base, write, close, diff=diff)
 
 
 def _open_anyway(
@@ -445,7 +453,9 @@ def _push(git, clone, branch, write, was_cancelled) -> None:
         raise
 
 
-def _open_pull(setup, run_id, instruction, branch, base, write, close, note=None) -> LoopResult:
+def _open_pull(
+    setup, run_id, instruction, branch, base, write, close, note=None, diff=""
+) -> LoopResult:
     url = setup.github.find_pull(setup.repo.name, branch)
     if url is None:
         note = note or f"`{setup.repo.test_command}` passed."
@@ -455,7 +465,9 @@ def _open_pull(setup, run_id, instruction, branch, base, write, close, note=None
         )
         url = setup.github.open_pull(setup.repo.name, branch, base, _title(instruction), body)
     write("pr", {"url": url})
-    return close("succeeded", {"pr_url": url})
+    # The diff stays, so an eval chore whose pull request fails its grade can
+    # be advised with it (decision 47 of docs/build-brief-evals.md).
+    return close("succeeded", {"pr_url": url, "diff": diff[:MAX_DIFF_CHARS]})
 
 
 def _title(instruction: str) -> str:

@@ -21,6 +21,10 @@ import psycopg
 from app.approvals import ask
 from app.telegram import TelegramClient, TelegramError
 
+# Sources whose chores tell nobody: no message, no outage retry, not in the
+# report's escalations. An advised rerun keeps one (app/advice.py).
+QUIET_SOURCES = ("eval", "bank")
+
 logger = logging.getLogger("agent_runs.escalation")
 
 OUTPUT_TAIL_CHARS = 1000
@@ -97,7 +101,7 @@ def announce_escalation(
     if telegram is None or chat_id is None:
         return None
     task, repo, source, reason = conn.execute(_RUN, (run_id,)).fetchone()
-    if source in ("eval", "bank") or _already_announced(conn, run_id):
+    if source in QUIET_SOURCES or _already_announced(conn, run_id):
         return None
     done = conn.execute(_DONE, (run_id,)).fetchone()
     output = (done[0] if done else None) or {}

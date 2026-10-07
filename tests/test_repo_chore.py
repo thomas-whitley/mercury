@@ -26,6 +26,7 @@ from app.repo_chore import (
     UNUSABLE,
     WEAKENED,
     ChoreSetup,
+    _advice_block,
     run_repo_chore,
 )
 from app.runs import claim_run
@@ -152,10 +153,11 @@ def test_a_green_change_is_pushed_to_its_branch_and_opened_as_a_pull_request(
     assert git("show", "main:calc.py", cwd=remote) == CALC.strip()
     [pull] = github.pulls
     assert (pull["head"], pull["base"]) == (branch, "main")
-    assert done(migrated_db, run_id) == {
-        "status": "succeeded",
-        "pr_url": pull["html_url"],
-    }
+    finished = done(migrated_db, run_id)
+    assert (finished["status"], finished["pr_url"]) == ("succeeded", pull["html_url"])
+    # The diff stays, so an eval chore whose pull request fails its grade can
+    # be advised with it (decision 47 of docs/build-brief-evals.md).
+    assert "+def subtract" in finished["diff"]
     assert kinds(migrated_db, run_id) == ["clone", "read", "edit", "test", "push", "pr", "done"]
     status = migrated_db.execute("SELECT status FROM runs WHERE id = %s", (run_id,)).fetchone()
     assert status == ("succeeded",)
@@ -908,3 +910,11 @@ def test_a_nul_byte_in_a_reply_is_recorded_without_it_and_the_chore_carries_on(
         "SELECT reply FROM model_calls WHERE run_id = %s ORDER BY id LIMIT 1", (run_id,)
     ).fetchone()[0]
     assert first == pick("calc.py")
+
+
+def test_advice_after_a_wrong_pull_request_says_so_and_shows_its_diff():
+    block = _advice_block("Name it divide.", {"status": "succeeded", "diff": "+def div"})
+
+    assert "opened a pull request" in block
+    assert "+def div" in block
+    assert "test output" not in block

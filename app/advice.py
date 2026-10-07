@@ -9,27 +9,36 @@ them, is the one advising. A chore takes at most MAX_ADVISED advised reruns;
 when the last of them escalates too, it is marked needs_claude and advise
 refuses another.
 
-An advised rerun is a run with a hint whose source run ended escalated. An
-outage retry (app/outage.py) copies the hint too, but comes from a run that
-ended in error, so it is not counted.
+An eval chore that opened a pull request which then failed its hidden grade
+can be advised too (decision 47 of docs/build-brief-evals.md). The rerun of a
+quiet chore (eval, bank) keeps its source, so it tells nobody either, and the
+caller may name the rerun's provider (decision 48).
+
+An advised rerun is a run with a hint whose source run ended escalated, or
+succeeded as such an eval chore. An outage retry (app/outage.py) copies the
+hint too, but comes from a run that ended in error, so it is not counted.
 """
 
 import psycopg
 
 from app.chores import ChoreRefused, find_repo
 from app.config import HOME_PROVIDERS
-from app.escalation import chain_ids
+from app.escalation import QUIET_SOURCES, chain_ids
 from app.mercury_config import RepoConfig
 from app.tasks import TASK_TYPES
 
 MAX_ADVISED = 2
 MAX_HINT_CHARS = 2000
+# A chore that opened a pull request is done unless its source grades it
+# against a test it never saw.
+_GRADED_ELSEWHERE = ("eval",)
 
-_RUN = "SELECT type, status, task, repo, base_sha, provider FROM runs WHERE id = %s"
+_RUN = "SELECT type, status, task, repo, base_sha, provider, source FROM runs WHERE id = %s"
 _NEWER = "SELECT count(*) FROM runs WHERE source_run_id = %s"
 _ADVISED = """
 SELECT count(*) FROM runs r JOIN runs prior ON prior.id = r.source_run_id
-WHERE r.id = ANY(%s::uuid[]) AND r.hint IS NOT NULL AND prior.status = 'escalated'
+WHERE r.id = ANY(%s::uuid[]) AND r.hint IS NOT NULL
+  AND prior.status IN ('escalated', 'succeeded')
 """
 _CREATE = """
 INSERT INTO runs (task, type, provider, repo, status, source, source_run_id, hint, base_sha)
@@ -52,8 +61,10 @@ def advise(
     hint: str,
     source: str,
     repos: tuple[RepoConfig, ...],
+    provider: str | None = None,
 ) -> str:
-    """Queue the advised rerun and return its id, or raise AdviceRefused."""
+    """Queue the advised rerun and return its id, or raise AdviceRefused.
+    provider, when given, runs the rerun; the caller has checked it is free."""
     hint = (hint or "").strip()
     if not hint:
         raise AdviceRefused("The hint is blank.")
@@ -62,10 +73,11 @@ def advise(
     row = conn.execute(_RUN, (run_id,)).fetchone()
     if row is None:
         raise AdviceRefused(f"No run {run_id}.")
-    type_, status, task, repo_name, base_sha, provider = row
+    type_, status, task, repo_name, base_sha, ran_on, run_source = row
     if type_ != "repo_chore":
         raise AdviceRefused("Only a repo chore takes advice.")
-    if status != "escalated":
+    wrong_pull = status == "succeeded" and run_source in _GRADED_ELSEWHERE
+    if status != "escalated" and not wrong_pull:
         raise AdviceRefused(f"Run {run_id[:8]} is {status}, not escalated.")
     if conn.execute(_NEWER, (run_id,)).fetchone()[0]:
         raise AdviceRefused(f"Run {run_id[:8]} already has a newer run; advise that one.")
@@ -80,8 +92,10 @@ def advise(
     # A chore on a home provider stays there, so a rescue measures that model
     # (decision 26 of docs/build-brief-evals.md); any other starts on the
     # type's first rung.
-    if provider not in HOME_PROVIDERS:
-        provider = TASK_TYPES["repo_chore"].provider
+    if provider is None:
+        provider = ran_on if ran_on in HOME_PROVIDERS else TASK_TYPES["repo_chore"].provider
+    if run_source in QUIET_SOURCES:
+        source = run_source
     new_id = conn.execute(
         _CREATE, (task, provider, repo.name, source, run_id, hint, base_sha)
     ).fetchone()[0]

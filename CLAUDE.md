@@ -16,7 +16,7 @@ A FastAPI agent loop that streams its steps over SSE and resumes after a dropped
 - No paid cloud resource without me saying yes in the conversation. Target is $0 a month idle: Container Apps free grant, Supabase free plan, GitHub free tier. No custom domain, no paid Postgres, no Redis, no static IP.
 - Secrets live in GitHub Actions secrets and Container Apps secrets, never in the repo, never in a commit message, never in a log line. `.env` is gitignored.
 - The agent's sandbox is a subprocess with a timeout, a scrubbed environment and Python's socket layers disabled. It is a demo guard, not isolation; the worker container itself has a network. The README says exactly that. Do not describe it as more than it is.
-- Model defaults: Haiku 4.5, 50k tokens per run, 20 runs a day on the public URL. Config, not code.
+- Models: free providers only. Each task type tries its ladder from `tasks:` in `mercury.yaml` (Gemini, then Ollama cloud, for chores), 50k tokens per chore, 40 runs a day (`MAX_RUNS_PER_DAY`). The `local` provider is the home RTX 4060 and has its own cap of 200 (`MAX_LOCAL_RUNS_PER_DAY`). Haiku 4.5 is registered but no type uses it and no key is deployed. Config, not code, except `PROVIDERS` in `app/config.py`.
 
 ## Writing rules (README, docs, commit messages)
 

@@ -846,3 +846,47 @@ def test_every_model_call_is_recorded_with_its_prompt_and_reply(
     assert "=== calc.py ===" in rows[1][3]
     assert [row[4] for row in rows] == replies
     assert [row[5] for row in rows] == [100, 100]
+
+
+def push_commit(remote: Path, tmp_path: Path, name: str, body: str) -> str:
+    """Add one commit to the bare remote's main and return its sha."""
+    work = tmp_path / f"push-{name}"
+    git("clone", "-q", str(remote), str(work), cwd=tmp_path)
+    (work / name).write_text(body)
+    git("add", name, cwd=work)
+    git(
+        "-c", "user.name=seed", "-c", "user.email=seed@example.com", "commit", "-qm", name,
+        cwd=work,
+    )  # fmt: skip
+    git("push", "-q", "origin", "main", cwd=work)
+    return git("rev-parse", "HEAD", cwd=work)
+
+
+def test_a_chore_with_a_base_starts_from_that_commit(migrated_db, remote, github, tmp_path):
+    base = git("rev-parse", "main", cwd=remote)
+    push_commit(remote, tmp_path, "later.py", "X = 1\n")
+    run_id = chore_run(migrated_db)
+    migrated_db.execute("UPDATE runs SET base_sha = %s WHERE id = %s", (base, run_id))
+    model = StubModel(replies=[pick("calc.py"), change(GOOD_CALC)])
+
+    result = run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert result.status == "succeeded"
+    assert "later.py" not in model.prompts[0]
+    assert git("rev-parse", f"agent/{run_id}~1", cwd=remote) == base
+
+
+def test_a_base_that_is_not_in_the_repo_ends_the_chore_in_error(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = chore_run(migrated_db)
+    migrated_db.execute("UPDATE runs SET base_sha = %s WHERE id = %s", ("0" * 40, run_id))
+
+    result = run_repo_chore(
+        migrated_db, run_id, StubModel(replies=[pick("calc.py")]), setup(tmp_path, github),
+        worker_id=WORKER,
+    )  # fmt: skip
+
+    assert result.status == "error"
+    assert "git checkout failed" in done(migrated_db, run_id)["reason"]
+    assert TOKEN not in json.dumps(done(migrated_db, run_id))

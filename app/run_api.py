@@ -71,6 +71,7 @@ def _request_chore(state, run: RunRequest, source: str) -> RunCreated:
                 run.inputs["task"],
                 source,
                 run.provider or TASK_TYPES["repo_chore"].provider,
+                base=run.inputs.get("base"),
             )
         return RunCreated(id=run_id, status="pending")
     settings = state.settings
@@ -83,7 +84,14 @@ def _request_chore(state, run: RunRequest, source: str) -> RunCreated:
     try:
         with connect(settings.database_url, autocommit=True) as conn:
             run_id = request_chore(
-                conn, telegram, chat_id, repo, run.inputs["task"], source, provider=run.provider
+                conn,
+                telegram,
+                chat_id,
+                repo,
+                run.inputs["task"],
+                source,
+                provider=run.provider,
+                base=run.inputs.get("base"),
             )
     except TelegramError:
         raise HTTPException(

@@ -117,8 +117,9 @@ def run_repo_chore(
     retry_attempts: int = DEFAULT_MODEL_RETRY_ATTEMPTS,
     retry_backoff_seconds: float = DEFAULT_MODEL_RETRY_BACKOFF_SECONDS,
 ) -> LoopResult:
-    instruction, tokens_used, source_run_id, hint = conn.execute(
-        "SELECT task, tokens_used, source_run_id, hint FROM runs WHERE id = %s", (run_id,)
+    instruction, tokens_used, source_run_id, hint, base_sha = conn.execute(
+        "SELECT task, tokens_used, source_run_id, hint, base_sha FROM runs WHERE id = %s",
+        (run_id,),
     ).fetchone()
     # A run made from an earlier one is one of three things. With a hint it is
     # an advised rerun (app/advice.py); from a run that ended in error it is an
@@ -191,7 +192,7 @@ def run_repo_chore(
                 )
             return _run(
                 setup, run_id, instruction, workdir, write, close, ask, state, token_budget,
-                advice, was_cancelled,
+                advice, was_cancelled, base_sha,
             )  # fmt: skip
     except LostLease:
         logger.warning("repo chore %s: lease lost, stopping", run_id, extra=fields)
@@ -224,7 +225,7 @@ def _advice_block(hint: str | None, output: dict) -> str:
 
 def _run(
     setup, run_id, instruction, workdir, write, close, ask, state, token_budget, advice,
-    was_cancelled,
+    was_cancelled, base_sha=None,
 ):  # fmt: skip
     git = _Git(workdir, setup)
     branch = f"agent/{run_id}"
@@ -238,6 +239,11 @@ def _run(
         return _open_pull(setup, run_id, instruction, branch, base, write, close)
 
     git.run("clone", "-q", url, str(clone), cwd=workdir)
+    if base_sha:
+        # A bank chore starts from the parent of the commit it was mined from
+        # (decision 29). The pull request still targets the default branch, and
+        # shows only this chore's change, since base_sha is its merge base.
+        git.run("checkout", "-q", base_sha, cwd=clone)
     git.run("checkout", "-q", "-b", branch, cwd=clone)
     write("clone", {"resumed": False, "base": base})
 

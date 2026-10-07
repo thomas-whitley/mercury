@@ -1,6 +1,7 @@
 """The body of POST /runs, validated against the task registry. A chat run
 creates its run through the same model, so both paths refuse the same input."""
 
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, field_validator, model_validator
@@ -13,6 +14,9 @@ from app.tasks import CHECK_KINDS, DEFAULT_CHECK_KIND, TASK_TYPES
 # cannot claim either. eval is the eval runner (evals/runner.py), whose
 # escalations reach the report and never Telegram. bank is the Phase 5 chore
 # bank (part 5b), quiet in the same ways as eval.
+# A full commit sha, so the run row says exactly where a chore started.
+_SHA = re.compile(r"[0-9a-f]{40}")
+
 PostedSource = Literal["api", "n8n", "scheduler", "eval", "bank"]
 
 
@@ -66,6 +70,19 @@ class RunRequest(BaseModel):
             raise ValueError("inputs.kind is only for site_check")
         if kind not in CHECK_KINDS:
             raise ValueError(f"unknown check kind {kind!r}")
+        return self
+
+    @model_validator(mode="after")
+    def only_a_chore_has_a_base(self) -> "RunRequest":
+        # The commit a repo chore starts from (decision 29 of
+        # docs/build-brief-evals.md). None is the tip of the default branch.
+        base = self.inputs.get("base")
+        if base is None:
+            return self
+        if self.type != "repo_chore":
+            raise ValueError("inputs.base is only for repo_chore")
+        if not isinstance(base, str) or not _SHA.fullmatch(base):
+            raise ValueError("inputs.base must be a full 40 character commit sha")
         return self
 
     @property

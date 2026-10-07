@@ -47,6 +47,7 @@ def retries_of(conn, run_id: str) -> list[tuple]:
 
 def test_an_outage_older_than_half_an_hour_is_retried_once(migrated_db):
     failed = outage_run(migrated_db, hint="use floats")
+    migrated_db.execute("UPDATE runs SET base_sha = %s WHERE id = %s", ("b" * 40, failed))
 
     queued = retry_outages(migrated_db, None, None, PAGE)
 
@@ -54,6 +55,10 @@ def test_an_outage_older_than_half_an_hour_is_retried_once(migrated_db):
     assert retries_of(migrated_db, failed) == [
         ("Add divide", "owner/fixture", "pending", "n8n", "use floats", "gemini")
     ]
+    base = migrated_db.execute(
+        "SELECT base_sha FROM runs WHERE source_run_id = %s", (failed,)
+    ).fetchone()
+    assert base == ("b" * 40,)
 
 
 def test_a_fresh_outage_waits_for_the_next_tick(migrated_db):

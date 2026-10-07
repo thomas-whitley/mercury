@@ -16,8 +16,8 @@ from app.tasks import TASK_TYPES
 from app.telegram import TelegramClient
 
 _CREATE = """
-INSERT INTO runs (task, type, provider, repo, status, telegram_chat_id, source)
-VALUES (%s, 'repo_chore', %s, %s, 'awaiting_approval', %s, %s) RETURNING id
+INSERT INTO runs (task, type, provider, repo, status, telegram_chat_id, source, base_sha)
+VALUES (%s, 'repo_chore', %s, %s, 'awaiting_approval', %s, %s, %s) RETURNING id
 """
 # Its progress replaces the question once it is approved.
 _SET_MESSAGE_FROM_APPROVAL = """
@@ -25,8 +25,8 @@ UPDATE runs SET telegram_message_id = (SELECT message_id FROM approvals WHERE id
 WHERE id = %s
 """
 _CREATE_STARTED = """
-INSERT INTO runs (task, type, provider, repo, status, source)
-VALUES (%s, 'repo_chore', %s, %s, 'pending', %s) RETURNING id
+INSERT INTO runs (task, type, provider, repo, status, source, base_sha)
+VALUES (%s, 'repo_chore', %s, %s, 'pending', %s, %s) RETURNING id
 """
 
 
@@ -55,13 +55,19 @@ def starts_unasked(repo: RepoConfig, source: str) -> bool:
 
 
 def start_chore(
-    conn: psycopg.Connection, repo: RepoConfig, instruction: str, source: str, provider: str
+    conn: psycopg.Connection,
+    repo: RepoConfig,
+    instruction: str,
+    source: str,
+    provider: str,
+    *,
+    base: str | None = None,
 ) -> str:
     """Create the chore pending, where the worker claims it. Only for a repo
     starts_unasked allows. No chat id, so no progress message and no Open it
     anyway button."""
     run_id = conn.execute(
-        _CREATE_STARTED, (instruction.strip(), provider, repo.name, source)
+        _CREATE_STARTED, (instruction.strip(), provider, repo.name, source, base)
     ).fetchone()[0]
     return str(run_id)
 
@@ -74,6 +80,7 @@ def request_chore(
     instruction: str,
     source: str,
     provider: str | None = None,
+    base: str | None = None,
 ) -> str:
     """Create the chore waiting and ask about it. Returns the run id.
 
@@ -94,6 +101,7 @@ def request_chore(
                 repo.name,
                 chat_id,
                 source,
+                base,
             ),
         ).fetchone()[0]
         approval_id = ask(conn, telegram, chat_id, "start_run", question, run_id=str(run_id))

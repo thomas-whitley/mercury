@@ -47,8 +47,9 @@ ORDER BY r.finished_at"""
 )
 _IS_OUTAGE = "SELECT count(*) FROM runs r WHERE r.id = %s AND " + _OUTAGE
 _RETRY = """
-INSERT INTO runs (task, type, provider, repo, status, source, source_run_id, hint)
-SELECT task, 'repo_chore', %s, repo, 'pending', source, id, hint FROM runs WHERE id = %s
+INSERT INTO runs (task, type, provider, repo, status, source, source_run_id, hint, base_sha)
+SELECT task, 'repo_chore', %s, repo, 'pending', source, id, hint, base_sha
+FROM runs WHERE id = %s
 RETURNING id
 """
 _ESCALATE = "UPDATE runs SET status = 'escalated', escalation_reason = %s WHERE id = %s"

@@ -35,8 +35,15 @@ The ollama column ran on a later UTC day than the others, because the worker ref
 model run past `MAX_RUNS_PER_DAY` (20 a UTC day, site checks not counted) and 12 were used
 on 2026-10-06. The brief says to raise it in `mercury-config`, but nothing passes
 `MAX_RUNS_PER_DAY` through `infra/deploy.sh` or the Bicep, so the live value is always the
-default 20. Plumbing the variable through the Bicep belongs in Phase 2. Only PR #4 is open
-on the fixture after the run.
+default 20. Since `497897b` (2026-10-07) the Bicep passes it to the api and the worker, and
+`mercury-config` sets it from its `MAX_RUNS_PER_DAY` Actions variable, live at 40. Change it
+with `gh variable set MAX_RUNS_PER_DAY -R thomas-whitley/mercury-config -b <n>` and a Deploy
+re-run. Only PR #4 is open on the fixture after the run.
+
+Phase 2 is detailed into Tasks 8 to 18 of `docs/build-brief-evals.md` (2026-10-07, on Opus),
+with Thomas's decisions 16 to 19: weakened tests get feedback before they escalate, an outage
+retries hourly at most three times, eval chores never message Telegram, and the unread
+`budgets:` and `providers:` sections are deleted. Start at Task 8.
 
 The two delegate columns must run one at a time on the 32 GB desktop. Run together they
 alternate models task by task, Ollama keeps both loaded (18 GB and 13 GB), and Claude Code

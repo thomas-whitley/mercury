@@ -1,6 +1,6 @@
 # Build brief: Mercury as a cheap task runner, with evals and an escalation ladder
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement Phase 1 task by task (Thomas chose native execution, then one review of the whole branch). Steps use checkbox (`- [ ]`) syntax for tracking. Phases 2 to 4 are specs, not tasks: each one is turned into tasks in its own session, after the phase before it has landed.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement Phase 1 task by task (Thomas chose native execution, then one review of the whole branch). Steps use checkbox (`- [ ]`) syntax for tracking. Phase 2 was turned into Tasks 8 to 18 on 2026-10-07, after Phase 1 landed. Phases 3 and 4 are still specs, not tasks: each one is turned into tasks in its own session, after the phase before it has landed.
 
 **Goal:** Mercury completes well defined chores on free models, proves how often it gets them right with tests the model never saw, and escalates what it cannot fix to Thomas and then to a Claude session.
 
@@ -1976,18 +1976,972 @@ Twenty two runs at roughly 1 to 3 minutes each.
 
 ---
 
-## Phase 2 spec: the escalation ladder, advise, and the report
+## Phase 2
 
-Detailed into tasks in its own session, on Opus, after Phase 1 lands. What it must do:
+Detailed into tasks on 2026-10-07, on Opus, after Phase 1 landed (`bb64703`, the baseline: gemini 11, ollama 9, qwen3-coder 10, gpt-oss 20b 4 of 11). Thomas chose native execution for Phase 1; use the same unless he says otherwise. Execute with superpowers:executing-plans, one task per commit, the full suite green before each commit.
 
-- **Ladder in config.** `mercury.yaml` gains a ladder per type, for example `repo_chore: {ladder: [gemini, ollama], budget_tokens: 50000}`, read at startup into the registry, replacing the provider and fallback in `app/tasks.py` for those types. The unread `tasks:` and `budgets:` sections are wired in or deleted, so the private config states nothing false. `config/mercury.sample.yaml` documents the shape.
-- **Escalation.** A chore that ends red after three attempts, or after three unusable replies, ends `escalated` (a new status, with a migration) and records why. An outage on every free provider retries the same rung an hour later instead. A budget trip escalates straight to Thomas with no retry.
-- **Fallback after a reclaim.** A run that already fell back has the fallback provider on its row, so a worker that reclaims or reopens it runs it on that provider with no fallback behind it (Phase 1 left this as it is). The ladder records which rung a run is on and keeps the rungs after it.
-- **Weakened tests.** Before any push, the chore rejects a diff that removes a test function or test file, or adds `skip`, `xfail` or `@unittest.skip`, and ends `escalated` with the reason "weakened tests". The same test id comparison the eval runner uses is the simplest form of the check. The eval report counts how often it fires.
-- **The message.** One Telegram message per escalation, with the instruction, the reason, the tail of the test output and a link to the run page, and a prompt to reply with a hint. A second escalation of the same chore goes in the report, not a new message.
-- **Advise.** A Telegram reply to that message, or the MCP tool `advise(run_id, hint)`, creates a follow up chore with `source_run_id` set, the same instruction, the hint, and the failed diff and test output as context. It starts without Approve. After two advised reruns fail, the chore is marked "take to a Claude session" and `advise` refuses a third.
-- **The report.** An MCP tool `report(since)` returns Markdown: escalations first (instruction, every rung with provider, tokens and cost, the last diff, the test output tail, why it stopped), then chores Mercury started itself with PR links and state, then the latest eval summary, then spend against the cap. `scripts/mercury_report.py` saves it to `reports/YYYY-MM-DD.md`, which is gitignored. The digest gains one line when anything is waiting.
-- **The Claude session rung.** Documented in the README and in the MCP server's instructions: a Claude session reads `report`, writes a sharper hint through `advise` first, and does the chore itself on a local clone only when it judges the task beyond free models, saying why.
+**Where Phase 2 starts.** `MAX_RUNS_PER_DAY` already reaches the api and the worker (`497897b`, live at 40 through the `MAX_RUNS_PER_DAY` Actions variable in `mercury-config`), so the spec's "plumb it through the Bicep" is done and has no task here. Of the 10 Phase 1 failures, 6 were a result that removed one of `main`'s tests after an instruction that said "Add tests to" an existing file, and every one of them passed the repo's own test command. That is why Task 11 retries with feedback rather than escalating at once.
+
+**What the spec says, condensed.** A ladder per type is read from `mercury.yaml`. A chore that ends red after three attempts, or after three unusable replies, or that still weakens tests on its third attempt, ends `escalated` with a reason. One Telegram message per escalated chore, with a reply or the MCP tool `advise(run_id, hint)` creating an advised rerun from `main` that starts without Approve; after two advised reruns fail the chore is marked for a Claude session and `advise` refuses a third. An outage on every free provider retries an hour later. A budget trip goes straight to Thomas, which the worker already does (`app/worker.py` `_tell_owner` on `budget_exhausted` and on a cap trip), so it keeps its own statuses and gets no task. An MCP `report(since)` and `scripts/mercury_report.py` put it all in one Markdown page.
+
+### Phase 2 decisions (2026-10-07)
+
+16. **Weakened tests get feedback.** A green attempt whose diff removes or skips one of `main`'s tests counts as a failed attempt, and the next prompt names what was dropped. Only a third attempt that still weakens tests ends `escalated` with the reason `weakened tests`.
+17. **An outage retries hourly, at most three times.** A chore whose model never answered on any provider ends `error` with the reason `providers unavailable`. The hourly scheduler Job queues a follow up chore for it, linked by `source_run_id`, up to three in a row; the run after the third escalates. Nothing keeps the worker awake while it waits.
+18. **Eval chores are silent.** The eval runner posts its chores with `source: eval`. Their escalations reach the report and never Telegram.
+19. **`budgets:` and `providers:` are deleted** from the sample and the private config. The caps stay environment variables (`DAILY_TOKENS_PER_PROVIDER`, `MONTHLY_BUDGET_USD`) and providers stay `PROVIDERS` in `app/config.py`.
+
+### Phase 2 Review Focus
+
+- A private `mercury.yaml` still in the old shape (`repo_chore: provider: haiku`) must stop the api at startup with a message naming the key, not run on a default nobody chose. Test in Task 8.
+- A run that already fell back to the last rung and is reclaimed must run on that rung with nothing behind it, and a run on the first rung must still get every rung after it. Tests in Task 9.
+- A test renamed or rewritten from a `unittest.TestCase` method to a bare function counts as removed, because its id is gone. `ollama` did exactly this on `clamp` and `divide` (fixture PRs #17 and #19). Test in Task 11.
+- A reply on Telegram to an escalation message that is not the latest one, or to any other bot message, must not become a hint; only a reply to a chore's own escalation message is. Test in Task 14.
+- A cancel that lands between the push and the pull request must not leave an `agent/<id>` branch, but a worker that loses its lease to a takeover must leave the branch for the new worker. Tests in Task 16.
+
+---
+
+### Task 8: Each type's ladder comes from `mercury.yaml`
+
+**Files:**
+- Modify: `app/mercury_config.py`, `app/tasks.py`, `app/main.py` (lifespan), `app/worker.py` (`main`), `app/scheduler.py` (`main`), `config/mercury.sample.yaml`
+- Test: `tests/test_mercury_config.py`, `tests/test_tasks.py`
+
+**Interfaces:**
+- Produces: `TaskSettings(ladder: tuple[str, ...], budget_tokens: int | None)` and `MercuryConfig.tasks: dict[str, TaskSettings]` in `app/mercury_config.py`; `TaskType.ladder: tuple[str, ...]` with `TaskType.provider` now a property (`ladder[0]` or `None`); `configure_task_types(tasks: dict[str, TaskSettings]) -> None` in `app/tasks.py`, which replaces entries of `TASK_TYPES` in place. `TaskType.fallback` is removed; Task 9 replaces its one caller.
+
+- [ ] **Step 1: Write the failing tests.** In `tests/test_mercury_config.py`:
+
+```python
+def write(tmp_path, text: str):
+    path = tmp_path / "mercury.yaml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_a_type_reads_its_ladder_and_budget(tmp_path):
+    config = load_mercury_config(
+        write(tmp_path, "tasks:\n  repo_chore:\n    ladder: [ollama, gemini]\n    budget_tokens: 40000\n")
+    )
+    assert config.tasks["repo_chore"] == TaskSettings(ladder=("ollama", "gemini"), budget_tokens=40000)
+
+
+def test_a_type_with_no_tasks_entry_is_absent(tmp_path):
+    assert load_mercury_config(write(tmp_path, "portfolio: {}\n")).tasks == {}
+
+
+@pytest.mark.parametrize(
+    "text, words",
+    [
+        ("tasks:\n  repo_chore:\n    provider: haiku\n", "tasks.repo_chore.provider"),
+        ("tasks:\n  repo_chore:\n    ladder: [nobody]\n", "unknown provider 'nobody'"),
+        ("tasks:\n  homework:\n    ladder: [gemini]\n", "unknown task type 'homework'"),
+        ("tasks:\n  site_check:\n    ladder: [gemini]\n", "site_check calls no model"),
+        ("tasks:\n  repo_chore:\n    ladder: []\n", "needs at least one provider"),
+        ("budgets:\n  per_month_usd: 5\n", "budgets"),
+    ],
+)
+def test_a_config_mercury_would_misread_stops_it_at_startup(tmp_path, text, words):
+    with pytest.raises(ValueError, match=re.escape(words)):
+        load_mercury_config(write(tmp_path, text))
+```
+
+In `tests/test_tasks.py`:
+
+```python
+@pytest.fixture
+def restore_task_types():
+    saved = dict(TASK_TYPES)
+    yield
+    TASK_TYPES.clear()
+    TASK_TYPES.update(saved)
+
+
+def test_the_shipped_ladders_are_free_and_start_where_they_did():
+    assert TASK_TYPES["repo_chore"].ladder == ("gemini", "ollama")
+    assert TASK_TYPES["chat"].ladder == ("ollama", "gemini")
+    assert TASK_TYPES["site_check"].ladder == ()
+    for name, task_type in TASK_TYPES.items():
+        assert all(PROVIDERS[p].usd_per_million_tokens == 0 for p in task_type.ladder), name
+
+
+def test_the_config_replaces_a_types_ladder_and_budget(restore_task_types):
+    configure_task_types({"repo_chore": TaskSettings(ladder=("ollama",), budget_tokens=30_000)})
+
+    assert TASK_TYPES["repo_chore"].provider == "ollama"
+    assert TASK_TYPES["repo_chore"].ladder == ("ollama",)
+    assert TASK_TYPES["repo_chore"].budget_tokens == 30_000
+    assert TASK_TYPES["pytest"].ladder == ("gemini", "ollama")
+
+
+def test_a_config_with_no_budget_keeps_the_types_own(restore_task_types):
+    configure_task_types({"digest": TaskSettings(ladder=("ollama",), budget_tokens=None)})
+    assert TASK_TYPES["digest"].budget_tokens == 20_000
+```
+
+- [ ] **Step 2: Run them to see them fail.** From WSL as in "Where this starts", `uv run pytest tests/test_mercury_config.py tests/test_tasks.py -q -p no:cacheprovider`. Expected: ImportError on `TaskSettings` and `configure_task_types`.
+
+- [ ] **Step 3: Implement.** In `app/mercury_config.py`, add the dataclass and the loader. The loader imports `PROVIDERS` from `app.config` and `TASK_TYPES` from `app.tasks` lazily inside `_tasks`, because `app.tasks` will import `TaskSettings` from here.
+
+```python
+@dataclass(frozen=True)
+class TaskSettings:
+    """One entry under tasks: in mercury.yaml. ladder is the providers a run
+    of this type tries in order when one fails; budget_tokens None keeps the
+    type's own budget from app/tasks.py."""
+
+    ladder: tuple[str, ...]
+    budget_tokens: int | None = None
+
+
+def _tasks(section: dict) -> dict[str, TaskSettings]:
+    from app.config import PROVIDERS
+    from app.tasks import TASK_TYPES
+
+    tasks = {}
+    for name, entry in section.items():
+        entry = entry or {}
+        if name not in TASK_TYPES:
+            raise ValueError(f"mercury.yaml: unknown task type {name!r} under tasks")
+        if "provider" in entry:
+            raise ValueError(
+                f"mercury.yaml: tasks.{name}.provider is no longer read; "
+                f"write tasks.{name}.ladder: [first, second] instead"
+            )
+        ladder = tuple(entry.get("ladder") or ())
+        if TASK_TYPES[name].provider is None:
+            if ladder:
+                raise ValueError(f"mercury.yaml: {name} calls no model, so it takes no ladder")
+        elif not ladder:
+            raise ValueError(f"mercury.yaml: tasks.{name}.ladder needs at least one provider")
+        for provider in ladder:
+            if provider not in PROVIDERS:
+                raise ValueError(f"mercury.yaml: unknown provider {provider!r} in tasks.{name}")
+        budget = entry.get("budget_tokens")
+        tasks[name] = TaskSettings(ladder=ladder, budget_tokens=int(budget) if budget else None)
+    return tasks
+```
+
+In `load_mercury_config`, refuse the deleted sections and fill the new field:
+
+```python
+    for gone in ("budgets", "providers"):
+        if gone in data:
+            raise ValueError(
+                f"mercury.yaml: {gone}: is not read. Caps are DAILY_TOKENS_PER_PROVIDER and "
+                "MONTHLY_BUDGET_USD in the environment, and providers are app/config.py PROVIDERS."
+            )
+    ...
+        tasks=_tasks(data.get("tasks") or {}),
+```
+
+with `tasks: dict[str, TaskSettings] = field(default_factory=dict)` on `MercuryConfig` (import `field`). In `app/tasks.py`, replace `provider` and `fallback` with `ladder`:
+
+```python
+@dataclass(frozen=True)
+class TaskType:
+    name: str
+    tools: tuple[str, ...]
+    # The providers a run tries in order; the first is the type's own. Empty
+    # for a type that calls no model.
+    ladder: tuple[str, ...]
+    budget_tokens: int
+    public: bool = False
+
+    @property
+    def provider(self) -> str | None:
+        return self.ladder[0] if self.ladder else None
+
+
+_TYPES = (
+    TaskType(name="pytest", tools=(), ladder=("gemini", "ollama"), budget_tokens=50_000),
+    TaskType(name="chat", tools=_CHAT_TOOLS, ladder=("ollama", "gemini"), budget_tokens=20_000),
+    TaskType(name="repo_chore", tools=(), ladder=("gemini", "ollama"), budget_tokens=50_000),
+    TaskType(name="site_check", tools=(), ladder=(), budget_tokens=0),
+    TaskType(name="digest", tools=(), ladder=("gemini", "ollama"), budget_tokens=20_000),
+)
+
+
+def configure_task_types(tasks: "dict[str, TaskSettings]") -> None:
+    """Apply mercury.yaml's tasks: section over the defaults above. Called
+    once at startup by the api, the worker and the scheduler, after the
+    config has loaded."""
+    for name, settings in tasks.items():
+        TASK_TYPES[name] = replace(
+            TASK_TYPES[name],
+            ladder=settings.ladder,
+            budget_tokens=settings.budget_tokens or TASK_TYPES[name].budget_tokens,
+        )
+```
+
+Rewrite the module docstring to say the defaults are in code and `mercury.yaml` overrides the ladder and budget. Call `configure_task_types(config.tasks)` right after each `load_mercury_config` in `app/main.py`'s lifespan, `app/worker.py` `main` and `app/scheduler.py` `main`. In `app/worker.py` keep `_with_fallback` compiling for now by reading `task_type.ladder[1] if len(task_type.ladder) > 1 else None` where it read `task_type.fallback`; Task 9 rewrites it.
+
+In `config/mercury.sample.yaml`, delete `providers:` and `budgets:`, and replace `tasks:` with:
+
+```yaml
+tasks:                  # optional; each type's ladder is the providers it tries in order
+  pytest:
+    ladder: [gemini, ollama]
+    budget_tokens: 50000
+  chat:
+    ladder: [ollama, gemini]
+    budget_tokens: 20000
+  repo_chore:
+    ladder: [gemini, ollama]
+    budget_tokens: 50000
+  digest:
+    ladder: [gemini, ollama]
+    budget_tokens: 20000
+```
+
+and correct the environment list at the bottom to the names the image reads: `MODEL_API_KEY` (Gemini), `OLLAMA_API_KEY`, `ANTHROPIC_API_KEY` (no type uses it), plus `MAX_RUNS_PER_DAY`, `DAILY_TOKENS_PER_PROVIDER` and `MONTHLY_BUDGET_USD` as plain settings.
+
+- [ ] **Step 4: Run the full suite.** Expected: the new tests pass, and `tests/test_tasks.py::test_every_other_type_names_a_registered_provider` still passes through the `provider` property. `ruff check` and `ruff format --check` clean.
+
+- [ ] **Step 5: Commit** `Read each task type's provider ladder and budget from mercury.yaml, and refuse the unread budgets and providers sections`.
+
+- [ ] **Step 6: The private config, Thomas's step.** Nothing goes live until `mercury-config` changes, and the new image refuses the old `mercury.yaml` at startup, so the config change and the `PUBLIC_SHA` bump go in one commit there. Prepare it as a script under the session scratchpad, as `raise-run-limit.sh` was on 2026-10-07: delete `providers:` and `budgets:`, turn each `provider: x` under `tasks:` into `ladder:` (for `repo_chore`, `[gemini, ollama]`, since the stated `haiku` was never read and no `ANTHROPIC_API_KEY` is deployed), print the diff, and push only with `--yes`. Do not deploy this step alone; it ships with Task 9 so the fallback reads the ladder the moment the ladder is read.
+
+---
+
+### Task 9: A run falls back along its ladder from its own rung
+
+**Files:**
+- Modify: `app/worker.py` (`_with_fallback`)
+- Test: `tests/test_fallback.py`
+
+**Interfaces:**
+- Consumes: `TaskType.ladder` (Task 8).
+- Produces: `rungs_after(ladder: tuple[str, ...], provider: str) -> tuple[str, ...]` in `app/worker.py`. The run's model is the run's provider with each later rung behind it in order, through nested `FallbackModel`s, and each switch writes the provider that takes over to the run row.
+
+- [ ] **Step 1: Write the failing tests** in `tests/test_fallback.py`:
+
+```python
+from app.worker import rungs_after
+
+
+@pytest.mark.parametrize(
+    "provider, expected",
+    [
+        ("gemini", ("ollama", "haiku")),
+        ("ollama", ("haiku",)),
+        # A reclaimed run already on the last rung has nothing behind it.
+        ("haiku", ()),
+        # A provider the caller named that is not on the ladder gets the whole ladder.
+        ("groq", ("gemini", "ollama", "haiku")),
+    ],
+)
+def test_the_rungs_after_a_provider(provider, expected):
+    assert rungs_after(("gemini", "ollama", "haiku"), provider) == expected
+
+
+def test_two_failures_walk_the_run_down_two_rungs_and_the_row_follows(migrated_db, restore_task_types):
+    configure_task_types({"pytest": TaskSettings(ladder=("gemini", "ollama", "haiku"))})
+    run_id = new_pytest_run(migrated_db, provider="gemini")
+    models = {"gemini": _Failing(), "ollama": _Failing(), "haiku": StubModel(replies=["ok"])}
+    model = _with_fallback(
+        migrated_db, run_id, models["gemini"], TASK_TYPES["pytest"],
+        settings_with(), lambda settings, name: models[name], "gemini",
+    )  # fmt: skip
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            model.complete("s", "p")
+    assert model.complete("s", "p").text == "ok"
+    provider = migrated_db.execute("SELECT provider FROM runs WHERE id = %s", (run_id,)).fetchone()
+    assert provider == ("haiku",)
+
+
+def test_a_rung_with_no_credentials_is_skipped(migrated_db, restore_task_types):
+    configure_task_types({"pytest": TaskSettings(ladder=("gemini", "ollama", "haiku"))})
+    run_id = new_pytest_run(migrated_db, provider="gemini")
+
+    def build(settings, name):
+        if name == "ollama":
+            raise RuntimeError("no model credentials: set OLLAMA_API_KEY")
+        return StubModel(replies=[name])
+
+    model = _with_fallback(
+        migrated_db, run_id, _Failing(), TASK_TYPES["pytest"], settings_with(), build, "gemini"
+    )
+    with pytest.raises(RuntimeError):
+        model.complete("s", "p")
+    assert model.complete("s", "p").text == "haiku"
+```
+
+`new_pytest_run` inserts a `pytest` run with that provider and returns its id; add it beside the existing helpers in the file if none fits. `restore_task_types` is the fixture from Task 8; move it into `tests/conftest.py` so both files share it.
+
+- [ ] **Step 2: Run to see them fail.** Expected: ImportError on `rungs_after`.
+
+- [ ] **Step 3: Implement** in `app/worker.py`:
+
+```python
+def rungs_after(ladder: tuple[str, ...], provider: str) -> tuple[str, ...]:
+    """The rungs a run on this provider may still fall back to. A run that
+    already fell back, and is then reclaimed, keeps only the rungs below the
+    one it reached."""
+    if provider in ladder:
+        return ladder[ladder.index(provider) + 1 :]
+    return tuple(rung for rung in ladder if rung != provider)
+
+
+def _with_fallback(conn, run_id, model, task_type, settings, model_builder, provider) -> Model:
+    """The run's model with every later rung behind it, nearest first. Each
+    switch writes the provider taking over to the run's row, so the runs list
+    and the daily token cap count the provider that answered."""
+    fields = {"run_id": run_id, "worker_id": settings.worker_id}
+    chain: list[tuple[str, Model]] = []
+    for rung in rungs_after(task_type.ladder, provider):
+        try:
+            chain.append((rung, model_builder(settings, rung)))
+        except RuntimeError as error:
+            logger.warning("run %s skips rung %s: %s", run_id, rung, error, extra=fields)
+    if not chain:
+        return model
+
+    def switch_to(name: str, from_name: str) -> Callable[[], None]:
+        def switch() -> None:
+            logger.warning(
+                "run %s: %s failed, falling back to %s", run_id, from_name, name, extra=fields
+            )
+            conn.execute("UPDATE runs SET provider = %s WHERE id = %s", (name, run_id))
+
+        return switch
+
+    # Fold from the last rung up, so each FallbackModel's fallback is the rest of the chain.
+    tail = chain[-1][1]
+    for index in range(len(chain) - 2, -1, -1):
+        name, rung_model = chain[index]
+        tail = FallbackModel(rung_model, tail, on_switch=switch_to(chain[index + 1][0], name))
+    return FallbackModel(model, tail, on_switch=switch_to(chain[0][0], provider))
+```
+
+`FallbackModel` re-raises the failing call after switching, so a two rung walk raises twice before the third rung answers; the loop's existing retries (4 attempts) cover two switches. Check that the lease arithmetic in `app/config.py` (`DEFAULT_LEASE_SECONDS`) still holds: a step is still at most 4 calls, whichever rung answers them.
+
+- [ ] **Step 4: Run the full suite.** The existing fallback tests keep passing; `tests/test_tasks.py::test_chat_runs_on_ollama_and_the_rest_on_gemini` still holds.
+
+- [ ] **Step 5: Commit** `Fall back along the type's ladder from the run's own rung, so a reclaimed run keeps only the rungs below it`.
+
+- [ ] **Step 6: Deploy Tasks 8 and 9 together**, Thomas's step: push, wait for CI and Publish, then run the Task 8 script with `PUBLIC_SHA` set to this commit. Confirm with the MCP `status` tool and one `pytest` run that the api started and runs still close `succeeded`.
+
+---
+
+### Task 10: A chore that cannot finish ends `escalated` with its reason
+
+**Files:**
+- Create: `migrations/013_escalation.sql`
+- Modify: `app/repo_chore.py`, `app/worker.py` (`_run_chore`), `app/run_request.py` (`PostedSource`), `app/run_list.py`, `evals/runner.py` (`run_one`, `summarise`, the refused message)
+- Test: `tests/test_repo_chore.py`, `tests/test_run_list.py`, `tests/test_migrations.py`, `tests/test_eval_runner.py`
+
+**Interfaces:**
+- Produces: run columns `escalation_reason text`, `hint text`, `escalation_message_id bigint`, `needs_claude boolean`; status `escalated`; source `eval`; constants in `app/repo_chore.py`: `RED = "tests still failing after 3 attempts"`, `UNUSABLE = "three unusable replies"`, `WEAKENED = "weakened tests"` (used from Task 11), `OUTAGE = "providers unavailable"`; `escalation_reason` as the last field of `GET /runs` and `GET /runs/{id}`.
+
+- [ ] **Step 1: The migration.**
+
+```sql
+-- Phase 2's escalation ladder. A chore that cannot finish on a free model
+-- ends escalated with a reason. hint is the advice an advised rerun carries
+-- (source_run_id names the run it advises). escalation_message_id is the
+-- Telegram message a reply to which becomes a hint. needs_claude marks a
+-- chore whose second advised rerun also failed.
+ALTER TABLE runs ADD COLUMN escalation_reason text;
+ALTER TABLE runs ADD COLUMN hint text;
+ALTER TABLE runs ADD COLUMN escalation_message_id bigint;
+ALTER TABLE runs ADD COLUMN needs_claude boolean NOT NULL DEFAULT false;
+
+ALTER TABLE runs DROP CONSTRAINT runs_source_check;
+ALTER TABLE runs ADD CONSTRAINT runs_source_check
+    CHECK (source IN ('telegram', 'mcp', 'n8n', 'api', 'scheduler', 'eval'));
+
+CREATE INDEX runs_escalated_idx ON runs (created_at DESC) WHERE status = 'escalated';
+```
+
+Check the constraint name first with `\d runs` on the compose database; 012 created it unnamed, so Postgres called it `runs_source_check`.
+
+- [ ] **Step 2: Write the failing tests.** In `tests/test_repo_chore.py`, rename `test_three_red_attempts_fail_the_run_with_the_diff_and_push_nothing` to `..._escalate_the_run_...` and change its status assertions to `escalated`, adding:
+
+```python
+    assert output["reason"] == RED
+    row = migrated_db.execute("SELECT escalation_reason FROM runs WHERE id = %s", (run_id,))
+    assert row.fetchone() == (RED,)
+```
+
+and add:
+
+```python
+def test_three_unusable_replies_escalate_with_their_own_reason(migrated_db, remote, github, tmp_path):
+    run_id = chore_run(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), "I would change calc.py like so."])
+
+    result = run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert result.status == "escalated"
+    assert done(migrated_db, run_id)["reason"] == UNUSABLE
+    assert remote_branches(remote) == ["main"]
+
+
+def test_a_model_that_never_answers_ends_in_error_as_an_outage(migrated_db, remote, github, tmp_path):
+    run_id = chore_run(migrated_db)
+
+    result = run_repo_chore(
+        migrated_db, run_id, _Failing(), setup(tmp_path, github), worker_id=WORKER,
+        retry_attempts=1, retry_backoff_seconds=0,
+    )  # fmt: skip
+
+    assert result.status == "error"
+    assert done(migrated_db, run_id)["reason"] == OUTAGE
+```
+
+(`_Failing` as in `tests/test_fallback.py`; import it from there.) Every existing test that expected a chore to end `failed` now expects `escalated`: search `tests/` for `"failed"` beside `repo_chore`, including the Open it anyway tests in `tests/test_repo_chore_approval.py`. In `tests/test_run_list.py`, assert that a run row with `escalation_reason` set serialises it as `"escalation_reason"` and that one without serialises `None`. In `tests/test_eval_runner.py`, assert that `run_one` posts `"source": "eval"` (the fake API there records the body) and that an escalated run's row carries the reason as `detail`.
+
+- [ ] **Step 3: Run to see them fail.**
+
+- [ ] **Step 4: Implement.** In `app/repo_chore.py`, start `state` with `"unusable": 0`, add one each time a reply is not the JSON asked for or names a refused path, and choose the reason when the attempts run out:
+
+```python
+    else:
+        ...
+        reason = UNUSABLE if state["unusable"] == MAX_ATTEMPTS else RED
+        return close("escalated", {"reason": reason, "diff": diff[:MAX_DIFF_CHARS], "test_output": test_output})
+```
+
+`close` writes `escalation_reason` when the status is `escalated`:
+
+```python
+    def close(status: str, output: dict) -> LoopResult:
+        write("done", {"status": status, **output})
+        if not finish_run(conn, run_id, status, state["tokens"], worker_id=worker_id):
+            return LoopResult(status="lost", attempts=state["attempts"], tokens_used=state["tokens"])
+        if status == "escalated":
+            conn.execute(
+                "UPDATE runs SET escalation_reason = %s WHERE id = %s", (output["reason"], run_id)
+            )
+        ...
+```
+
+The `RuntimeError` branch closes `error` with `{"reason": OUTAGE}`. In `app/worker.py` `_run_chore`, offer Open it anyway on `escalated` instead of `failed` (Task 12 replaces the offer). Add `"eval"` to `PostedSource`. In `app/run_list.py` append `escalation_reason` to `_COLUMNS` after `source` and to `serialize_run_row`; the cursor reads columns 0 and 7, so appending is safe. In `evals/runner.py`, post `"source": "eval"`, set `detail` to `run.get("escalation_reason") or ""` for a run that did not succeed, and change the refused message to say the limit is the `MAX_RUNS_PER_DAY` Actions variable in `mercury-config` (set it, re-run Deploy). The web page shows the status string as it is, so `escalated` needs no web change; check `web/src` for a status colour map anyway and give `escalated` the colour `failed` has if there is one.
+
+- [ ] **Step 5: Run the full suite, then commit** `End a chore that cannot finish as escalated, with red tests, unusable replies or an outage as its reason`.
+
+---
+
+### Task 11: A chore may not weaken `main`'s tests
+
+**Files:**
+- Create: `app/test_guard.py`
+- Modify: `app/repo_chore.py` (`_run`), `app/progress.py` (`_step_line`), `evals/runner.py` (`summarise`)
+- Test: `tests/test_test_guard.py`, `tests/test_repo_chore.py`, `tests/test_eval_runner.py`
+
+**Interfaces:**
+- Consumes: `WEAKENED` (Task 10).
+- Produces: `weakened_tests(diff: str) -> list[str]`, one line per problem, empty when the diff keeps every test. A `guard` step `{"attempt": n, "problems": [...]}` after each green test run whose diff weakens tests.
+
+- [ ] **Step 1: Write the failing tests** in `tests/test_test_guard.py`. The diffs are what `git diff --cached` prints.
+
+```python
+from app.test_guard import weakened_tests
+
+ADD_TEST = """\
+diff --git a/test_calc.py b/test_calc.py
+--- a/test_calc.py
++++ b/test_calc.py
+@@ -1,6 +1,10 @@
+ import unittest
+ from calc import add
+ 
+ class AddTest(unittest.TestCase):
+     def test_adds_two_numbers(self):
+         self.assertEqual(add(2, 3), 5)
++
++    def test_divides(self):
++        self.assertEqual(divide(7, 2), 3.5)
+"""
+
+# What ollama did on divide (fixture PR #19): the class became bare functions.
+REWRITTEN = """\
+diff --git a/test_calc.py b/test_calc.py
+--- a/test_calc.py
++++ b/test_calc.py
+@@ -1,6 +1,7 @@
+-import unittest
+-from calc import add
+-
+-class AddTest(unittest.TestCase):
+-    def test_adds_two_numbers(self):
+-        self.assertEqual(add(2, 3), 5)
++from calc import divide
++
++def test_divide():
++    assert divide(7, 2) == 3.5
++
++def test_divide_by_zero():
++    pass
+"""
+
+
+def test_adding_a_test_beside_the_old_ones_is_fine():
+    assert weakened_tests(ADD_TEST) == []
+
+
+def test_a_test_that_disappears_is_named():
+    assert weakened_tests(REWRITTEN) == ["test_calc.py: removed test_adds_two_numbers"]
+
+
+def test_moving_a_test_within_the_file_is_not_a_removal():
+    moved = ADD_TEST.replace("+    def test_divides", "-    def test_adds_two_numbers(self):\n+    def test_adds_two_numbers(self):\n+    def test_divides")
+    assert weakened_tests(moved) == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "+    @unittest.skip('later')",
+        "+    @pytest.mark.skip",
+        "+    @pytest.mark.xfail",
+        "+        pytest.skip('flaky')",
+        "+    @unittest.expectedFailure",
+        "+  it.skip('adds', () => {",
+        "+  xit('adds', () => {",
+    ],
+)
+def test_a_skip_or_xfail_added_to_a_test_file_is_named(line):
+    diff = ADD_TEST + line + "\n"
+    assert weakened_tests(diff) == [f"test_calc.py: added a skip ({line[1:].strip()})"]
+
+
+def test_a_skip_word_outside_a_test_file_is_ignored():
+    diff = (
+        "diff --git a/calc.py b/calc.py\n--- a/calc.py\n+++ b/calc.py\n@@ -1 +1,2 @@\n"
+        " def add(a, b):\n+    skip = pytest.mark.skip\n"
+    )
+    assert weakened_tests(diff) == []
+
+
+def test_a_deleted_test_file_is_named():
+    diff = (
+        "diff --git a/test_calc.py b/test_calc.py\ndeleted file mode 100644\n"
+        "--- a/test_calc.py\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-def test_add():\n-    pass\n"
+    )
+    assert weakened_tests(diff) == ["test_calc.py: deleted", "test_calc.py: removed test_add"]
+
+
+def test_javascript_tests_count_by_their_names():
+    diff = (
+        "diff --git a/src/sum.test.ts b/src/sum.test.ts\n--- a/src/sum.test.ts\n+++ b/src/sum.test.ts\n"
+        "@@ -1,3 +1,3 @@\n-test('adds two numbers', () => {\n+test('adds numbers', () => {\n"
+    )
+    assert weakened_tests(diff) == ["src/sum.test.ts: removed adds two numbers"]
+```
+
+In `tests/test_repo_chore.py`:
+
+```python
+REWRITTEN_TEST_CALC = "from calc import subtract\n\n\ndef test_subtract():\n    assert subtract(5, 3) == 2\n"
+
+
+def drop_add(calc: str) -> str:
+    """A green change that replaces main's test_add with its own test."""
+    return json.dumps({"files": {"calc.py": calc, "test_calc.py": REWRITTEN_TEST_CALC}, "summary": "x"})
+
+
+def test_a_green_change_that_drops_a_test_is_retried_with_the_test_named(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = chore_run(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), drop_add(GOOD_CALC), change(GOOD_CALC)])
+
+    result = run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert result.status == "succeeded"
+    assert "removed test_add" in model.prompts[2]
+    assert "Keep every existing test" in model.prompts[2]
+    assert kinds(migrated_db, run_id).count("guard") == 1
+
+
+def test_three_attempts_that_drop_a_test_escalate_as_weakened_and_push_nothing(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = chore_run(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), drop_add(GOOD_CALC)])
+
+    result = run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert result.status == "escalated"
+    output = done(migrated_db, run_id)
+    assert output["reason"] == WEAKENED
+    assert output["problems"] == ["test_calc.py: removed test_add"]
+    assert remote_branches(remote) == ["main"]
+```
+
+`change()` keeps `test_calc.py` untouched and adds `test_subtract.py`, so the second reply passes the guard.
+
+- [ ] **Step 2: Run to see them fail.**
+
+- [ ] **Step 3: Implement `app/test_guard.py`.**
+
+```python
+"""Whether a chore's diff weakens the repo's tests, per decision 12 of
+docs/build-brief-evals.md. It reads the staged diff, so it works for any
+language a repo's test command runs, and it never runs the repo's code.
+
+A test is named by its function or its it()/test() title. One that is
+removed and not added back anywhere in the diff is lost, so a test moved
+within a file is fine and a test renamed is not. A skip or xfail marker
+added to a test file counts too, and so does a deleted test file.
+"""
+
+import re
+from pathlib import PurePosixPath
+
+_TEST_FILE = re.compile(
+    r"(^|/)(test_[^/]*\.py|[^/]*_test\.py|[^/]*\.(test|spec)\.[cm]?[jt]sx?)$|(^|/)(tests|__tests__)/"
+)
+_PY_TEST = re.compile(r"^\s*(?:async\s+)?def\s+(test\w*)\s*\(")
+_JS_TEST = re.compile(r"""^\s*(?:it|test)\s*\(\s*(['"`])(.+?)\1""")
+_SKIP = re.compile(
+    r"@unittest\.skip|@pytest\.mark\.(skip|xfail)|pytest\.(skip|xfail)\(|unittest\.expectedFailure"
+    r"|\b(it|test|describe)\.(skip|todo)\(|\bx(it|describe|test)\("
+)
+
+
+def _names(line: str) -> str | None:
+    match = _PY_TEST.match(line) or _JS_TEST.match(line)
+    if match is None:
+        return None
+    return match.group(1) if match.re is _PY_TEST else match.group(2)
+
+
+def weakened_tests(diff: str) -> list[str]:
+    problems: list[str] = []
+    removed: dict[str, set[str]] = {}
+    added: set[str] = set()
+    path, deleted = None, False
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            path, deleted = line.split(" b/", 1)[-1], False
+            continue
+        if line.startswith("deleted file mode"):
+            deleted = True
+            continue
+        if line.startswith(("--- ", "+++ ", "@@")) or path is None:
+            if line.startswith("+++ ") and deleted and _TEST_FILE.search(path or ""):
+                problems.append(f"{path}: deleted")
+            continue
+        if not _TEST_FILE.search(path):
+            continue
+        body = line[1:]
+        if line.startswith("-") and (name := _names(body)):
+            removed.setdefault(path, set()).add(name)
+        elif line.startswith("+"):
+            if name := _names(body):
+                added.add(name)
+            if _SKIP.search(body):
+                problems.append(f"{path}: added a skip ({body.strip()})")
+    for file, names in removed.items():
+        problems += [f"{file}: removed {name}" for name in sorted(names - added)]
+    return problems
+```
+
+Tune the regular expressions until every test in Step 1 passes; the tests are the specification, not this sketch. `PurePosixPath` is only needed if you normalise paths; drop the import if not.
+
+In `app/repo_chore.py` `_run`, after a green test run, stage and check before breaking out:
+
+```python
+        passed, exit_code, test_output = _run_tests(clone, setup, workdir)
+        write("test", {"attempt": attempt, "passed": passed, "exit_code": exit_code})
+        if passed:
+            git.run("add", "--", *sorted(written), cwd=clone)
+            problems = weakened_tests(git.run("diff", "--cached", cwd=clone))
+            if not problems:
+                break
+            write("guard", {"attempt": attempt, "problems": problems})
+            state["weakened"] = problems
+            current = "\n\n".join(
+                f"=== {path} ===\n{(clone / path).read_text()}" for path in sorted(written)
+            )
+            prompt = (
+                f"Instruction:\n{instruction}\n\nFiles in the repository:\n{listing}\n\n"
+                f"Your change so far:\n{current}\n\n"
+                f"`{setup.repo.test_command}` passed, but your change removes or skips tests "
+                "the repository already has:\n" + "\n".join(problems) + "\n\n"
+                "Keep every existing test as it is, with the same name, and add new tests "
+                'beside them. Reply {"files": {"path": "the full new contents"}, "summary": '
+                '"one line"} with the corrected files.'
+            )
+            continue
+        state["weakened"] = None
+        ...
+```
+
+and when the attempts run out, a last attempt that was green but weakened closes with `{"reason": WEAKENED, "problems": state["weakened"], "diff": ..., "test_output": ""}`, ahead of the `UNUSABLE` and `RED` choice. In `app/progress.py`, a `guard` step reads `attempt {n} dropped or skipped {k} test(s)`; the problem lines name tests, not code, so they may reach Telegram, but keep them out of progress anyway, as the module docstring promises. In `evals/runner.py` `summarise`, add a column `Kept tests` that counts, per column, rows whose `detail` is not `weakened tests`, so the report shows how often the guard ended a chore.
+
+- [ ] **Step 4: Run the full suite, then commit** `Retry a chore whose green diff drops or skips main's tests, naming them, and escalate a third such attempt as weakened tests`.
+
+---
+
+### Task 12: One Telegram message per escalated chore
+
+**Files:**
+- Create: `app/escalation.py`
+- Modify: `app/worker.py` (`_run_chore`, remove `_offer_open_anyway`), `app/approvals.py` (nothing if `open_anyway` stays as it is)
+- Test: `tests/test_escalation.py`, `tests/test_repo_chore_approval.py` (its Open it anyway tests move to the new message)
+
+**Interfaces:**
+- Consumes: `escalation_reason`, `escalation_message_id`, `source` (Task 10).
+- Produces: `announce_escalation(conn, telegram, chat_id, run_id, page_base_url) -> int | None`, the message id or `None` when nothing was sent; `chain_root(conn, run_id) -> str`, the first run of a chore's chain through `source_run_id`.
+
+**What the message says**, in this order: `Chore on <repo> escalated (<id8>): <reason>`, the instruction, the last 1,000 characters of the test output when there is any (inside a plain text block, since the message is not Markdown), the run page `<API_BASE_URL>/#/runs/<id>`, and `Reply to this message with a hint and I will rerun it from main with your hint.` When the run left a diff, it carries the Open it anyway and Leave it buttons through `ask(..., "open_anyway", ...)`, exactly as the old offer did; otherwise it is a plain `send_message`. Its message id goes to `runs.escalation_message_id`.
+
+**When it is not sent:** the chore's `source` is `eval` (decision 18); there is no bot or owner chat; or the chain already has an escalated run with an `escalation_message_id` (a second escalation of the same chore goes in the report, per the spec). A Telegram error is logged and the run stays escalated with no message id.
+
+- [ ] **Step 1: Write the failing tests** in `tests/test_escalation.py`, against `fake_telegram`:
+
+```python
+def test_an_escalated_chore_sends_one_message_with_its_reason_output_and_page(migrated_db, fake_telegram):
+    run_id = escalated_chore(migrated_db, reason=RED, test_output="E   assert 8 == 2", diff="+x\n")
+
+    message_id = announce_escalation(migrated_db, client(fake_telegram), CHAT, run_id, "https://mercury.test")
+
+    [sent] = fake_telegram.sent()
+    assert sent["chat_id"] == CHAT
+    assert f"escalated ({run_id[:8]}): {RED}" in sent["text"]
+    assert "assert 8 == 2" in sent["text"]
+    assert f"https://mercury.test/#/runs/{run_id}" in sent["text"]
+    assert "Reply to this message with a hint" in sent["text"]
+    assert "Open it anyway" in json.dumps(sent["reply_markup"])
+    stored = migrated_db.execute("SELECT escalation_message_id FROM runs WHERE id = %s", (run_id,))
+    assert stored.fetchone() == (message_id,)
+
+
+def test_one_with_no_diff_has_no_open_it_anyway_button(migrated_db, fake_telegram):
+    run_id = escalated_chore(migrated_db, reason=UNUSABLE, diff="")
+    announce_escalation(migrated_db, client(fake_telegram), CHAT, run_id, "https://mercury.test")
+    assert "reply_markup" not in fake_telegram.sent()[0]
+
+
+def test_an_eval_chore_is_never_announced(migrated_db, fake_telegram):
+    run_id = escalated_chore(migrated_db, reason=RED, source="eval")
+    assert announce_escalation(migrated_db, client(fake_telegram), CHAT, run_id, "https://mercury.test") is None
+    assert fake_telegram.sent() == []
+
+
+def test_a_second_escalation_of_the_same_chore_is_not_announced(migrated_db, fake_telegram):
+    first = escalated_chore(migrated_db, reason=RED)
+    announce_escalation(migrated_db, client(fake_telegram), CHAT, first, "https://mercury.test")
+    second = escalated_chore(migrated_db, reason=RED, source_run_id=first, hint="use float division")
+
+    assert announce_escalation(migrated_db, client(fake_telegram), CHAT, second, "https://mercury.test") is None
+    assert len(fake_telegram.sent()) == 1
+```
+
+`client(fake)` is `TelegramClient("test-token", fake.url)`; check `tests/telegram_fake.py` for the attribute and for the key it records buttons under, and match the assertion to it. `CHAT` is any integer. `escalated_chore` inserts a finished `repo_chore` with status `escalated`, the reason, and a `done` step whose output carries `reason`, `diff` and `test_output`. Add a worker level test that `process_run` on a chore that escalates sends the message to the owner chat whatever its source (`api`, `n8n`, `mcp`, `telegram`), replacing the old rule that only a Telegram chore offered Open it anyway.
+
+- [ ] **Step 2: Run to see them fail.**
+
+- [ ] **Step 3: Implement** `app/escalation.py` with `chain_root`, `announce_escalation` and the text builder; `chain_root` walks `source_run_id` with a recursive CTE:
+
+```sql
+WITH RECURSIVE chain(id, source_run_id) AS (
+    SELECT id, source_run_id FROM runs WHERE id = %s
+    UNION ALL
+    SELECT r.id, r.source_run_id FROM runs r JOIN chain c ON r.id = c.source_run_id
+)
+SELECT id FROM chain WHERE source_run_id IS NULL
+```
+
+"Already announced" is any run whose root is the same and whose `escalation_message_id` is set. In `app/worker.py`, `_run_chore` calls `announce_escalation(conn, telegram, owner_chat_id, run_id, settings.api_base_url)` when the result is `escalated`, which means passing `owner_chat_id` into `_run_chore`. `API_BASE_URL` is the api's public URL on the worker in the Bicep; check `infra/main.bicep`, and if the worker gets the internal URL instead, add `PUBLIC_BASE_URL` beside it in Task 18 rather than linking a page nobody can open.
+
+- [ ] **Step 4: Run the full suite, then commit** `Send one Telegram message per escalated chore, with its reason, test output, page and a hint prompt, and none for eval chores or a second escalation`.
+
+---
+
+### Task 13: `advise` reruns an escalated chore from `main` with a hint
+
+**Files:**
+- Create: `app/advice.py`
+- Modify: `app/repo_chore.py` (an advised run's prompt), `app/mcp_server.py` (the `advise` tool), `app/worker.py` (mark `needs_claude`)
+- Test: `tests/test_advice.py`, `tests/test_repo_chore.py`, `tests/test_mcp.py`
+
+**Interfaces:**
+- Consumes: `hint`, `needs_claude`, `escalation_reason`, `chain_root` (Tasks 10 and 12).
+- Produces: `advise(conn, run_id: str, hint: str, source: str) -> str`, the new run's id, raising `AdviceRefused(message)` with a message for the owner; `MAX_ADVISED = 2`.
+
+**Rules.** The run must be a `repo_chore`, finished `escalated`, and the newest run of its chain (advice on an older one would fork the chore). The hint is stripped, not blank, and at most 2,000 characters. The chain's advised runs (those with a `hint`) number fewer than `MAX_ADVISED`; otherwise refuse with `This chore has had 2 advised reruns. Take it to a Claude session.` The new run copies `task` and `repo`, sets `source_run_id` to the advised run, `hint`, `source` (`telegram` or `mcp`), `provider` the type's first rung (the free model starts again, per decision 7), status `pending`, so it starts without Approve (decision 8). Its repo must still be listed with a `test_command`, through `find_repo`.
+
+**The advised run's prompt.** `run_repo_chore` already reads `source_run_id` to mean Open it anyway. Tell the two apart by `hint`: a run with a hint takes the normal `_run` path from a fresh clone of `main`, and its first edit prompt gains, after the instruction:
+
+```
+The owner's hint: <hint>
+
+An earlier attempt at this chore failed (<reason>). Its diff, which is not applied:
+<diff, at most 20,000 characters>
+
+Its test output ended:
+<test output>
+```
+
+A run with `source_run_id` and no hint stays Open it anyway.
+
+**needs_claude.** When an advised run escalates and its chain now holds `MAX_ADVISED` advised runs, the worker sets `needs_claude = true` on it. Task 17's report lists it under "take to a Claude session".
+
+- [ ] **Step 1: Write the failing tests.** In `tests/test_advice.py`: advice on an escalated chore creates a pending run with the fields above; advice on a `succeeded`, `failed` or running chore, on a non chore, on an older run of a chain, with a blank hint, or on a chain with two advised runs, raises `AdviceRefused` and creates nothing. In `tests/test_repo_chore.py`: an advised run clones `main`, not the failed branch, and its edit prompt contains the hint, the failed diff and the test output. In `tests/test_mcp.py`: the `advise` tool returns `{"id", "status": "pending"}`, and a refusal comes back as a tool error whose text is the refusal.
+
+- [ ] **Step 2: Run to see them fail.**
+
+- [ ] **Step 3: Implement.** The MCP tool, beside `create_run`:
+
+```python
+ADVISE = """Rerun an escalated repo chore from main with a hint, without asking for \
+Approve. run_id is the escalated run (the newest of its chore). The hint is what the \
+model got wrong and what to do instead, in a few sentences. A chore takes at most two \
+advised reruns; after that, do it in a Claude session. Returns the new run's id."""
+
+    @mcp.tool(name="advise", description=ADVISE)
+    async def advise_tool(run_id: str, hint: str) -> dict[str, Any]:
+        try:
+            new_id = await run_in_threadpool(_advise, app.state, run_id, hint, "mcp")
+        except AdviceRefused as refused:
+            raise ToolError(f"422: {refused}") from None
+        return {"id": new_id, "status": "pending"}
+```
+
+where `_advise` opens a connection on `settings.database_url` and passes `app.state.mercury.repos` for the `find_repo` check. Update the server's `instructions` string to name `advise` and `report` (Task 17).
+
+- [ ] **Step 4: Run the full suite, then commit** `Rerun an escalated chore from main with the owner's hint through advise, at most twice, then mark it for a Claude session`.
+
+---
+
+### Task 14: A Telegram reply to an escalation message is a hint
+
+**Files:**
+- Modify: `app/telegram_webhook.py`
+- Test: `tests/test_telegram_webhook.py`
+
+**Interfaces:**
+- Consumes: `advise`, `AdviceRefused` (Task 13), `escalation_message_id` (Task 12).
+
+- [ ] **Step 1: Write the failing tests.** Post updates as the existing webhook tests do. A message from the allowed chat with `reply_to_message.message_id` equal to an escalated run's `escalation_message_id` creates an advised run and gets the answer `Rerunning <id8> from main with your hint.`; no chat run is created. A refusal is answered with the refusal text. A reply to any other message (an old progress message, the "On it." placeholder) is ordinary chat, as today. A reply from a chat not on the allowlist is ignored as every message from it is.
+
+- [ ] **Step 2: Run to see them fail.**
+
+- [ ] **Step 3: Implement.** In `telegram_webhook`, after the allowlist check and before the `/` command branch:
+
+```python
+    replied_to = (message.get("reply_to_message") or {}).get("message_id")
+    if replied_to is not None:
+        reply = await _advise_from_reply(request, chat_id, replied_to, text.strip())
+        if reply is not None:
+            await _send(request, chat_id, reply)
+            return {}
+```
+
+`_advise_from_reply` looks up `SELECT id FROM runs WHERE escalation_message_id = %s AND telegram_chat_id IS NOT DISTINCT FROM ...`; the message id alone is enough within the one allowed chat, so match on `escalation_message_id` only and return `None` when no run has it. It runs `advise` in the thread pool with source `telegram` and returns the answer text.
+
+- [ ] **Step 4: Run the full suite, then commit** `Turn a Telegram reply to an escalation message into an advised rerun`.
+
+---
+
+### Task 15: An outage on every provider retries hourly, at most three times
+
+**Files:**
+- Create: `app/outage.py`
+- Modify: `app/scheduler.py` (`main`)
+- Test: `tests/test_outage.py`
+
+**Interfaces:**
+- Consumes: `OUTAGE` (Task 10), `chain_root` (Task 12), `announce_escalation` (Task 12).
+- Produces: `retry_outages(conn, telegram, chat_id, page_base_url) -> list[str]`, the ids of the retries it queued; `MAX_OUTAGE_RETRIES = 3`.
+
+**Rules.** A candidate is a `repo_chore` finished `error` whose `done` reason is `OUTAGE`, that is the newest run of its chain, and that finished at least 30 minutes ago (the hourly Job then never retries a run that failed a minute before the tick). Its chain's consecutive outage runs at the tail are counted. Fewer than `1 + MAX_OUTAGE_RETRIES`: queue a retry with the same `task`, `repo`, `hint` and `source`, `source_run_id` the failed run, `provider` the first rung, status `pending`. Otherwise mark the failed run `escalated` with `escalation_reason = OUTAGE` and announce it (Task 12's rules apply, so an eval chore stays silent). Each candidate is handled in its own transaction.
+
+- [ ] **Step 1: Write the failing tests.** One outage run older than 30 minutes is retried once, with the fields above. One younger than 30 minutes is left. A chain of four consecutive outages escalates the fourth and queues nothing. A run whose chain already has a newer run is left. Running `retry_outages` twice in a row queues one retry, not two.
+
+- [ ] **Step 2: Run to see them fail.**
+
+- [ ] **Step 3: Implement**, and call it in `app/scheduler.py` `main` after `expire_due`. The scheduler inserts these runs itself rather than POSTing them, because a retry is the same chore continuing, not a new request through the chore gate; say so in the docstring.
+
+- [ ] **Step 4: Run the full suite, then commit** `Retry a chore that hit an outage on every provider at the next hourly tick, up to three times, then escalate it`.
+
+---
+
+### Task 16: A cancelled chore leaves no branch behind
+
+**Files:**
+- Modify: `app/repo_chore.py` (`_run`, `_open_anyway`)
+- Test: `tests/test_repo_chore.py`
+
+**The race** (handoff, 2026-10-06): a cancel landing between a chore's green tests and its `git push` lets the push happen, then `write("push", ...)` raises `LostLease` and no pull request is opened, so `agent/<id>` stays on the remote. A takeover must keep the branch, because the next worker resumes from it (`remote_has_branch`).
+
+- [ ] **Step 1: Write the failing tests.** Cancel the run (`cancel_run`) from inside a `FakeGitHub` hook or a wrapped `_Git.run` that fires after the push command returns; assert the result is `lost`, the branch is gone from the bare remote, and no pull request exists. A second test changes `claimed_by` to another worker at the same point instead of cancelling; the branch must still be there.
+
+- [ ] **Step 2: Run to see them fail.**
+
+- [ ] **Step 3: Implement.** Wrap the push and the `push` step:
+
+```python
+    git.run("push", "-q", "origin", branch, cwd=clone, remote=True)
+    try:
+        write("push", {"branch": branch})
+    except LostLease:
+        status = conn.execute("SELECT status FROM runs WHERE id = %s", (run_id,)).fetchone()[0]
+        if status == "cancelled":
+            git.run("push", "-q", "origin", "--delete", branch, cwd=clone, remote=True)
+        raise
+```
+
+`_run` and `_open_anyway` need `conn` and `run_id` for this; pass them in. Do the same after the push in `_open_anyway`.
+
+- [ ] **Step 4: Run the full suite, then commit** `Delete a chore's pushed branch when it was cancelled before its pull request, and keep it for a takeover`.
+
+---
+
+### Task 17: The report
+
+**Files:**
+- Create: `app/report.py`, `scripts/mercury_report.py`
+- Modify: `app/main.py` (`GET /report`), `app/mcp_server.py` (the `report` tool), `app/digest.py` (one line), `.gitignore` (`reports/`)
+- Test: `tests/test_report.py`, `tests/test_mcp.py`, `tests/test_digest.py`
+
+**Interfaces:**
+- Produces: `build_report(conn, since: datetime) -> str`, Markdown; `GET /report?since=<ISO date>` behind the bearer token, `text/markdown`; MCP `report(since: str | None)`; `waiting_line(conn) -> str | None` for the digest.
+
+**What it says**, in this order:
+
+1. `## Escalations`: each escalated chore since `since`, newest first, grouped by chain. For each: the repo and instruction; a table of every run in the chain (id8, provider, tokens, USD from `PROVIDERS` rates, status, reason, hint if any); the last run's diff (at most 6,000 characters) and test output tail (at most 2,000); why it stopped; and `Take to a Claude session` when `needs_claude`. A chain that is waiting on advice says `Waiting for a hint (reply on Telegram or call advise).`
+2. `## Chores Mercury started`: runs with `source = 'scheduler'` and `type = 'repo_chore'`, with PR links from their `pr` step and their status. None exist until Phase 4; the section then says `None yet.`
+3. `## Eval`: the server has no eval results, so it says `The latest eval report is the newest file in evals/results/ in the public repo.` `scripts/mercury_report.py` replaces this section with the newest local `evals/results/*.md` summary table.
+4. `## Spend`: today's tokens per provider against `DAILY_TOKENS_PER_PROVIDER`, this month's USD against `MONTHLY_BUDGET_USD` (`month_spend_usd`), and runs started today against `MAX_RUNS_PER_DAY`.
+
+`since` defaults to 7 days ago. Diffs and test output are the repo's own code, which the owner already sees in the PR, and the report sits behind the bearer token; it never goes to a log line.
+
+**`scripts/mercury_report.py`** reads `MERCURY_URL` and `MERCURY_BEARER_TOKEN`, fetches `GET /report`, swaps in the eval section, and writes `reports/YYYY-MM-DD.md` with `encoding="utf-8"`, printing the path. `reports/` goes in `.gitignore`.
+
+**The digest line.** `gather_facts` gains `"escalations_waiting": n`, the chains whose newest run is escalated and not `needs_claude`, plus `"needs_claude": m`. `render_facts` and the model prompt add one line when either is non zero: `2 chores are waiting for a hint and 1 needs a Claude session; see the report.`
+
+- [ ] **Step 1: Write the failing tests** for each section with seeded runs (an escalated chain of two with a hint, a `needs_claude` chain, one eval chore, spend rows), for the route's bearer guard (401 without it), for the MCP tool's text, and for the digest line appearing only when something waits.
+
+- [ ] **Step 2: Run to see them fail.**
+
+- [ ] **Step 3: Implement.**
+
+- [ ] **Step 4: Run the full suite, then commit** `Add a report of escalations, Mercury's own chores and spend, over GET /report, MCP and a script, with a digest line when something waits`.
+
+---
+
+### Task 18: The Claude session rung, the docs and the deploy
+
+**Files:**
+- Modify: `README.md`, `docs/mercury.md`, `app/mcp_server.py` (`instructions`), `docs/handoff.md`, this brief
+
+- [ ] **Step 1: The Claude session rung.** The MCP server's `instructions` become: queue and read runs; repo chores need Approve on Telegram unless the repo is `auto_approve`; read `report` to see escalated chores; for each, write a sharper hint through `advise` first; do the chore yourself on a local clone only when you judge it beyond free models, and say why in the pull request. Write the same as a README section `## When a chore escalates`, in the README's own voice, with no claims row: the ladder claim is Phase 3's, after the rescue measurement.
+
+- [ ] **Step 2: Docs.** `docs/mercury.md` gains the `escalated` status, the four reasons, decisions 16 to 19 and the report. The README's configuration paragraph says `MAX_RUNS_PER_DAY` is 20 by default and set per deploy in the private repo. Check every changed line against the writing rules.
+
+- [ ] **Step 3: Deploy, Thomas's step.** Push, wait for CI and Publish, then a `mercury-config` script that bumps `PUBLIC_SHA`, pushed only with `--yes`. Smoke test on the fixture: `uv run python -m evals.runner --columns ollama --only clamp` and `--only divide` (the two Phase 1 weakened tests failures) and record whether the guard's feedback rescued them. Then one escalation by hand: queue a chore on the fixture through MCP whose instruction cannot be done (for example, make `add` return the product while `test_adds_two_numbers` stays), confirm one Telegram message arrives, reply with a hint, and confirm the advised rerun starts without Approve. Close every PR and branch it leaves, as the eval does.
+
+- [ ] **Step 4: Hand over.** A dated section at the top of `docs/handoff.md` with the live `PUBLIC_SHA`, what the smoke test showed, and that Phase 3 is next, to be detailed into tasks in its own session on Opus. Mark Phase 2 done in this brief's header. Commit `Hand over Phase 2: the escalation ladder, advise and the report are live`.
+
+---
 
 ## Phase 3 spec: the hint rescue eval, and the README
 

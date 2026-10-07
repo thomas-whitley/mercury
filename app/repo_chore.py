@@ -165,15 +165,22 @@ def run_repo_chore(
         state["last_tokens"] = reply.tokens
         return _parse(reply.text)
 
+    def was_cancelled() -> bool:
+        row = conn.execute("SELECT status FROM runs WHERE id = %s", (run_id,)).fetchone()
+        return row is not None and row[0] == "cancelled"
+
     workdir = Path(tempfile.mkdtemp(prefix="chore-"))
     keepalive = _Keepalive(setup.heartbeat_database_url, run_id, worker_id)
     try:
         with keepalive:
             if source is not None:
-                return _open_anyway(setup, run_id, instruction, workdir, write, close, source)
+                return _open_anyway(
+                    setup, run_id, instruction, workdir, write, close, source, was_cancelled
+                )
             return _run(
-                setup, run_id, instruction, workdir, write, close, ask, state, token_budget, advice
-            )
+                setup, run_id, instruction, workdir, write, close, ask, state, token_budget,
+                advice, was_cancelled,
+            )  # fmt: skip
     except LostLease:
         logger.warning("repo chore %s: lease lost, stopping", run_id, extra=fields)
         return LoopResult(status="lost", attempts=state["attempts"], tokens_used=state["tokens"])
@@ -203,7 +210,10 @@ def _advice_block(hint: str | None, output: dict) -> str:
     return block
 
 
-def _run(setup, run_id, instruction, workdir, write, close, ask, state, token_budget, advice=""):
+def _run(
+    setup, run_id, instruction, workdir, write, close, ask, state, token_budget, advice,
+    was_cancelled,
+):  # fmt: skip
     git = _Git(workdir, setup)
     branch = f"agent/{run_id}"
     url = f"{setup.clone_base.rstrip('/')}/{setup.repo.name}.git"
@@ -330,12 +340,13 @@ def _run(setup, run_id, instruction, workdir, write, close, ask, state, token_bu
         "-c", f"user.name={AUTHOR[0]}", "-c", f"user.email={AUTHOR[1]}",
         "commit", "-q", "-m", _title(instruction), cwd=clone,
     )  # fmt: skip
-    git.run("push", "-q", "origin", branch, cwd=clone, remote=True)
-    write("push", {"branch": branch})
+    _push(git, clone, branch, write, was_cancelled)
     return _open_pull(setup, run_id, instruction, branch, base, write, close)
 
 
-def _open_anyway(setup, run_id, instruction, workdir, write, close, source) -> LoopResult:
+def _open_anyway(
+    setup, run_id, instruction, workdir, write, close, source, was_cancelled
+) -> LoopResult:
     """Reapply the failed run's diff on this run's own branch and open the
     pull request, saying plainly that the tests failed. No model call."""
     source_run_id, diff = source
@@ -371,9 +382,22 @@ def _open_anyway(setup, run_id, instruction, workdir, write, close, source) -> L
         "-c", f"user.name={AUTHOR[0]}", "-c", f"user.email={AUTHOR[1]}",
         "commit", "-q", "-m", _title(instruction), cwd=clone,
     )  # fmt: skip
-    git.run("push", "-q", "origin", branch, cwd=clone, remote=True)
-    write("push", {"branch": branch})
+    _push(git, clone, branch, write, was_cancelled)
     return _open_pull(setup, run_id, instruction, branch, base, write, close, note)
+
+
+def _push(git, clone, branch, write, was_cancelled) -> None:
+    """Push the branch and record it. A cancel that lands after the push
+    and before the step would leave a branch no pull request ever opens, so
+    the branch is deleted again. A takeover keeps it: the next worker picks
+    the chore up from that branch."""
+    git.run("push", "-q", "origin", branch, cwd=clone, remote=True)
+    try:
+        write("push", {"branch": branch})
+    except LostLease:
+        if was_cancelled():
+            git.run("push", "-q", "origin", "--delete", branch, cwd=clone, remote=True)
+        raise
 
 
 def _open_pull(setup, run_id, instruction, branch, base, write, close, note=None) -> LoopResult:

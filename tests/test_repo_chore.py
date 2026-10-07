@@ -706,3 +706,52 @@ def test_a_second_advised_rerun_that_escalates_is_marked_for_a_claude_session(
         "SELECT status, needs_claude FROM runs WHERE id = %s", (newest,)
     ).fetchone()
     assert row == ("escalated", True)
+
+
+def _after_the_push(monkeypatch, hook) -> None:
+    """Run hook right after the chore's own push returns, before its push step lands."""
+    from app import repo_chore
+
+    original = repo_chore._Git.run
+
+    def run(self, *args, cwd, remote=False):
+        out = original(self, *args, cwd=cwd, remote=remote)
+        if args[:1] == ("push",) and "--delete" not in args:
+            hook()
+        return out
+
+    monkeypatch.setattr(repo_chore._Git, "run", run)
+
+
+def test_a_cancel_between_the_push_and_the_pull_request_deletes_the_branch(
+    migrated_db, remote, github, tmp_path, monkeypatch
+):
+    from app.runs import cancel_run
+
+    run_id = chore_run(migrated_db)
+    _after_the_push(monkeypatch, lambda: cancel_run(migrated_db, run_id))
+    model = StubModel(replies=[pick("calc.py"), change(GOOD_CALC)])
+
+    result = run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert result.status == "lost"
+    assert remote_branches(remote) == ["main"]
+    assert github.pulls == []
+
+
+def test_a_takeover_between_the_push_and_the_pull_request_keeps_the_branch(
+    migrated_db, remote, github, tmp_path, monkeypatch
+):
+    run_id = chore_run(migrated_db)
+    _after_the_push(
+        monkeypatch,
+        lambda: migrated_db.execute(
+            "UPDATE runs SET claimed_by = 'worker-2' WHERE id = %s", (run_id,)
+        ),
+    )
+    model = StubModel(replies=[pick("calc.py"), change(GOOD_CALC)])
+
+    result = run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert result.status == "lost"
+    assert f"agent/{run_id}" in remote_branches(remote)

@@ -4,7 +4,13 @@ import pytest
 
 from app.config import Settings
 from app.model import AnthropicModel, OpenAICompatibleModel, StubModel
-from app.worker import build_model, claim_next_run, process_run, runs_started_today
+from app.worker import (
+    build_model,
+    claim_next_run,
+    home_runs_started_today,
+    process_run,
+    runs_started_today,
+)
 
 PASSING_TEST = """
 from solution import add
@@ -133,6 +139,56 @@ def test_the_daily_limit_refuses_the_run_and_closes_its_stream(migrated_db):
 
     assert payload["kind"] == "done", "a refused run must still close its stream"
     assert payload["output"]["status"] == "refused"
+
+
+def local_run(conn, task: str = PASSING_TEST) -> str:
+    return conn.execute(
+        "INSERT INTO runs (task, provider) VALUES (%s, 'local') RETURNING id", (task,)
+    ).fetchone()[0]
+
+
+def test_local_runs_have_their_own_daily_limit(migrated_db):
+    """max_runs_per_day=0 would refuse the first run if local runs counted toward it."""
+    settings = settings_with(max_runs_per_day=0, max_local_runs_per_day=2)
+
+    statuses = []
+    for _ in range(3):
+        run_id = local_run(migrated_db)
+        claim_next_run(migrated_db, "worker-test")
+        process_run(migrated_db, run_id, settings, model_builder=stub_model_builder())
+        statuses.append(
+            migrated_db.execute("SELECT status FROM runs WHERE id = %s", (run_id,)).fetchone()[0]
+        )
+
+    assert statuses == ["succeeded", "succeeded", "refused"]
+
+
+def test_local_runs_do_not_count_toward_the_cloud_limit(migrated_db):
+    migrated_db.execute(
+        "INSERT INTO runs (task, provider, claimed_by) VALUES (%s, 'local', 'worker-a')",
+        (PASSING_TEST,),
+    )
+    migrated_db.execute(
+        "INSERT INTO runs (task, claimed_by) VALUES (%s, 'worker-a')", (PASSING_TEST,)
+    )
+
+    assert runs_started_today(migrated_db) == 1
+    assert home_runs_started_today(migrated_db) == 1
+
+
+def test_a_local_run_gets_no_fallback(migrated_db):
+    """A gemini answer would enter the bank's training data as a local success."""
+    run_id = local_run(migrated_db)
+    claim_next_run(migrated_db, "worker-test")
+    seen: list[str] = []
+
+    def builder(settings, provider_name):
+        seen.append(provider_name)
+        return StubModel(replies=[CORRECT])
+
+    process_run(migrated_db, run_id, settings_with(), model_builder=builder)
+
+    assert seen == ["local"]
 
 
 def test_process_run_refuses_a_type_with_no_executor_yet(migrated_db):

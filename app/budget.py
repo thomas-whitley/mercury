@@ -42,12 +42,16 @@ def check_budget(
     conn: psycopg.Connection, provider: str, daily_tokens: int, monthly_usd: float
 ) -> BudgetTrip | None:
     """None when a new run on this provider may start."""
-    today = conn.execute(_TODAY, (provider,)).fetchone()[0]
-    if today >= daily_tokens:
-        return BudgetTrip(
-            cap="daily_tokens",
-            message=f"{provider} has used {today:,} of its {daily_tokens:,} tokens today.",
-        )
+    config = PROVIDERS.get(provider)
+    # A home provider costs nothing and has no quota to protect (decision 25
+    # of docs/build-brief-evals.md).
+    if not (config and config.home):
+        today = conn.execute(_TODAY, (provider,)).fetchone()[0]
+        if today >= daily_tokens:
+            return BudgetTrip(
+                cap="daily_tokens",
+                message=f"{provider} has used {today:,} of its {daily_tokens:,} tokens today.",
+            )
     spent = month_spend_usd(conn)
     if spent >= monthly_usd:
         return BudgetTrip(

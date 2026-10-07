@@ -5,6 +5,7 @@ with one event and sends one Telegram message to the owner's chat."""
 import pytest
 
 from app.budget import BudgetTrip, check_budget
+from app.runs import record_step
 from app.tasks import TASK_TYPES
 from app.worker import claim_next_run, process_run
 from tests.test_worker import PASSING_TEST, settings_with, stub_model_builder
@@ -173,3 +174,16 @@ def test_the_caps_are_config(monkeypatch, name, value):
         "DAILY_TOKENS_PER_PROVIDER": (1234, 5.0),
         "MONTHLY_BUDGET_USD": (500_000, 2.5),
     }[name]
+
+
+def test_a_home_provider_has_no_daily_token_cap(migrated_db):
+    for provider in ("local", "gemini"):
+        run_id = migrated_db.execute(
+            "INSERT INTO runs (task, provider) VALUES ('x', %s) RETURNING id", (provider,)
+        ).fetchone()[0]
+        record_step(migrated_db, run_id, 1, "act", tokens=10_000)
+
+    assert check_budget(migrated_db, "local", daily_tokens=1_000, monthly_usd=5.0) is None
+    assert check_budget(migrated_db, "gemini", daily_tokens=1_000, monthly_usd=5.0).cap == (
+        "daily_tokens"
+    )

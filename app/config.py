@@ -129,6 +129,9 @@ class Settings:
     repo_test_timeout_seconds: float = 600.0
     # The dependency audit's advisory database. No key.
     osv_api_url: str = "https://api.osv.dev"
+    # Runs on a home provider a day, apart from max_runs_per_day (decision 25
+    # of docs/build-brief-evals.md).
+    max_local_runs_per_day: int = 200
 
 
 def _default_worker_id() -> str:
@@ -167,4 +170,5 @@ def load_settings() -> Settings:
         github_clone_base=os.environ.get("GITHUB_CLONE_BASE") or "https://github.com",
         repo_test_timeout_seconds=float(os.environ.get("REPO_TEST_TIMEOUT_SECONDS", "600")),
         osv_api_url=os.environ.get("OSV_API_URL") or "https://api.osv.dev",
+        max_local_runs_per_day=int(os.environ.get("MAX_LOCAL_RUNS_PER_DAY", "200")),
     )

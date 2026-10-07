@@ -80,18 +80,34 @@ ORDER BY created_at
 LIMIT 5
 """
 
+# The providers on Thomas's own machine, counted apart (decision 25 of
+# docs/build-brief-evals.md).
+HOME_PROVIDERS = [name for name, provider in PROVIDERS.items() if provider.home]
+
 # site_check makes no model call, and the checks worker claims it too, so it
-# is left out of the limit that protects the model key.
+# is left out of the limit that protects the model key. A run on a home
+# provider costs no key either, and has its own limit.
 _STARTED_TODAY = """
 SELECT count(*) FROM runs
 WHERE claimed_by IS NOT NULL
   AND type <> 'site_check'
   AND created_at >= date_trunc('day', now())
+  AND (provider IS NULL OR NOT (provider = ANY(%s)))
+"""
+_HOME_STARTED_TODAY = """
+SELECT count(*) FROM runs
+WHERE claimed_by IS NOT NULL
+  AND created_at >= date_trunc('day', now())
+  AND provider = ANY(%s)
 """
 
 
 def runs_started_today(conn: psycopg.Connection) -> int:
-    return conn.execute(_STARTED_TODAY).fetchone()[0]
+    return conn.execute(_STARTED_TODAY, (HOME_PROVIDERS,)).fetchone()[0]
+
+
+def home_runs_started_today(conn: psycopg.Connection) -> int:
+    return conn.execute(_HOME_STARTED_TODAY, (HOME_PROVIDERS,)).fetchone()[0]
 
 
 def claim_next_run(
@@ -269,16 +285,28 @@ def _process_run(
     if task_type_name == "site_check":
         return run_cloud_check(conn, run_id, settings, check_runner)
 
+    task_type = TASK_TYPES.get(task_type_name)
+    # The row's provider is the type's own unless the caller named one.
+    named = conn.execute("SELECT provider FROM runs WHERE id = %s", (run_id,)).fetchone()[0]
+    provider = named or (task_type.provider if task_type else None)
+    home = provider in HOME_PROVIDERS
+
     # Check then act, which is safe only because the worker runs at one replica
     # (maxReplicas is 1 in the Bicep). Two workers could both pass this.
-    if runs_started_today(conn) > settings.max_runs_per_day:
+    if home and home_runs_started_today(conn) > settings.max_local_runs_per_day:
+        limit = f"daily limit of {settings.max_local_runs_per_day} local runs reached"
+    elif not home and runs_started_today(conn) > settings.max_runs_per_day:
+        limit = f"daily limit of {settings.max_runs_per_day} runs reached"
+    else:
+        limit = None
+    if limit is not None:
         logger.warning(
-            "refusing run %s: daily limit of %s reached",
+            "refusing run %s: %s",
             run_id,
-            settings.max_runs_per_day,
+            limit,
             extra={"run_id": run_id, "worker_id": settings.worker_id},
         )
-        refuse_run(conn, run_id, f"daily limit of {settings.max_runs_per_day} runs reached")
+        refuse_run(conn, run_id, limit)
         return None
 
     if task_type_name not in _RUNNABLE_TYPES:
@@ -291,12 +319,6 @@ def _process_run(
         refuse_run(conn, run_id, f"task type {task_type_name!r} is not runnable yet")
         return None
 
-    task_type = TASK_TYPES[task_type_name]
-    # The row's provider is the type's own unless the caller named one.
-    provider = (
-        conn.execute("SELECT provider FROM runs WHERE id = %s", (run_id,)).fetchone()[0]
-        or task_type.provider
-    )
     trip = check_budget(
         conn, provider, settings.daily_tokens_per_provider, settings.monthly_budget_usd
     )
@@ -316,7 +338,9 @@ def _process_run(
         )
         refuse_run(conn, run_id, str(error))
         return None
-    model = _with_fallback(conn, run_id, model, task_type, settings, model_builder, provider)
+    if not home:
+        # A run on a home provider never falls back (decision 26).
+        model = _with_fallback(conn, run_id, model, task_type, settings, model_builder, provider)
 
     if task_type_name == "repo_chore":
         return _run_chore(

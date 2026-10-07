@@ -1,4 +1,45 @@
-# Handoff: eval Phase 1 done, baseline four columns (2026-10-07)
+# Handoff: eval Phase 2 live, the escalation ladder (2026-10-07)
+
+## Phase 2, Tasks 8 to 18 of `docs/build-brief-evals.md` (2026-10-07)
+
+Live is `f453720` (`mercury-config` pins it; Deploy green, `/health` 200). Built on
+Opus in one session, native execution, one self review of the whole branch (no
+reviewer subagent; Thomas can ask for one). The ledger's rulings are in the final
+section of this note.
+
+What is live: each type's provider ladder from `tasks:` in `mercury.yaml` (the private
+config dropped its unread `providers:` and `budgets:`; the new loader refuses them);
+`escalated` with four reasons (red after 3, three unusable replies, no change to the
+repository, weakened tests); the test guard (`app/test_guard.py`) with feedback that
+names the dropped test and shows main's copy; one Telegram message per escalation;
+advise from a reply, from `/hint <text>` or from MCP `advise`, at most twice, then
+`needs_claude`; hourly outage retries, at most 3, never for eval chores; the branch
+left by a cancel between push and PR is deleted; `GET /report`, MCP `report`,
+`scripts/mercury_report.py`, and a digest line when something waits.
+`MAX_RUNS_PER_DAY` is the `mercury-config` Actions variable, 40.
+
+Smoke tests on the live deploy:
+
+- `--columns ollama --only clamp,divide` (`evals/results/2026-10-07T0358Z`): 2 of 2.
+  On `divide` ollama dropped `test_adds_two_numbers` again, the guard fired, and the
+  retry kept it. In Phase 1 both were failures from dropped tests.
+- An impossible chore (make `add` return the product, leave the tests) found two bugs,
+  both fixed with tests that reproduced them: a green attempt that changed nothing made
+  `git commit` fail and the run end in error (`f4bf5a3`), and the worker passed the run
+  id as a UUID, so the escalation message crashed on `run_id[:8]` (`f0b4ea4`; the
+  budget messages had the same latent fault).
+- Run `438fbb39` escalated as Telegram message 48. A hint typed as a new message
+  became chat; a reply reran it as `05067043`, which added `multiply` beside `add`,
+  kept main's test, and opened fixture PR #30 (closed, branch deleted). `/hint`
+  (`f453720`) now covers the new message case.
+
+Only PR #4 is open on the fixture. Phase 3 is next, detailed into tasks in its own
+session on Opus. Deferred minors: advise checks then inserts with no row lock; the
+report says "Rescued" for an Open it anyway PR; a reply of `/status` to an escalation
+is taken as a hint; a `tasks:` entry that is not a mapping raises AttributeError; an
+outage retry of a chore asked for in chat reports nothing on Telegram until it
+escalates.
+
 
 ## The chore eval baseline, Task 7 of `docs/build-brief-evals.md` (2026-10-06)
 

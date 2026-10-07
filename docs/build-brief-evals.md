@@ -1,6 +1,6 @@
 # Build brief: Mercury as a cheap task runner, with evals and an escalation ladder
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement Phase 1 task by task (Thomas chose native execution, then one review of the whole branch). Steps use checkbox (`- [ ]`) syntax for tracking. Phase 2 was turned into Tasks 8 to 18 on 2026-10-07 and is done and live at `f453720` the same day. Phases 3 and 4 are still specs, not tasks: each one is turned into tasks in its own session, after the phase before it has landed.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement Phase 1 task by task (Thomas chose native execution, then one review of the whole branch). Steps use checkbox (`- [ ]`) syntax for tracking. Phase 2 was turned into Tasks 8 to 18 on 2026-10-07 and is done and live at `f453720` the same day. Phases 3, 4 and 5 are still specs, not tasks: each one is turned into tasks in its own session, after the phase before it has landed, except that Phase 5's part 5a comes before Phase 3.
 
 **Goal:** Mercury completes well defined chores on free models, proves how often it gets them right with tests the model never saw, and escalates what it cannot fix to Thomas and then to a Claude session.
 
@@ -2947,11 +2947,12 @@ where `_advise` opens a connection on `settings.database_url` and passes `app.st
 
 - The eval runner gains a rescue pass: for every row that failed, a Claude session (Opus) writes one hint from the failure, and the runner sends it with `advise` and grades the result. The report gains two figures per column: passed first time, and passed after one Claude hint.
 - Three repeats on a later day, reporting the mean pass rate and how many tasks passed at least once.
+- A `local-base` column for the untuned home model, through the `local` rung that Phase 5's part 5a builds first (decisions 21 to 23). It is the before figure for Phase 5.
 - README: a section `## Evals` saying what a task is, that the grade test never reaches the model, that a result which drops `main`'s tests fails, how a run is graded, and the command to rerun it, with the column table pasted under it. A claims row `A free model completes well defined chores, graded by tests it never saw`, with the measured numbers whatever they are.
 
 ## Phase 4 spec: findings become chores
 
-Starts only if Thomas decides, on Phase 3's numbers, that free models are worth trusting on a real repo.
+Starts only if Thomas decides, on Phase 3's numbers, that free models are worth trusting on a real repo. It now also waits on Phase 5's outcome (decision 45).
 
 - Mercury gains a `test_command` that needs no database: the tests that need Postgres are marked `db`, and the command is `uv run pytest -m "not db" && uv run ruff check`. `thomas-whitley/mercury` gets that `test_command` in `mercury.yaml`.
 - The CI watch and the dependency audit create chores from templates filled with the evidence. A dependency bump names the package, both versions and the advisory, and asks for the lock file updated with the tests green. A red CI names the job and carries the last 150 lines of its log, and asks for it green without deleting, skipping or weakening any test.
@@ -2959,6 +2960,67 @@ Starts only if Thomas decides, on Phase 3's numbers, that free models are worth 
 - Dependency bumps and red CI start without Approve. Every other self started chore asks.
 - Node repos (`ludo-electrical`, `nextset`) wait until a Python repo has proven this.
 
+## Phase 5 spec: a local model that improves, measured
+
+Settled with Thomas on 2026-10-07 over five rounds of questions; do not re-ask them. Phase 5's first part, 5a, is built before Phase 3 runs, because Phase 3's `local-base` column needs it. The rest starts after Phase 3 has landed. Each part is turned into tasks in its own session, on Opus.
+
+**Goal.** A 7B model on the home RTX 4060 (8 GB) does Mercury's chores for nothing, gets better first through retrieved memory and then through fine tuning, and every step is measured on the 11 eval chores, which never reach its memory or its training data. It serves two ends, evidence for an AI engineering application and free chores, and when they pull apart the measured number wins over the story.
+
+**Order.** 5a, then Phase 3 with a `local-base` column, then the 5b pilot, then the full 5b bank, then 5c, then 5d. Phase 4 waits on the outcome.
+
+### Phase 5 decisions (2026-10-07)
+
+20. **The base model is small and trained at home.** `qwen2.5-coder:7b` (Apache 2.0, 4.7 GB in Ollama, 32K context) is the model that improves, and `qwen3-coder:30b` (10 of 11 in Phase 1 through `delegate.ps1`) is the baseline to beat. A 30B model cannot be QLoRA trained in 8 GB of VRAM; a 7B one can, at Unsloth's stated minimum of about 5 GB.
+21. **The first measurement goes through Mercury's own format.** Before any tunnel exists, Mercury runs in the local compose stack with a `local` provider pointed at `localhost:11434`, and the eval runner (`MERCURY_URL` set to it) runs `qwen2.5-coder:7b` on the 11 eval chores. The report counts unparseable replies per column as their own figure. Below 2 of 11, the same run is repeated with `qwen3:8b`. If that is also below 2 of 11, Phase 5 stops and goes back to Thomas, because nearly all training data would then come from reference solutions alone, which is a different project.
+22. **Mercury reaches the home GPU through Tailscale Funnel.** Tailscale is already installed on the desktop, Funnel gives a free `*.ts.net` HTTPS address, and the repo's rule against a custom domain rules out a named Cloudflare Tunnel. Ollama has no authentication of its own, so Caddy sits in front of it, proxies `/v1/chat/completions` only, and rejects any request without the `LOCAL_MODEL_TOKEN` bearer. The token is a new secret in `mercury-config`.
+23. **`local` is a provider and a ladder rung.** A `local` entry in `PROVIDERS` (`openai_compatible`, the Funnel URL, `LOCAL_MODEL_TOKEN`, $0) with a 50 second timeout per call and 2 attempts, which keeps a model step inside the 120 second lease. The `local` rung asks for a reply matching a JSON schema (constrained decoding), so a 7B model cannot return broken JSON. No other rung changes, so Phase 1's baseline stays comparable.
+24. **The reply format stays full file JSON.** Weaker models do better replacing whole files than writing diffs, which need an exact match, and the bank's files are tens to a few hundred lines. Changing the format would change production for every rung and void the baseline. Parse failures are reported per column so a format problem cannot hide inside the pass rate.
+25. **Local runs have their own cap.** `MAX_LOCAL_RUNS_PER_DAY` is 200, an Actions variable beside `MAX_RUNS_PER_DAY`, which keeps protecting the free cloud tiers at 40.
+26. **Where `local` runs.** Bank runs and eval columns only. A bank run is pinned to `local` and never falls through to gemini, because a gemini answer would enter the training data as a local success. Real chores keep `gemini → ollama` until a promoted local tag beats gemini on the 11 eval chores, and then Thomas decides.
+27. **Bank chores are silent.** A run posted with `source: bank` sends nothing to Telegram. Its escalations reach the report only, as `source: eval` does (decision 18).
+28. **Every model call of a `repo_chore` is recorded.** A `model_calls` table holds the run id, step, rung, system prompt, prompt, raw reply and tokens, for every chore and not only bank chores, since it also makes an escalation easier to read. Bank rows are exempt from the 30 day cleanup. Training examples are built from these rows, so the prompt the model trains on is the prompt it is served.
+29. **A run can start from a commit.** `POST /runs` takes an optional `base` sha on a `repo_chore`, and `app/repo_chore.py` checks it out before it branches. The run row records it, so every result can be reproduced.
+30. **The bank is mined from real commits.** Claude does not invent chores. A chore is a real commit from a small Python library: its parent is the base, the tests the commit added are the hidden grade, and the commit is the reference solution. Claude writes only the instruction, one paragraph, from the diff, and never names the tests.
+31. **Library criteria.** MIT, BSD or Apache 2.0; pure Python; a suite that runs in under 60 seconds with no service, network or database, on `pytest` or `unittest`; at least 40 commits in 2025 or 2026 that touch both source and tests; roughly 2,000 to 20,000 lines, so the 10 file read limit can reach what a chore needs; not one of the most famous libraries, to lower the chance the model memorised them. Commits come from 2025 and 2026, after `qwen2.5-coder`'s training data ends. A subagent produces the shortlist and Thomas picks 3 to 5.
+32. **Each library is a public fork under `thomas-whitley`,** keeping its licence and history, so chore branches land in the fork and never upstream. Each fork gets `auto_approve: true`, a recorded exception to decision 13 that applies to bank forks only. Chore branches are graded, closed and deleted, as on the fixture.
+33. **A chore enters the bank only through a gate.** A script checks that the grade fails on the base and passes on the reference. A commit whose tests depend on more than its own change fails the gate and is dropped.
+34. **The bank splits 80 to 20 by a hash of the chore id.** Memory and training see the training split only. The validation split chooses between adapters. The 11 eval chores and the fixture never enter the bank. The 11 are run once per stage (`local-base`, `local-memory` and each promoted tag) and never to choose between adapters.
+35. **A pilot comes first.** 50 chores from one library go through the whole loop (gate, local runs, rescue, `model_calls`, example export, one small training run, the tag loaded into Ollama) before the other 250 or so are mined.
+36. **Batches are started by hand.** `queue-bank.ps1 -Count N` on the desktop sets `OLLAMA_KEEP_ALIVE=-1` for the batch and queues N training split chores. Nothing runs on a schedule, because the GPU is also for games.
+37. **Rescues.** Only training split failures are rescued, one hint each, at most 25 per Claude session. The rescuer sees the report entry (instruction, last diff, test output) and never the reference, or a rescued example would be the reference again. Validation chores are never rescued.
+38. **A training example is two turns.** The read request and the edit, both trained, because the read turn is where weak models go wrong first. Examples carry an origin, `self` (passed unaided), `reference` (the commit, with a read turn built from the files it touches and the files its tests import) or `rescued` (passed after a hint, trained without the hint).
+39. **Memory.** On the `local` rung only, turned on by `memory: true` on the rung in `mercury.yaml`. Before a chore, `app/retrieval.py`'s Postgres full text path finds the 3 most similar solved training split chores and adds each one's instruction, final diff and hint, at most about 3,000 tokens, after the instruction. Embeddings are added only if `local-memory` shows no gain over `local-base`; no Voyage key is deployed today.
+40. **Fine tuning.** Unsloth QLoRA in WSL (16 GB) on the 4060. The adapter is merged into the base and exported as GGUF, then loaded into Ollama as `mercury-local:vN`, because Ollama's `ADAPTER` support for Qwen is unconfirmed. Training code lives in `train/` and stays out of CI.
+41. **Retraining and promotion.** A new tag is trained after about every 100 new examples. It replaces the current tag only if it passes at least 3 more validation chores and has no more weakened test results. If v2 does not beat `local-memory` on validation, training stops and the null result is published.
+42. **What is published.** README numbers, plus the adapter, the dataset and a model card on Hugging Face linking the eval. No GGUF upload.
+43. **The job hunt waits for a number.** No CV, letter or form answer mentions fine tuning, or a model that improves, until a promoted tag has a measured `local-tuned` result on the 11 eval chores. Until then it is "building".
+44. **Cheap AI.** Once a tag is promoted, `delegate.ps1` gains `-Model local-tuned`. Its `local` default changes only if the tag beats `qwen3-coder:30b` on the same 11 chores.
+45. **Real chores come later.** Once a tag is promoted, chores on Thomas's own repos become a second stream, reported apart from the bank. It is the bridge to Phase 4.
+
+### 5a: the local rung (before Phase 3)
+
+The measurement in decision 21, then the Funnel and Caddy setup on the desktop with a short `local/README.md`, the `local` provider with constrained decoding, `MAX_LOCAL_RUNS_PER_DAY`, `source: bank`, `base` on `POST /runs`, and the `model_calls` table. Phase 3 then adds a `local-base` column for whichever model decision 21 kept. The eval runner's existing provider column (Task 2) carries it; a run against `local` while the desktop is off ends `error` with `providers unavailable` and is reported as such.
+
+### 5b: the bank
+
+The library shortlist (decision 31), the forks, a miner that turns a commit into a chore file in the same shape as `evals/chores/` plus `base` and `reference`, the gate, the split, `queue-bank.ps1`, the rescue script and the example export. The pilot (decision 35) first.
+
+### 5c: memory
+
+Decision 39, measured as a `local-memory` column on validation and then on the 11.
+
+### 5d: fine tuning
+
+Decisions 40 and 41, measured as `local-tuned` and `local-tuned+memory` columns. A README claims row in the Phase 3 style is written only after the promoted tag's numbers exist, whatever they are.
+
+### Phase 5 Review Focus
+
+- A bank run whose `local` call fails must end `error`, not fall through to gemini. Test in 5a.
+- A request to the Funnel address without the bearer, or to any path but `/v1/chat/completions`, must be refused by Caddy. Checked by hand in 5a and written into `local/README.md`.
+- A rescued example must not contain the hint, and no example may come from a validation chore or one of the 11. Tests in 5b.
+- A chore whose grade passes on its base measures nothing and must be dropped by the gate. Test in 5b.
+- Memory must never retrieve a validation chore or one of the 11. Test in 5c.
+
 ## What not to do
 
-Do not give any repo but the fixture `auto_approve`. Do not add a paid model or an Anthropic key. Do not tune an instruction after seeing a model fail on it unless triage found it ambiguous, and say so in the report. Do not merge any PR the eval opens. Do not add the eval to CI. Do not start Phase 2 in the Phase 1 session.
+Do not give any repo but the fixture and the Phase 5 bank forks `auto_approve`. Do not add a paid model or an Anthropic key. Do not tune an instruction after seeing a model fail on it unless triage found it ambiguous, and say so in the report. Do not merge any PR the eval opens. Do not add the eval to CI. Do not start Phase 2 in the Phase 1 session.

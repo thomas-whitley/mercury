@@ -161,3 +161,14 @@ def fake_telegram():
     server = FakeTelegram()
     yield server
     server.close()
+
+
+@pytest.fixture
+def restore_task_types():
+    """Puts the task registry back after a test that applied a config to it."""
+    from app.tasks import TASK_TYPES
+
+    saved = dict(TASK_TYPES)
+    yield
+    TASK_TYPES.clear()
+    TASK_TYPES.update(saved)

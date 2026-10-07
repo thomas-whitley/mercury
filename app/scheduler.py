@@ -37,7 +37,7 @@ from app.mercury_config import load_mercury_config
 from app.migrations import apply_migrations
 from app.runs import finish_run, record_step
 from app.schedule_state import SUSPEND_AFTER, is_suspended, record_failure, record_success
-from app.tasks import SCHEDULER_CHECK_KINDS, SELF_HOSTED_CHECK_KINDS
+from app.tasks import SCHEDULER_CHECK_KINDS, SELF_HOSTED_CHECK_KINDS, configure_task_types
 from app.telegram import TelegramClient, TelegramError, telegram_client
 from app.telemetry import configure_telemetry
 
@@ -455,6 +455,7 @@ def main() -> None:  # pragma: no cover - the process entry point
         raise RuntimeError("no MERCURY_BEARER_TOKEN: the scheduler cannot call the api")
 
     config = load_mercury_config(settings.mercury_config_path)
+    configure_task_types(config.tasks)
 
     telegram = telegram_client(settings)
     with psycopg.connect(settings.database_url, autocommit=True) as conn:

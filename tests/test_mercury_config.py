@@ -1,14 +1,17 @@
 """Loads the parts of mercury.yaml that something reads: the portfolio, the
 Telegram chat and the retention windows.
 
-Sections nothing calls yet (providers, tasks, budgets) are not parsed;
-parsing them would be code with no caller.
+tasks: is parsed into each type's provider ladder and budget. budgets: and
+providers: were never read, so a config that still has them is refused
+rather than left to say something false.
 """
+
+import re
 
 import pytest
 import yaml
 
-from app.mercury_config import load_mercury_config
+from app.mercury_config import TaskSettings, load_mercury_config
 
 
 def test_load_mercury_config_reads_the_site_list(tmp_path):
@@ -97,3 +100,42 @@ def test_load_mercury_config_reads_the_timezone_and_defaults_to_melbourne(tmp_pa
 
     assert load_mercury_config(config_file).timezone == "Europe/London"
     assert load_mercury_config(default_file).timezone == "Australia/Melbourne"
+
+
+def write(tmp_path, text: str):
+    path = tmp_path / "mercury.yaml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_a_type_reads_its_ladder_and_budget(tmp_path):
+    config = load_mercury_config(
+        write(
+            tmp_path,
+            "tasks:\n  repo_chore:\n    ladder: [ollama, gemini]\n    budget_tokens: 40000\n",
+        )
+    )
+    assert config.tasks["repo_chore"] == TaskSettings(
+        ladder=("ollama", "gemini"), budget_tokens=40000
+    )
+
+
+def test_a_type_with_no_tasks_entry_is_absent(tmp_path):
+    assert load_mercury_config(write(tmp_path, "portfolio: {}\n")).tasks == {}
+
+
+@pytest.mark.parametrize(
+    "text, words",
+    [
+        ("tasks:\n  repo_chore:\n    provider: haiku\n", "tasks.repo_chore.provider"),
+        ("tasks:\n  repo_chore:\n    ladder: [nobody]\n", "unknown provider 'nobody'"),
+        ("tasks:\n  homework:\n    ladder: [gemini]\n", "unknown task type 'homework'"),
+        ("tasks:\n  site_check:\n    ladder: [gemini]\n", "site_check calls no model"),
+        ("tasks:\n  repo_chore:\n    ladder: []\n", "needs at least one provider"),
+        ("budgets:\n  per_month_usd: 5\n", "budgets"),
+        ("providers:\n  gemini: {}\n", "providers"),
+    ],
+)
+def test_a_config_mercury_would_misread_stops_it_at_startup(tmp_path, text, words):
+    with pytest.raises(ValueError, match=re.escape(words)):
+        load_mercury_config(write(tmp_path, text))

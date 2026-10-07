@@ -32,7 +32,7 @@ from app.progress import push_progress
 from app.repo_chore import ChoreSetup, run_repo_chore
 from app.retrieval import Retriever, build_retriever, index_corpus
 from app.runs import claim_run, finish_run, heartbeat, record_step
-from app.tasks import CLOUD_FALLBACK_CHECK_KINDS, TASK_TYPES, TaskType
+from app.tasks import CLOUD_FALLBACK_CHECK_KINDS, TASK_TYPES, TaskType, configure_task_types
 from app.telegram import TelegramClient, TelegramError, telegram_client
 from app.telemetry import configure_telemetry
 
@@ -401,11 +401,12 @@ def _with_fallback(
     provider has credentials. When the fallback takes over, the run's provider
     column names it, so the runs list and the daily token cap count the
     provider that answered."""
-    if task_type.fallback is None or task_type.fallback == provider:
+    fallback_name = task_type.ladder[1] if len(task_type.ladder) > 1 else None
+    if fallback_name is None or fallback_name == provider:
         return model
     fields = {"run_id": run_id, "worker_id": settings.worker_id}
     try:
-        fallback = model_builder(settings, task_type.fallback)
+        fallback = model_builder(settings, fallback_name)
     except RuntimeError as error:
         logger.warning("run %s has no fallback: %s", run_id, error, extra=fields)
         return model
@@ -415,10 +416,10 @@ def _with_fallback(
             "run %s: %s failed, falling back to %s",
             run_id,
             provider,
-            task_type.fallback,
+            fallback_name,
             extra=fields,
         )
-        conn.execute("UPDATE runs SET provider = %s WHERE id = %s", (task_type.fallback, run_id))
+        conn.execute("UPDATE runs SET provider = %s WHERE id = %s", (fallback_name, run_id))
 
     return FallbackModel(model, fallback, on_switch=switch)
 
@@ -468,6 +469,7 @@ def main() -> None:  # pragma: no cover - the process entry point
         mercury = load_mercury_config(settings.mercury_config_path)
     except FileNotFoundError:
         mercury = MercuryConfig(sites=())
+    configure_task_types(mercury.tasks)
     owner_chat_id = mercury.telegram_chat_id
 
     def cached_model_builder(settings: Settings, provider_name: str) -> Model:

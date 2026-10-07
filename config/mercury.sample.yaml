@@ -6,38 +6,21 @@ telegram:
   chat_id: 0            # the one chat the bot answers; everyone else gets silence
   timezone: Australia/Melbourne
 
-providers:
-  gemini:
-    kind: openai_compatible
-    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
-    model: gemini-2.5-flash
-    api_key_env: GEMINI_API_KEY
-  haiku:
-    kind: anthropic
-    model: claude-haiku-4-5-20251001
-    api_key_env: ANTHROPIC_API_KEY
-
-tasks:
+tasks:                  # optional; each type's ladder is the providers it tries in order
   pytest:
-    provider: gemini
+    ladder: [gemini, ollama]
     budget_tokens: 50000
   chat:
-    provider: haiku
+    ladder: [ollama, gemini]
     budget_tokens: 20000
   repo_chore:
-    provider: haiku
+    ladder: [gemini, ollama]
     budget_tokens: 50000
-  site_check:
-    budget_tokens: 0    # no model call
   digest:
-    provider: gemini
+    ladder: [gemini, ollama]
     budget_tokens: 20000
-
-budgets:
-  per_day_tokens:
-    gemini: 500000
-    haiku: 200000
-  per_month_usd: 5
+# Token and dollar caps are environment variables, not this file:
+# DAILY_TOKENS_PER_PROVIDER (500000) and MONTHLY_BUDGET_USD (5).
 
 portfolio:
   repos:                # a repo_chore may touch only these, and only one with a test_command
@@ -65,6 +48,9 @@ retention:
   event_bodies_days: 30
   runs_days: 365
 
-# Environment variables the image expects, all secrets:
+# Environment variables the image expects. Secrets:
 #   DATABASE_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, MERCURY_BEARER_TOKEN,
-#   MERCURY_GITHUB_TOKEN, GEMINI_API_KEY, ANTHROPIC_API_KEY
+#   MERCURY_GITHUB_TOKEN, MODEL_API_KEY (Gemini), OLLAMA_API_KEY, PAGESPEED_API_KEY,
+#   and ANTHROPIC_API_KEY, which no type uses.
+# Plain settings: MAX_RUNS_PER_DAY (20), DAILY_TOKENS_PER_PROVIDER (500000),
+#   MONTHLY_BUDGET_USD (5).

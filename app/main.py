@@ -18,7 +18,7 @@ from app.run_api import RunCreated, cancel, create_run, get_run, list_runs
 from app.run_list import DEFAULT_LIMIT, MAX_LIMIT
 from app.run_request import RunRequest
 from app.stream import event_stream, parse_last_event_id
-from app.tasks import TASK_TYPES
+from app.tasks import TASK_TYPES, configure_task_types
 from app.telegram_webhook import router as telegram_router
 from app.telemetry import configure_telemetry
 
@@ -46,6 +46,7 @@ async def lifespan(app: FastAPI):
         app.state.mercury = load_mercury_config(settings.mercury_config_path)
     except FileNotFoundError:
         app.state.mercury = MercuryConfig(sites=())
+    configure_task_types(app.state.mercury.tasks)
     try:
         async with app.state.mcp.session_manager.run():
             yield

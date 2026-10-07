@@ -1,7 +1,10 @@
 """The task type registry: one row per type, in code."""
 
+import httpx2
+
 from app.config import PROVIDERS
-from app.tasks import TASK_TYPES
+from app.mercury_config import TaskSettings
+from app.tasks import TASK_TYPES, configure_task_types
 
 EXPECTED_NAMES = {"pytest", "chat", "repo_chore", "site_check", "digest"}
 
@@ -58,7 +61,47 @@ def test_chat_runs_on_ollama_and_the_rest_on_gemini():
 
 def test_every_model_type_falls_back_to_a_different_registered_provider():
     for name in EXPECTED_NAMES - {"site_check"}:
-        task_type = TASK_TYPES[name]
-        assert task_type.fallback in PROVIDERS, name
-        assert task_type.fallback != task_type.provider, name
-    assert TASK_TYPES["site_check"].fallback is None
+        ladder = TASK_TYPES[name].ladder
+        assert len(ladder) >= 2, name
+        assert len(set(ladder)) == len(ladder), name
+        assert all(provider in PROVIDERS for provider in ladder), name
+
+
+def test_the_shipped_ladders_are_free_and_start_where_they_did():
+    assert TASK_TYPES["repo_chore"].ladder == ("gemini", "ollama")
+    assert TASK_TYPES["chat"].ladder == ("ollama", "gemini")
+    assert TASK_TYPES["site_check"].ladder == ()
+    for name, task_type in TASK_TYPES.items():
+        assert all(PROVIDERS[p].usd_per_million_tokens == 0 for p in task_type.ladder), name
+
+
+def test_the_config_replaces_a_types_ladder_and_budget(restore_task_types):
+    configure_task_types({"repo_chore": TaskSettings(ladder=("ollama",), budget_tokens=30_000)})
+
+    assert TASK_TYPES["repo_chore"].provider == "ollama"
+    assert TASK_TYPES["repo_chore"].ladder == ("ollama",)
+    assert TASK_TYPES["repo_chore"].budget_tokens == 30_000
+    assert TASK_TYPES["pytest"].ladder == ("gemini", "ollama")
+
+
+def test_a_config_with_no_budget_keeps_the_types_own(restore_task_types):
+    configure_task_types({"digest": TaskSettings(ladder=("ollama",), budget_tokens=None)})
+    assert TASK_TYPES["digest"].budget_tokens == 20_000
+
+
+def test_the_api_applies_the_configs_ladder_at_startup(
+    start_server, auth_headers, monkeypatch, tmp_path, restore_task_types
+):
+    config = tmp_path / "mercury.yaml"
+    config.write_text("tasks:\n  pytest:\n    ladder: [ollama, gemini]\n", encoding="utf-8")
+    monkeypatch.setenv("MERCURY_CONFIG_PATH", str(config))
+    base = start_server()
+
+    created = httpx2.post(
+        f"{base}/runs",
+        json={"type": "pytest", "inputs": {"task": "def test_one():\n    assert 1\n"}},
+        headers=auth_headers,
+    )
+    run = httpx2.get(f"{base}/runs/{created.json()['id']}", headers=auth_headers).json()
+
+    assert run["provider"] == "ollama"

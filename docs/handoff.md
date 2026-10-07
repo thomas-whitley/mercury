@@ -1,4 +1,4 @@
-# Handoff: eval Phase 1 deployed, baseline three columns of four (2026-10-06)
+# Handoff: eval Phase 1 done, baseline four columns (2026-10-07)
 
 ## The chore eval baseline, Task 7 of `docs/build-brief-evals.md` (2026-10-06)
 
@@ -9,30 +9,34 @@ is the only repo with `auto_approve: true`, and the fixture is seeded at `c113c0
 smoke test (`--only divide` on gemini) passed in 816 tokens with no Telegram message and no
 PR left open.
 
-Each column ran the 11 tasks once. Reports are in `evals/results/`.
+Each column ran the 11 tasks once, the ollama column on 2026-10-07. Reports are in `evals/results/`.
 
 | Column | Passed the hidden test | Results that removed one of main's tests | Report |
 | --- | --- | --- | --- |
 | gemini, through Mercury | 11 of 11 | 0 | `2026-10-06T0410Z` |
 | delegate:local (`qwen3-coder:30b`) | 10 of 11 | 1 | `2026-10-06T0615Z` |
 | delegate:local-gpt (`gpt-oss:20b`) | 4 of 11 | 3 | `2026-10-06T0640Z` |
-| ollama, through Mercury | not run yet | | |
+| ollama, through Mercury (`gpt-oss:120b`) | 9 of 11 | 2 | `2026-10-07T0006Z` |
 
 Gemini's median was 1,253 tokens and 10 seconds per chore, at $0, with no fallback.
 
-The 8 failures have four causes. Four results removed a test `main` has, all after an
-instruction that said "Add tests to" an existing file, which both local models read as
-"rewrite" (`cli` on both models, `orders_gst` and `orders_quantity` on gpt-oss). Two runs
+Ollama's median was 2,940 tokens and 15 seconds per chore, at $0, with no fallback.
+
+The 10 failures have four causes. Six results removed a test `main` has, all after an
+instruction that said "Add tests to" an existing file, which every model but gemini read as
+"rewrite" (`cli` on both local models, `orders_gst` and `orders_quantity` on gpt-oss 20b,
+`clamp` and `divide` on ollama, which replaced `test_calc.py`'s `AddTest` class with pytest
+functions in fixture PRs #17 and #19). Two runs
 of gpt-oss changed nothing (`clamp`, `word_count`). On `orders_report` gpt-oss fixed nothing
 and wrote a test of its own that fails. On `slugify` gpt-oss wrote `test_slug.py` without
 the `slug.py` it imports. No failure came from the runner, a timeout or the fixture.
 
-The ollama column did not run today, because the worker refuses every model run past
-`MAX_RUNS_PER_DAY` (20 a UTC day, site checks not counted) and 12 were used. The brief
-says to raise it in `mercury-config`, but nothing passes `MAX_RUNS_PER_DAY` through
-`infra/deploy.sh` or the Bicep, so the live value is always the default 20. Run it on a
-later UTC day with `--columns ollama --repeats 1`, 11 runs. Plumbing the variable through
-the Bicep belongs in Phase 2.
+The ollama column ran on a later UTC day than the others, because the worker refuses every
+model run past `MAX_RUNS_PER_DAY` (20 a UTC day, site checks not counted) and 12 were used
+on 2026-10-06. The brief says to raise it in `mercury-config`, but nothing passes
+`MAX_RUNS_PER_DAY` through `infra/deploy.sh` or the Bicep, so the live value is always the
+default 20. Plumbing the variable through the Bicep belongs in Phase 2. Only PR #4 is open
+on the fixture after the run.
 
 The two delegate columns must run one at a time on the 32 GB desktop. Run together they
 alternate models task by task, Ollama keeps both loaded (18 GB and 13 GB), and Claude Code

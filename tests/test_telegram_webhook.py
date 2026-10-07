@@ -258,6 +258,12 @@ def test_a_reply_to_an_escalation_message_queues_an_advised_rerun(
     ).fetchone()
     assert row[1:] == ("pending", "telegram", "Use float division.")
     assert replies(fake_telegram) == [f"Rerunning {failed[:8]} from main with your hint."]
+    # The rerun reports on that message, as a chore asked for in chat does, so
+    # the owner sees how it ends.
+    message = migrated_db.execute(
+        "SELECT telegram_chat_id, telegram_message_id FROM runs WHERE id = %s", (row[0],)
+    ).fetchone()
+    assert message == (CHAT, 1)
     assert migrated_db.execute("SELECT count(*) FROM runs WHERE type = 'chat'").fetchone() == (0,)
 
 

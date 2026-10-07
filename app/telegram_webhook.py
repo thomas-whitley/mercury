@@ -70,6 +70,7 @@ ORDER BY created_at DESC LIMIT 1
 
 _SUSPENDED_NAMES = "SELECT name FROM schedule_state WHERE suspended ORDER BY name"
 _ESCALATED_BY_MESSAGE = "SELECT id FROM runs WHERE escalation_message_id = %s"
+_REPORT_ON = "UPDATE runs SET telegram_chat_id = %s, telegram_message_id = %s WHERE id = %s"
 RESUME_USAGE = "Usage: /resume <site>"
 UPTIME_PREFIX = "site_uptime:"
 
@@ -105,9 +106,15 @@ async def telegram_webhook(request: Request) -> dict:
     # A reply to a chore's escalation message is a hint for that chore.
     replied_to = (message.get("reply_to_message") or {}).get("message_id")
     if replied_to is not None:
-        answer = await _advise_from_reply(request, replied_to, text)
-        if answer is not None:
-            await _send(request, chat_id, answer)
+        advised = await _advise_from_reply(request, replied_to, text)
+        if advised is not None:
+            answer, new_id = advised
+            message_id = await _send(request, chat_id, answer)
+            if new_id is not None and message_id is not None:
+                # The rerun reports on this message, as a chore asked for in
+                # chat does, so the owner sees how it ends.
+                async with request.app.state.pool.connection() as conn:
+                    await conn.execute(_REPORT_ON, (chat_id, message_id, new_id))
             return {}
 
     if text.startswith("/"):
@@ -135,23 +142,26 @@ async def telegram_webhook(request: Request) -> dict:
     return {}
 
 
-def _advise_on_escalation(state, message_id: int, hint: str) -> str | None:
-    """None when no chore's escalation message has this id, so the reply is
-    ordinary chat. Only the one allowed chat gets here, so the id is enough."""
+def _advise_on_escalation(state, message_id: int, hint: str) -> tuple[str, str | None] | None:
+    """The answer and the new run's id (None when refused), or None when no
+    chore's escalation message has this id, so the reply is ordinary chat.
+    Only the one allowed chat gets here, so the id is enough."""
     with connect(state.settings.database_url, autocommit=True) as conn:
         row = conn.execute(_ESCALATED_BY_MESSAGE, (message_id,)).fetchone()
         if row is None:
             return None
         run_id = str(row[0])
         try:
-            advise(conn, run_id, hint, "telegram", state.mercury.repos)
+            new_id = advise(conn, run_id, hint, "telegram", state.mercury.repos)
         except AdviceRefused as refused:
-            return str(refused)
+            return str(refused), None
     logger.info("advised run %s from a Telegram reply", run_id, extra={"run_id": run_id})
-    return f"Rerunning {run_id[:8]} from main with your hint."
+    return f"Rerunning {run_id[:8]} from main with your hint.", new_id
 
 
-async def _advise_from_reply(request: Request, message_id: int, hint: str) -> str | None:
+async def _advise_from_reply(
+    request: Request, message_id: int, hint: str
+) -> tuple[str, str | None] | None:
     return await run_in_threadpool(_advise_on_escalation, request.app.state, message_id, hint)
 
 

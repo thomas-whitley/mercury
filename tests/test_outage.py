@@ -99,15 +99,17 @@ def test_after_three_retries_the_fourth_outage_escalates_and_tells_the_owner(
     assert OUTAGE in message["text"]
 
 
-def test_an_eval_chore_escalates_after_its_outages_without_a_message(migrated_db, fake_telegram):
-    newest = outage_run(migrated_db, source="eval")
-    for _ in range(MAX_OUTAGE_RETRIES):
-        newest = outage_run(migrated_db, source_run_id=newest, source="eval")
+def test_an_eval_chore_is_never_retried(migrated_db, fake_telegram):
+    """The eval runner has already recorded the row and moved on, so a later
+    retry could open a pull request on the fixture that nobody closes."""
+    failed = outage_run(migrated_db, source="eval")
 
-    retry_outages(migrated_db, TelegramClient("123:abc", fake_telegram.url), CHAT, PAGE)
+    queued = retry_outages(migrated_db, TelegramClient("123:abc", fake_telegram.url), CHAT, PAGE)
 
-    status = migrated_db.execute("SELECT status FROM runs WHERE id = %s", (newest,)).fetchone()
-    assert status == ("escalated",)
+    assert queued == []
+    assert retries_of(migrated_db, failed) == []
+    status = migrated_db.execute("SELECT status FROM runs WHERE id = %s", (failed,)).fetchone()
+    assert status == ("error",)
     assert fake_telegram.sent() == []
 
 

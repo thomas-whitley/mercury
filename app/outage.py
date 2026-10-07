@@ -7,7 +7,9 @@ that finished at least half an hour ago, so a run that failed a minute
 before the tick still gets its hour. A retry copies the instruction, repo,
 source and any hint, links back by source_run_id, and starts pending on the
 type's first rung. After MAX_OUTAGE_RETRIES retries in a row have also hit
-an outage, the last one is escalated and announced instead.
+an outage, the last one is escalated and announced instead. An eval chore is
+never retried: the eval runner has already recorded it and moved on, and a
+late retry could open a pull request on the fixture that nobody closes.
 
 The scheduler inserts retries itself rather than POSTing them: a retry is
 the same chore continuing, already approved, not a new request through the
@@ -40,6 +42,7 @@ _CANDIDATES = (
     + _OUTAGE
     + """AND r.finished_at < now() - %s::interval
 AND NOT EXISTS (SELECT 1 FROM runs n WHERE n.source_run_id = r.id)
+AND r.source <> 'eval'
 ORDER BY r.finished_at"""
 )
 _IS_OUTAGE = "SELECT count(*) FROM runs r WHERE r.id = %s AND " + _OUTAGE

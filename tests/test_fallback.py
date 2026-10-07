@@ -8,9 +8,11 @@ provider that answered.
 import pytest
 
 from app.loop import _complete_with_retry
+from app.mercury_config import TaskSettings
 from app.model import FallbackModel, ModelReply, StubModel
 from app.runs import claim_run
-from app.worker import process_run
+from app.tasks import TASK_TYPES, configure_task_types
+from app.worker import _with_fallback, process_run, rungs_after
 from tests.test_worker import settings_with
 
 
@@ -147,8 +149,9 @@ def test_a_run_is_built_on_the_provider_its_row_names(migrated_db, fake_telegram
 
     process_run(migrated_db, run_id, settings, model_builder=_recording(seen))
 
-    # chat's own fallback, gemini, still stands behind the provider the row named.
-    assert seen == ["haiku", "gemini"]
+    # chat's whole ladder, ollama then gemini, stands behind a provider the row
+    # named that is not on it.
+    assert seen == ["haiku", "ollama", "gemini"]
 
 
 def test_a_run_already_on_its_types_fallback_gets_no_fallback_behind_it(migrated_db, fake_telegram):
@@ -161,3 +164,70 @@ def test_a_run_already_on_its_types_fallback_gets_no_fallback_behind_it(migrated
     process_run(migrated_db, run_id, settings, model_builder=_recording(seen))
 
     assert seen == ["gemini"]
+
+
+@pytest.mark.parametrize(
+    "provider, expected",
+    [
+        ("gemini", ("ollama", "haiku")),
+        ("ollama", ("haiku",)),
+        # A reclaimed run already on the last rung has nothing behind it.
+        ("haiku", ()),
+        # A provider the caller named that is not on the ladder gets the whole ladder.
+        ("groq", ("gemini", "ollama", "haiku")),
+    ],
+)
+def test_the_rungs_after_a_provider(provider, expected):
+    assert rungs_after(("gemini", "ollama", "haiku"), provider) == expected
+
+
+def _pytest_run_on(conn, provider: str) -> str:
+    return str(
+        conn.execute(
+            "INSERT INTO runs (task, type, provider) VALUES ('t', 'pytest', %s) RETURNING id",
+            (provider,),
+        ).fetchone()[0]
+    )
+
+
+def test_two_failures_walk_the_run_down_two_rungs_and_the_row_follows(
+    migrated_db, restore_task_types
+):
+    configure_task_types({"pytest": TaskSettings(ladder=("gemini", "ollama", "haiku"))})
+    run_id = _pytest_run_on(migrated_db, "gemini")
+    models = {"gemini": _Failing(), "ollama": _Failing(), "haiku": StubModel(replies=["ok"])}
+    model = _with_fallback(
+        migrated_db,
+        run_id,
+        models["gemini"],
+        TASK_TYPES["pytest"],
+        settings_with(),
+        lambda settings, name: models[name],
+        "gemini",
+    )
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            model.complete("s", "p")
+    assert model.complete("s", "p").text == "ok"
+    provider = migrated_db.execute("SELECT provider FROM runs WHERE id = %s", (run_id,)).fetchone()
+    assert provider == ("haiku",)
+
+
+def test_a_rung_with_no_credentials_is_skipped(migrated_db, restore_task_types):
+    configure_task_types({"pytest": TaskSettings(ladder=("gemini", "ollama", "haiku"))})
+    run_id = _pytest_run_on(migrated_db, "gemini")
+
+    def build(settings, name):
+        if name == "ollama":
+            raise RuntimeError("no model credentials: set OLLAMA_API_KEY")
+        return StubModel(replies=[name])
+
+    model = _with_fallback(
+        migrated_db, run_id, _Failing(), TASK_TYPES["pytest"], settings_with(), build, "gemini"
+    )
+    with pytest.raises(RuntimeError):
+        model.complete("s", "p")
+    assert model.complete("s", "p").text == "haiku"
+    provider = migrated_db.execute("SELECT provider FROM runs WHERE id = %s", (run_id,)).fetchone()
+    assert provider == ("haiku",)

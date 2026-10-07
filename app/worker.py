@@ -388,6 +388,16 @@ def _offer_open_anyway(
         logger.error("could not offer open it anyway: %s", error, extra={"run_id": run_id})
 
 
+def rungs_after(ladder: tuple[str, ...], provider: str) -> tuple[str, ...]:
+    """The rungs a run on this provider may still fall back to. A run that
+    already fell back, and is then reclaimed, keeps only the rungs below the
+    one it reached. A provider the caller named that is not on the ladder
+    has the whole ladder behind it."""
+    if provider in ladder:
+        return ladder[ladder.index(provider) + 1 :]
+    return tuple(rung for rung in ladder if rung != provider)
+
+
 def _with_fallback(
     conn: psycopg.Connection,
     run_id: str,
@@ -397,31 +407,35 @@ def _with_fallback(
     model_builder: Callable[[Settings, str], Model],
     provider: str,
 ) -> Model:
-    """The run's model, with its type's fallback provider behind it when that
-    provider has credentials. When the fallback takes over, the run's provider
-    column names it, so the runs list and the daily token cap count the
-    provider that answered."""
-    fallback_name = task_type.ladder[1] if len(task_type.ladder) > 1 else None
-    if fallback_name is None or fallback_name == provider:
-        return model
+    """The run's model with every later rung of its type's ladder behind it,
+    nearest first, skipping a rung with no credentials. Each switch writes the
+    provider taking over to the run's row, so the runs list and the daily
+    token cap count the provider that answered."""
     fields = {"run_id": run_id, "worker_id": settings.worker_id}
-    try:
-        fallback = model_builder(settings, fallback_name)
-    except RuntimeError as error:
-        logger.warning("run %s has no fallback: %s", run_id, error, extra=fields)
+    chain: list[tuple[str, Model]] = []
+    for rung in rungs_after(task_type.ladder, provider):
+        try:
+            chain.append((rung, model_builder(settings, rung)))
+        except RuntimeError as error:
+            logger.warning("run %s skips rung %s: %s", run_id, rung, error, extra=fields)
+    if not chain:
         return model
 
-    def switch() -> None:
-        logger.warning(
-            "run %s: %s failed, falling back to %s",
-            run_id,
-            provider,
-            fallback_name,
-            extra=fields,
-        )
-        conn.execute("UPDATE runs SET provider = %s WHERE id = %s", (fallback_name, run_id))
+    def switch_to(name: str, failed: str) -> Callable[[], None]:
+        def switch() -> None:
+            logger.warning(
+                "run %s: %s failed, falling back to %s", run_id, failed, name, extra=fields
+            )
+            conn.execute("UPDATE runs SET provider = %s WHERE id = %s", (name, run_id))
 
-    return FallbackModel(model, fallback, on_switch=switch)
+        return switch
+
+    # Fold from the last rung up, so each FallbackModel's fallback is the rest of the chain.
+    tail = chain[-1][1]
+    for index in range(len(chain) - 2, -1, -1):
+        name, rung_model = chain[index]
+        tail = FallbackModel(rung_model, tail, on_switch=switch_to(chain[index + 1][0], name))
+    return FallbackModel(model, tail, on_switch=switch_to(chain[0][0], provider))
 
 
 def end_on_budget(conn: psycopg.Connection, run_id: str, trip: BudgetTrip) -> None:

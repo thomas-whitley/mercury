@@ -1,6 +1,6 @@
 # Build brief: Mercury as a cheap task runner, with evals and an escalation ladder
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement Phase 1 task by task (Thomas chose native execution, then one review of the whole branch). Steps use checkbox (`- [ ]`) syntax for tracking. Phase 2 was turned into Tasks 8 to 18 on 2026-10-07 and is done and live at `f453720` the same day. Phases 3, 4 and 5 are still specs, not tasks: each one is turned into tasks in its own session, after the phase before it has landed, except that Phase 5's part 5a comes before Phase 3. Part 5a was turned into Tasks 19 to 27 on 2026-10-07 and is next.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement Phase 1 task by task (Thomas chose native execution, then one review of the whole branch). Steps use checkbox (`- [ ]`) syntax for tracking. Phase 2 was turned into Tasks 8 to 18 on 2026-10-07 and is done and live at `f453720` the same day. Phases 3, 4 and 5 are still specs, not tasks: each one is turned into tasks in its own session, after the phase before it has landed, except that Phase 5's part 5a comes before Phase 3. Part 5a was turned into Tasks 19 to 27 on 2026-10-07 and built the same day; by decision 46 the local rung runs in local compose, not live.
 
 **Goal:** Mercury completes well defined chores on free models, proves how often it gets them right with tests the model never saw, and escalates what it cannot fix to Thomas and then to a Claude session.
 
@@ -2947,7 +2947,7 @@ where `_advise` opens a connection on `settings.database_url` and passes `app.st
 
 - The eval runner gains a rescue pass: for every row that failed, a Claude session (Opus) writes one hint from the failure, and the runner sends it with `advise` and grades the result. The report gains two figures per column: passed first time, and passed after one Claude hint.
 - Three repeats on a later day, reporting the mean pass rate and how many tasks passed at least once.
-- A `local-base` column for the untuned home model, through the `local` rung that Phase 5's part 5a builds first (decisions 21 to 23). It is the before figure for Phase 5.
+- A `local-base` column for the untuned home model, through the `local` rung that Phase 5's part 5a builds first (decisions 21 to 23), run in the local compose stack (decision 46, `local/README.md`). It is the before figure for Phase 5. Its first single run was 2 of 11.
 - README: a section `## Evals` saying what a task is, that the grade test never reaches the model, that a result which drops `main`'s tests fails, how a run is graded, and the command to rerun it, with the column table pasted under it. A claims row `A free model completes well defined chores, graded by tests it never saw`, with the measured numbers whatever they are.
 
 ## Phase 4 spec: findings become chores
@@ -2996,6 +2996,7 @@ Settled with Thomas on 2026-10-07 over five rounds of questions; do not re-ask t
 43. **The job hunt waits for a number.** No CV, letter or form answer mentions fine tuning, or a model that improves, until a promoted tag has a measured `local-tuned` result on the 11 eval chores. Until then it is "building".
 44. **Cheap AI.** Once a tag is promoted, `delegate.ps1` gains `-Model local-tuned`. Its `local` default changes only if the tag beats `qwen3-coder:30b` on the same 11 chores.
 45. **Real chores come later.** Once a tag is promoted, chores on Thomas's own repos become a second stream, reported apart from the bank. It is the bridge to Phase 4.
+46. **The local rung stays in local compose for now (2026-10-07, after Task 25).** Thomas chose not to give the desktop a public address. Every part of Phase 5 that uses the GPU already runs from the desktop (bank batches start by hand there, the eval runner takes any `MERCURY_URL`, training is local), so Mercury in compose on the desktop does all of it, and the bank's rows live in its local Postgres. Decision 22's Funnel and Caddy are parked in `local/parked/`. The Bicep and `deploy.sh` still carry the `local` settings, and with no `LOCAL_MODEL_URL` the live deploy refuses any run on `local`. When a promoted tag earns a place on live chores (decision 26), the preferred route is Tailscale inside the worker container, which gives the GPU no public address. Phase 3's `local-base` column runs in compose.
 
 ### 5a: the local rung (before Phase 3)
 
@@ -3850,7 +3851,9 @@ and `extra_hosts: ["host.docker.internal:host-gateway"]`. Check CI's compose job
 
 - [ ] **Step 6: Commit.** `docker compose down`. Commit the Modelfiles, `local/mercury.compose.yaml`, the compose changes and the results: `Measure the home model through Mercury in compose: <model> <n> of 11, <u> unusable replies`.
 
-### Task 26: The rung goes live through Tailscale Funnel and Caddy
+### Task 26: The rung goes live through Tailscale Funnel and Caddy (replaced by decision 46)
+
+Done in part on 2026-10-07: the Bicep and `deploy.sh` wiring in Step 6 and `local/README.md` landed, the token was generated and set as a secret, and Caddy was installed and its file validated. Then Thomas chose decision 46, so Steps 4, 5, 7 and 8 were not done: no Funnel, no `LOCAL_MODEL_URL`, no live smoke test of the rung. The Caddyfile and scripts are in `local/parked/`. The steps below are kept as the record of the parked route.
 
 On the desktop. Thomas sets one secret and approves Funnel; everything else Claude runs, per the standing rule that Claude runs the `mercury-config` deploys itself.
 

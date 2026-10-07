@@ -28,6 +28,10 @@ az deployment group create \
       pagespeedApiKey="${PAGESPEED_API_KEY:-}" \
       ollamaApiKey="${OLLAMA_API_KEY:-}" \
       maxRunsPerDay="${MAX_RUNS_PER_DAY:-20}" \
+      localModelUrl="${LOCAL_MODEL_URL:-}" \
+      localModelToken="${LOCAL_MODEL_TOKEN:-}" \
+      localModel="${LOCAL_MODEL:-mercury-local:base}" \
+      maxLocalRunsPerDay="${MAX_LOCAL_RUNS_PER_DAY:-200}" \
       telegramBotToken="${TELEGRAM_BOT_TOKEN:-}" \
       telegramWebhookSecret="${TELEGRAM_WEBHOOK_SECRET:-}" \
       mercuryGithubToken="${MERCURY_GITHUB_TOKEN:-}" \

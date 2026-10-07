@@ -1,0 +1,19 @@
+# Mercury's local rung (decision 22 of docs/build-brief-evals.md). Tailscale
+# Funnel sends https://<machine>.<tailnet>.ts.net to this port. Only a POST to
+# chat completions carrying the bearer reaches Ollama; anything else is a 403.
+# start.ps1 refuses to start with a short token, because an empty one would
+# make the matcher accept the bare word Bearer.
+:8080 {
+	@allowed {
+		method POST
+		path /v1/chat/completions
+		header Authorization "Bearer {$LOCAL_MODEL_TOKEN}"
+	}
+	handle @allowed {
+		reverse_proxy 127.0.0.1:11434 {
+			header_up Host 127.0.0.1:11434
+			header_up -Authorization
+		}
+	}
+	respond 403
+}

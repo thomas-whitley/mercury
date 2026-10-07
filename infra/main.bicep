@@ -38,6 +38,19 @@ param mercuryBearerToken string = ''
 @secure()
 param ollamaApiKey string = ''
 
+@description('The home GPU rung: Tailscale Funnel to Caddy to Ollama, ending in /v1 (decision 22 of docs/build-brief-evals.md). Empty refuses every local run.')
+param localModelUrl string = ''
+
+@description('Bearer Caddy checks in front of the home Ollama. Empty refuses every local run.')
+@secure()
+param localModelToken string = ''
+
+@description('The Ollama tag the local rung serves.')
+param localModel string = 'mercury-local:base'
+
+@description('Daily cap on runs on a home provider, apart from maxRunsPerDay (decision 25).')
+param maxLocalRunsPerDay int = 200
+
 @description('PageSpeed Insights key for the cloud Lighthouse fallback. Empty sends keyless requests, whose shared quota is often spent.')
 @secure()
 param pagespeedApiKey string = ''
@@ -258,6 +271,41 @@ var ollamaEnvironment = empty(ollamaApiKey)
       }
     ]
 
+// The worker alone calls a model, so the local rung's settings go to it alone.
+var localSecret = empty(localModelToken)
+  ? []
+  : [
+      {
+        name: 'local-model-token'
+        value: localModelToken
+      }
+    ]
+
+var localEnvironment = concat(
+  empty(localModelToken)
+    ? []
+    : [
+        {
+          name: 'LOCAL_MODEL_TOKEN'
+          secretRef: 'local-model-token'
+        }
+      ],
+  [
+    {
+      name: 'LOCAL_MODEL_URL'
+      value: localModelUrl
+    }
+    {
+      name: 'LOCAL_MODEL'
+      value: localModel
+    }
+    {
+      name: 'MAX_LOCAL_RUNS_PER_DAY'
+      value: string(maxLocalRunsPerDay)
+    }
+  ]
+)
+
 // The worker alone calls PageSpeed, so the PageSpeed key goes to it alone.
 // It pushes chore branches with the GitHub token, which the scheduler also
 // holds to read CI runs and lock files.
@@ -267,6 +315,7 @@ var workerSecrets = concat(
   telegramTokenSecret,
   githubTokenSecret,
   ollamaSecret,
+  localSecret,
   empty(pagespeedApiKey)
     ? []
     : [
@@ -457,7 +506,7 @@ resource worker 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'API_BASE_URL'
               value: 'https://${api.properties.configuration.ingress.fqdn}'
             }
-          ], modelEnvironment, workerCheckEnvironment, configEnvironment, telegramTokenEnvironment, githubTokenEnvironment, ollamaEnvironment)
+          ], modelEnvironment, workerCheckEnvironment, configEnvironment, telegramTokenEnvironment, githubTokenEnvironment, ollamaEnvironment, localEnvironment)
         }
       ]
       scale: {

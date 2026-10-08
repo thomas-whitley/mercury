@@ -5,6 +5,8 @@ itself, and never a validation chore."""
 import json
 from dataclasses import replace
 
+import pytest
+
 from app.advice_text import advice_block
 from app.chore_prompts import SYSTEM
 from bank import export
@@ -166,3 +168,30 @@ def test_a_training_chore_with_no_row_yet_is_not_exported(tmp_path):
 
     assert records == []
     assert counts["not run"] == 1
+
+
+class _DownApi:
+    def get(self, path: str):
+        return type("R", (), {"status_code": 404, "json": lambda self: {"detail": "not found"}})()
+
+
+def test_an_export_that_cannot_read_a_graded_run_s_calls_stops_rather_than_guessing(tmp_path):
+    # A wrong MERCURY_URL or a lost compose volume would otherwise turn every
+    # self example into a reference one and overwrite the file (finding 2).
+    chore, mirror = mined(tmp_path)
+
+    with pytest.raises(export.ExportError, match="run-1"):
+        export.export(
+            [row("pkg-1", "run-1", "succeeded", True)], [chore], {"pkg": PKG}, _DownApi(),
+            {"pkg": mirror}, tmp_path / "w",
+        )  # fmt: skip
+
+
+def test_a_graded_run_with_no_recorded_calls_stops_the_export(tmp_path):
+    chore, mirror = mined(tmp_path)
+
+    with pytest.raises(export.ExportError, match="no model calls"):
+        export.export(
+            [row("pkg-1", "run-1", "succeeded", True)], [chore], {"pkg": PKG},
+            _CallsApi({}, {}), {"pkg": mirror}, tmp_path / "w",
+        )  # fmt: skip

@@ -6,7 +6,7 @@ the commit. The split is a hash of the id (decision 34), so it never moves."""
 
 import hashlib
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -22,6 +22,41 @@ VALIDATION_SHARE = 5
 # The worker image's own virtualenv has pytest (decision 57). addopts is
 # cleared so a library's pytest config cannot ask for a plugin it lacks.
 PYTEST = "python -m pytest -q -p no:cacheprovider -o addopts="
+_TEST_DIRS = {"test", "tests", "testing"}
+_DOC_SUFFIXES = {".md", ".rst", ".txt"}
+_DOC_NAMES = ("CHANGELOG", "CHANGES", "NEWS", "HISTORY", "AUTHORS")
+# Release metadata a commit may carry beside its change. It is ignored like a
+# doc: no reply writes it and no grade needs it.
+_META_NAMES = {"uv.lock", "CITATION.cff", ".pre-commit-config.yaml", ".coveragerc", ".gitignore"}
+_META_DIRS = {".github", ".agents"}
+
+
+def kind(path: str) -> str:
+    """test, source, doc or other. Anything under a test directory is a test
+    file, data included, since the grade copies the commit's test files over a
+    branch and a test may read a file beside it."""
+    p = PurePosixPath(path)
+    in_tests = any(part in _TEST_DIRS for part in p.parts[:-1])
+    if p.suffix == ".py":
+        if (
+            in_tests
+            or p.name == "conftest.py"
+            or p.name.startswith("test_")
+            or p.name.endswith("_test.py")
+        ):
+            return "test"
+        return "source"
+    if in_tests:
+        return "test"
+    if (
+        p.suffix in _DOC_SUFFIXES
+        or (len(p.parts) > 1 and p.parts[0] in {"doc", "docs"})
+        or p.name.upper().startswith(_DOC_NAMES)
+        or p.name in _META_NAMES
+        or p.parts[0] in _META_DIRS
+    ):
+        return "doc"
+    return "other"
 
 
 @dataclass(frozen=True)

@@ -5,6 +5,7 @@ import pytest
 import yaml
 
 from bank.chores import (
+    CHORES,
     FIXTURE,
     BankChore,
     Library,
@@ -133,3 +134,14 @@ def test_a_library_can_leave_test_files_out_of_its_command(tmp_path):
 
     assert library.ignore == ("tests/test_performance.py",)
     assert library.test_command.endswith(" --ignore=tests/test_performance.py")
+
+
+def test_every_bank_library_is_in_the_compose_config_with_its_own_test_command():
+    config = yaml.safe_load(
+        (CHORES.parent.parent / "local" / "mercury.compose.yaml").read_text(encoding="utf-8")
+    )
+    repos = {repo["name"]: repo for repo in config["portfolio"]["repos"]}
+
+    for library in load_libraries().values():
+        assert repos[library.repo]["test_command"] == library.test_command
+        assert repos[library.repo]["auto_approve"] is True

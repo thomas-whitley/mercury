@@ -6,6 +6,7 @@ import pytest
 
 from bank import run
 from bank.chores import BankChore, split_of
+from bank.grade import GradingError
 from evals.runner import EvalAborted, EvalRow, write_rows
 from tests.test_eval_runner import _Api, _GitHub, _Response
 
@@ -81,3 +82,21 @@ def test_a_batch_stopped_by_the_daily_cap_keeps_the_rows_it_finished():
         batch(api, chores, 3, rows)
 
     assert [r.task for r in rows] == [chores[0].id]
+
+
+def test_a_chore_that_cannot_be_graded_is_an_error_queued_again_and_its_branch_closed(tmp_path):
+    [chore_] = of_split("training", 1)
+    api, github = _Api(PENDING, [DONE]), _GitHub()
+
+    def broken(branch):
+        raise GradingError("clone failed: GitHub said 502")
+
+    [result] = run.run_batch(
+        api, github, [chore_], {chore_.id: broken}, 1, "https://github.com", None,
+        timeout_seconds=900, poll_seconds=0, sleep=lambda s: None, on_row=lambda r: None,
+    )  # fmt: skip
+    write_rows([result], tmp_path / "a.json")
+
+    assert result.status == "error"
+    assert ("delete", "/repos/thomas-whitley/pkg/git/refs/heads/agent/r1") in github.calls
+    assert run.pending([chore_], tmp_path) == [chore_]

@@ -18,14 +18,14 @@ try {
 } catch {
     Write-Error "The compose Mercury is not up on port 8001. See local/README.md."
 }
-$pick = if ($Library) { "--library $Library" } else { "" }
-# .env may have Windows line endings, which bash would keep in each value.
-$inner = "cd /mnt/c/Projects/agent-runs && set -a && . <(tr -d '\r' < .env) && set +a && " +
-    "export MERCURY_URL=http://localhost:8001 UV_PROJECT_ENVIRONMENT=`$HOME/.venvs/agent-runs-win && " +
-    "uv run python -m bank.run --count $Count $pick; code=`$?; " +
-    "uv run python -m bank.export; exit `$code"
-wsl -d Ubuntu-24.04 -- bash -lc $inner
+$pick = if ($Library) { @("--library", $Library) } else { @() }
+# withenv.sh loads .env in WSL; --exec keeps any shell from expanding the
+# command first. MERCURY_URL is the compose Mercury, not the live one.
+$withenv = @("-d", "Ubuntu-24.04", "--exec", "env", "MERCURY_URL=http://localhost:8001",
+    "bash", "/mnt/c/Projects/agent-runs/local/withenv.sh", "uv", "run", "python", "-m")
+wsl @withenv bank.run --count $Count @pick
 $code = $LASTEXITCODE
+wsl @withenv bank.export
 $body = @{ model = $Model; keep_alive = 0 } | ConvertTo-Json
 Invoke-RestMethod -Method Post -Uri http://localhost:11434/api/generate -Body $body | Out-Null
 exit $code

@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from bank.chores import BankChore, Library
+from bank.chores import BankChore, Library, kind
 from evals.runner import _env, clone
 
 MIRRORS = Path.home() / ".cache" / "mercury-bank"
@@ -37,6 +37,11 @@ REFERENCE_RED = "reference suite red"
 FLAKY = "grade flaky on the reference"
 NOTHING = "grade passes on base"
 NO_CHECKOUT = "checkout failed"
+REFERENCE_BREAKS_BASE = "reference breaks base tests"
+
+
+class GradingError(RuntimeError):
+    """A branch could not be graded, which says nothing about the answer."""
 
 
 def ensure_mirror(
@@ -134,10 +139,41 @@ class Gate:
 def gate(
     mirror: Path, library: Library, base: str, reference: str, test_files: tuple[str, ...]
 ) -> Gate:
+    """Never raises for a bad commit: a test run that hangs drops it as slow,
+    so one commit cannot stop a mining run."""
+    try:
+        return _gate(mirror, library, base, reference, test_files)
+    except subprocess.TimeoutExpired:
+        return Gate(False, SLOW)
+
+
+def _source_only(base_tree: Path, reference_tree: Path, base: str, reference: str) -> Path:
+    """The base with the commit's other changes applied and the base's own
+    tests kept: what the worker's test command meets on a correct branch."""
+    changes = subprocess.run(
+        ["git", "-C", str(reference_tree), "diff", "--name-status", "--no-renames", base,
+         reference],
+        check=True, timeout=GIT_TIMEOUT_SECONDS, **_TEXT,
+    ).stdout  # fmt: skip
+    for line in changes.splitlines():
+        status, _, path = line.partition("\t")
+        if kind(path) == "test":
+            continue
+        if status == "D":
+            (base_tree / path).unlink(missing_ok=True)
+        else:
+            overlay(base_tree, reference_tree, (path,))
+    return base_tree
+
+
+def _gate(
+    mirror: Path, library: Library, base: str, reference: str, test_files: tuple[str, ...]
+) -> Gate:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
         try:
             base_tree = checkout(mirror, base, Path(home) / "base")
             reference_tree = checkout(mirror, reference, Path(home) / "reference")
+            mixed_tree = checkout(mirror, base, Path(home) / "mixed")
         except subprocess.CalledProcessError:
             return Gate(False, NO_CHECKOUT)
         on_base = run_pytest(base_tree, library)
@@ -148,6 +184,11 @@ def gate(
         on_reference = run_pytest(reference_tree, library)
         if on_reference.returncode != 0:
             return Gate(False, REFERENCE_RED)
+        # The worker runs the base's tests on the branch, so a commit that
+        # changes what one of them expects has no answer that goes green.
+        mixed = run_pytest(_source_only(mixed_tree, reference_tree, base, reference), library)
+        if mixed.returncode not in (0, NO_TESTS_RAN):
+            return Gate(False, REFERENCE_BREAKS_BASE)
         ids = {i for i in collect(reference_tree, library) if i.split("::")[0] in test_files}
         again = run_pytest(reference_tree, library, test_files)
         if (ids & on_reference.passed) != (ids & again.passed):
@@ -168,14 +209,16 @@ def grade_branch(
     token: str | None,
     branch: str,
 ) -> tuple[bool, str]:
-    """Grade a chore's branch. Never raises for a bad branch; the answer is
-    the boolean, and the text is for the row's detail only."""
+    """Grade a chore's branch; the answer is the boolean, and the text is for
+    the row's detail only. Grading that cannot run (a clone GitHub refused, a
+    test run that hangs) raises GradingError rather than calling the answer
+    wrong, so the runner records the row as error and queues the chore again."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
         work = Path(home) / "work"
         try:
             error = clone(f"{clone_base.rstrip('/')}/{chore.repo}.git", branch, work, token, 120)
             if error:
-                return False, error
+                raise GradingError(error)
             base_tree = checkout(mirror, chore.base, Path(home) / "base")
             reference_tree = checkout(mirror, chore.reference, Path(home) / "reference")
             lost = collect(base_tree, library) - collect(work, library)
@@ -187,7 +230,7 @@ def grade_branch(
             overlay(work, reference_tree, chore.test_files)
             graded = run_pytest(work, library, chore.test_files)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as failure:
-            return False, f"grading could not run: {type(failure).__name__}"
+            raise GradingError(f"grading could not run: {type(failure).__name__}") from None
         missing = sorted(set(chore.grade) - graded.passed)
         if missing:
             return False, f"grade failed: {len(missing)} of {len(chore.grade)}\n{graded.tail}"

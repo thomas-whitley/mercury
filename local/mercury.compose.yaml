@@ -25,6 +25,12 @@ portfolio:
     - name: thomas-whitley/mercury-fixture
       test_command: python -m unittest -v
       auto_approve: true
+    # A bank fork (decision 32 of docs/build-brief-evals.md): its chores are
+    # graded, closed and deleted by bank/run.py, so nothing waits for Approve.
+    # The test command is bank/libraries.yaml's, exactly.
+    - name: thomas-whitley/json_repair
+      test_command: python -m pytest -q -p no:cacheprovider -o addopts= --ignore=tests/test_performance.py
+      auto_approve: true
   sites: []
   pages: []
 

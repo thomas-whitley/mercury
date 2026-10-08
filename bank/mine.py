@@ -15,6 +15,7 @@ checks every instruction, then writes one chore file per non blank one.
 import argparse
 import json
 import os
+import re
 import subprocess
 from collections import Counter
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from bank.chores import (
     BankChore,
     Library,
     chore_id,
+    kind,
     load_bank,
     load_libraries,
     split_of,
@@ -41,9 +43,6 @@ MAX_SOURCE_FILES = 3
 MAX_REPLY_CHARS = 12_000
 MAX_INSTRUCTION_CHARS = 1500
 WORK = HERE / "work"
-_TEST_DIRS = {"test", "tests", "testing"}
-_DOC_SUFFIXES = {".md", ".rst", ".txt"}
-_DOC_NAMES = ("CHANGELOG", "CHANGES", "NEWS", "HISTORY", "AUTHORS")
 FENCE = "````"
 
 RULES = """# Instructions to write
@@ -58,24 +57,16 @@ blank to drop it.
 """
 
 
-def kind(path: str) -> str:
-    p = PurePosixPath(path)
-    if p.suffix == ".py":
-        if (
-            p.name == "conftest.py"
-            or p.name.startswith("test_")
-            or p.name.endswith("_test.py")
-            or any(part in _TEST_DIRS for part in p.parts[:-1])
-        ):
-            return "test"
-        return "source"
-    if (
-        p.suffix in _DOC_SUFFIXES
-        or (len(p.parts) > 1 and p.parts[0] in {"doc", "docs"})
-        or p.name.upper().startswith(_DOC_NAMES)
-    ):
-        return "doc"
-    return "other"
+def only_moves_the_version(mirror: Path, parent: str, sha: str) -> bool:
+    """A pyproject.toml diff that changes nothing but its version line, as a
+    release commit's does. Such a change is ignored like a doc."""
+    diff = _git(mirror, "diff", "--unified=0", parent, sha, "--", "pyproject.toml")
+    changed = [
+        line
+        for line in diff.splitlines()
+        if line[:1] in "+-" and not line.startswith(("+++", "---"))
+    ]
+    return bool(changed) and all(re.match(r"^[+-]version\s*=", line) for line in changed)
 
 
 @dataclass(frozen=True)
@@ -116,6 +107,9 @@ def candidates(mirror: Path, since: str = SINCE) -> tuple[list[Candidate], Count
         sha, *parents = shas.split()
         files = [line for line in names.splitlines() if line.strip()]
         kinds = {path: kind(path) for path in files}
+        if kinds.get("pyproject.toml") == "other" and parents:
+            if only_moves_the_version(mirror, parents[0], sha):
+                kinds["pyproject.toml"] = "doc"
         sources = tuple(p for p in files if kinds[p] == "source")
         tests = tuple(p for p in files if kinds[p] == "test")
         if not parents:

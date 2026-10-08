@@ -7,7 +7,7 @@ import pytest
 from bank import mine
 from bank.chores import load_bank, split_of
 from bank.grade import Gate, ensure_mirror
-from tests.bank_repo import PKG, library_repo
+from tests.bank_repo import PKG, git, library_repo
 
 GOOD = (
     "In pkg/core.py add sub(a, b) returning a - b, and add pkg/extra.py with "
@@ -27,6 +27,14 @@ GOOD = (
         ("docs/index.rst", "doc"),
         ("CHANGELOG", "doc"),
         ("pyproject.toml", "other"),
+        # Data beside the tests is part of them (review finding 4).
+        ("tests/data/seven.txt", "test"),
+        ("tests/invalid.json", "test"),
+        # Release metadata is ignored like a doc.
+        ("uv.lock", "doc"),
+        ("CITATION.cff", "doc"),
+        (".pre-commit-config.yaml", "doc"),
+        (".github/workflows/ci.yml", "doc"),
     ],
 )
 def test_each_path_has_a_kind(path, kind):
@@ -135,3 +143,24 @@ def test_the_brief_shows_the_writer_the_diff_and_the_grade(tmp_path):
     assert "+def sub(a, b):" in text
     assert "tests/test_core.py::test_sub" in text
     assert "never name or describe a test" in text
+
+
+def test_a_pyproject_change_that_only_moves_the_version_is_not_other(tmp_path):
+    path, shas = mirror(tmp_path)
+    work = tmp_path / "bump"
+    git("clone", "-q", str(tmp_path / "remote" / "thomas-whitley" / "pkg.git"), str(work),
+        cwd=tmp_path)  # fmt: skip
+    (work / "pyproject.toml").write_text('[project]\nname = "pkg"\nversion = "1.0"\n')
+    git("add", "-A", cwd=work)
+    git("-c", "user.name=t", "-c", "user.email=t@e", "commit", "-qm", "pyproject", cwd=work)
+    first = git("rev-parse", "HEAD", cwd=work)
+    (work / "pyproject.toml").write_text('[project]\nname = "pkg"\nversion = "1.1"\n')
+    (work / "pkg/core.py").write_text("def add(a, b):\n    return b + a\n")
+    (work / "tests/test_core.py").write_text("from pkg.core import add\n\n\ndef test_add():\n"
+                                             "    assert add(1, 1) == 2\n")  # fmt: skip
+    git("add", "-A", cwd=work)
+    git("-c", "user.name=t", "-c", "user.email=t@e", "commit", "-qm", "bump", cwd=work)
+    bump = git("rev-parse", "HEAD", cwd=work)
+
+    assert mine.only_moves_the_version(work, first, bump)
+    assert not mine.only_moves_the_version(work, shas["base"], first)

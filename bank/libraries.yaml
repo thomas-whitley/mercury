@@ -2,4 +2,11 @@
 # docs/build-brief-evals.md). Each is a public fork under thomas-whitley,
 # listed in local/mercury.compose.yaml with the same test command and
 # auto_approve: true.
-libraries: []
+libraries:
+  # The pilot (decision 35). Its tests import src.json_repair from the repo
+  # root, through its own pytest pythonpath. The benchmark tests need
+  # pytest-benchmark, which the worker image lacks.
+  - name: json_repair
+    upstream: mangiucugna/json_repair
+    repo: thomas-whitley/json_repair
+    ignore: [tests/test_performance.py]

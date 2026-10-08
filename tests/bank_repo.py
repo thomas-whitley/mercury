@@ -22,6 +22,12 @@ TEST_SUB = (
 )
 EXTRA = "def twice(x):\n    return 2 * x\n"
 TEST_EXTRA = "from pkg.extra import twice\n\n\ndef test_twice():\n    assert twice(4) == 8\n"
+READ = "\n\ndef read(path):\n    return int(open(path).read())\n"
+TEST_READ = (
+    "import pathlib\n\nfrom pkg.core import read\n\n\ndef test_read():\n"
+    "    path = pathlib.Path(__file__).parent / 'data' / 'seven.txt'\n"
+    "    assert read(path) == 7\n"
+)
 
 
 def git(*args: str, cwd: Path) -> str:
@@ -76,9 +82,32 @@ def library_repo(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     shas["breaks_base"] = _commit(
         work, "Break add", {"pkg/core.py": CORE_SUB.replace("a + b", "a * b")}
     )
+    # Off the default branch, so the miner never sees them: a commit that
+    # changes what an existing test expects, and one whose test needs a data
+    # file beside it.
+    git("checkout", "-q", "-b", "side", shas["adds_sub"], cwd=work)
+    shas["changes_expectation"] = _commit(
+        work,
+        "Double add",
+        {
+            "pkg/core.py": CORE_SUB.replace("return a + b", "return 2 * (a + b)"),
+            "tests/test_core.py": TEST_SUB.replace("add(2, 3) == 5", "add(2, 3) == 10"),
+        },
+    )
+    git("checkout", "-q", "-b", "data", shas["adds_sub"], cwd=work)
+    shas["needs_data"] = _commit(
+        work,
+        "Read a number from a file",
+        {
+            "pkg/core.py": CORE_SUB + READ,
+            "tests/data/seven.txt": "7\n",
+            "tests/test_read.py": TEST_READ,
+        },
+    )
+    git("checkout", "-q", "main", cwd=work)
     bare = tmp_path / "remote" / "thomas-whitley" / "pkg.git"
     bare.parent.mkdir(parents=True)
-    git("clone", "-q", "--bare", str(work), str(bare), cwd=tmp_path)
+    git("clone", "-q", "--mirror", str(work), str(bare), cwd=tmp_path)
     return bare, shas
 
 

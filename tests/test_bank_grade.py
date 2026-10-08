@@ -3,6 +3,10 @@ decisions 33 and 55): the grade is what the commit's tests pass that its
 parent fails, and a branch passes when it keeps the base's tests, passes its
 own, and passes every grade id."""
 
+import subprocess
+
+import pytest
+
 from bank import grade
 from bank.chores import BankChore
 from tests.bank_repo import CORE, CORE_SUB, EXTRA, PKG, library_repo, push_branch
@@ -110,15 +114,15 @@ def test_a_branch_that_breaks_its_own_suite_fails(tmp_path):
     assert detail.startswith("own tests failed")
 
 
-def test_a_branch_that_was_never_pushed_fails_without_raising(tmp_path):
+def test_a_branch_that_cannot_be_fetched_raises_rather_than_failing_the_model(tmp_path):
+    # A succeeded chore pushed its branch, so a clone that fails is GitHub's
+    # fault, and the row must be queued again, not graded wrong (finding 3).
     path, shas = mirror(tmp_path)
 
-    ok, detail = grade.grade_branch(
-        bank_chore(shas), PKG, path, f"file://{tmp_path / 'remote'}", None, "agent/none"
-    )
-
-    assert not ok
-    assert detail.startswith("clone failed")
+    with pytest.raises(grade.GradingError, match="clone failed"):
+        grade.grade_branch(
+            bank_chore(shas), PKG, path, f"file://{tmp_path / 'remote'}", None, "agent/none"
+        )
 
 
 def test_a_library_s_ignored_test_files_are_left_out_of_every_run(tmp_path):
@@ -128,3 +132,38 @@ def test_a_library_s_ignored_test_files_are_left_out_of_every_run(tmp_path):
 
     assert grade.run_pytest(tree, PKG).returncode == 1
     assert grade.run_pytest(tree, quiet).returncode in (0, grade.NO_TESTS_RAN)
+
+
+def test_a_commit_whose_source_breaks_an_existing_test_of_the_base_is_dropped(tmp_path):
+    # The worker runs the base's own tests on the branch, so a correct answer
+    # to this chore could never go green there (review finding 1).
+    path, shas = mirror(tmp_path)
+
+    result = grade.gate(
+        path, PKG, shas["adds_sub"], shas["changes_expectation"], ("tests/test_core.py",)
+    )
+
+    assert (result.ok, result.reason) == (False, grade.REFERENCE_BREAKS_BASE)
+
+
+def test_a_data_file_beside_the_commit_s_tests_is_copied_to_grade(tmp_path):
+    path, shas = mirror(tmp_path)
+    files = ("tests/data/seven.txt", "tests/test_read.py")
+
+    result = grade.gate(path, PKG, shas["adds_sub"], shas["needs_data"], files)
+
+    assert result.ok, result.reason
+    assert result.grade == ("tests/test_read.py::test_read",)
+
+
+def test_a_commit_whose_tests_hang_is_dropped_as_slow(tmp_path, monkeypatch):
+    path, shas = mirror(tmp_path)
+
+    def hang(*args, **kwargs):
+        raise subprocess.TimeoutExpired("pytest", 300)
+
+    monkeypatch.setattr(grade, "run_pytest", hang)
+
+    result = grade.gate(path, PKG, shas["base"], shas["adds_sub"], TEST_FILES)
+
+    assert (result.ok, result.reason) == (False, grade.SLOW)

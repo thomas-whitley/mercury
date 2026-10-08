@@ -165,15 +165,34 @@ def reference(chore: BankChore, library: Library, mirror: Path, workdir: Path) -
         ]  # fmt: skip
 
 
+class ExportError(RuntimeError):
+    """A graded run's record could not be read. The export stops rather than
+    fall back to a reference example and overwrite examples.jsonl, since a
+    wrong MERCURY_URL or a lost compose volume would turn every self and
+    rescued example into one."""
+
+
+def _get(api, path: str):
+    response = api.get(path)
+    if response.status_code != 200:
+        raise ExportError(
+            f"GET {path} answered {response.status_code}; is MERCURY_URL the compose Mercury "
+            "that ran these rows?"
+        )
+    return response.json()
+
+
 def _calls(api, run_id: str) -> list[dict]:
-    response = api.get(f"/runs/{run_id}/calls")
-    return response.json() if response.status_code == 200 else []
+    """A graded run's calls; one with none recorded stops the export."""
+    calls = _get(api, f"/runs/{run_id}/calls")
+    if not calls:
+        raise ExportError(f"run {run_id} passed but has no model calls recorded")
+    return calls
 
 
 def _done(api, run_id: str) -> dict:
     """The done step's output, which an advised rerun's advice is built from."""
-    response = api.get(f"/runs/{run_id}/history")
-    events = response.json() if response.status_code == 200 else []
+    events = _get(api, f"/runs/{run_id}/history")
     done = [e.get("output") or {} for e in events if e.get("kind") == "done"]
     return done[-1] if done else {}
 

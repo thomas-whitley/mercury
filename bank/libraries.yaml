@@ -10,3 +10,8 @@ libraries:
     upstream: mangiucugna/json_repair
     repo: thomas-whitley/json_repair
     ignore: [tests/test_performance.py]
+  # The pilot's second library (decision 62). Its own pytest config puts src
+  # on the path.
+  - name: mistune
+    upstream: lepture/mistune
+    repo: thomas-whitley/mistune

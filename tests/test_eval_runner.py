@@ -890,3 +890,33 @@ def test_the_evidence_comes_from_the_json_history_not_the_event_stream(monkeypat
 
     assert "/runs/run-1/history" in paths
     assert not [p for p in paths if p.endswith("/events")]
+
+
+def test_a_bank_chore_is_posted_quiet_from_its_base_and_graded_its_own_way():
+    api = _Api(PENDING, [{**DONE, "provider": "local"}])
+    seen = []
+
+    def grade(branch):
+        seen.append(branch)
+        return True, "ok"
+
+    row = run_one(
+        api, _GitHub(), TASK, "local", "file:///unused", None,
+        timeout_seconds=900, poll_seconds=0, sleep=lambda seconds: None,
+        source="bank", base="a" * 40, grade=grade,
+    )  # fmt: skip
+
+    assert api.posted[0]["source"] == "bank"
+    assert api.posted[0]["inputs"]["base"] == "a" * 40
+    assert seen == ["agent/run-1"]
+    assert row.graded
+
+
+def test_an_eval_chore_is_still_posted_as_eval_with_no_base(monkeypatch):
+    monkeypatch.setattr(runner, "grade_branch", lambda *args: (True, ""))
+    api = _Api(PENDING, [DONE])
+
+    _run(api, _GitHub())
+
+    assert api.posted[0]["source"] == "eval"
+    assert "base" not in api.posted[0]["inputs"]

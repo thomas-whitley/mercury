@@ -437,15 +437,18 @@ def run_one(
     poll_seconds: float,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    source: str = "eval",
+    base: str | None = None,
+    grade: Callable[[str], tuple[bool, str]] | None = None,
 ) -> EvalRow:
+    """A bank chore (bank/run.py) is posted as source bank from its base and
+    graded by grade(branch) against its commit's tests."""
+    inputs = {"task": task.instruction, "repo": task.repo}
+    if base:
+        inputs["base"] = base
     created = api.post(
         "/runs",
-        json={
-            "type": "repo_chore",
-            "inputs": {"task": task.instruction, "repo": task.repo},
-            "provider": provider,
-            "source": "eval",
-        },
+        json={"type": "repo_chore", "inputs": inputs, "provider": provider, "source": source},
     )
     if created.status_code != 201:
         return EvalRow(
@@ -460,6 +463,7 @@ def run_one(
     return follow(
         api, github, task, provider, run["id"], clone_base, token,
         timeout_seconds=timeout_seconds, poll_seconds=poll_seconds, sleep=sleep, clock=clock,
+        grade=grade,
     )  # fmt: skip
 
 
@@ -476,10 +480,12 @@ def follow(
     poll_seconds: float,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    grade: Callable[[str], tuple[bool, str]] | None = None,
 ) -> EvalRow:
     """Wait for a queued chore to finish, grade it on its own branch, close
     its pull request and branch, and return its row. The rescue pass follows
-    an advised rerun the same way."""
+    an advised rerun the same way. grade, when given, grades the branch in
+    place of the task's grade test."""
     # The clock for the run itself starts once it leaves pending, so time spent
     # queued behind other runs does not count against it. A run that never
     # leaves pending still ends, after three timeouts of waiting.
@@ -517,8 +523,11 @@ def follow(
             # written. A failed cancel still cleans up, then fails the row.
             api.post(f"/runs/{run_id}/cancel").raise_for_status()
         if run["status"] == "succeeded":
-            graded, detail = grade_branch(
-                f"{clone_base}/{task.repo}.git", branch, task.grade, token
+            # A bank chore is graded against its commit's tests (bank/grade.py).
+            graded, detail = (
+                grade(branch)
+                if grade
+                else grade_branch(f"{clone_base}/{task.repo}.git", branch, task.grade, token)
             )
         else:
             detail = run.get("escalation_reason") or ""

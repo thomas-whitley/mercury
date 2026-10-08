@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from app.advice_text import advice_block
+from app.chore_prompts import edit_prompt, read_prompt, shown_files, tree_listing
 from app.github import GitHubClient
 from app.mercury_config import RepoConfig
 from app.model import StubModel
@@ -848,6 +849,31 @@ def test_every_model_call_is_recorded_with_its_prompt_and_reply(
     assert "=== calc.py ===" in rows[1][3]
     assert [row[4] for row in rows] == replies
     assert [row[5] for row in rows] == [100, 100]
+
+
+def test_the_recorded_prompts_are_the_ones_chore_prompts_builds(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = chore_run(migrated_db)
+    run_repo_chore(
+        migrated_db, run_id, StubModel(replies=[pick("calc.py"), change(GOOD_CALC)]),
+        setup(tmp_path, github), worker_id=WORKER,
+    )  # fmt: skip
+    work = tmp_path / "check"
+    git("clone", "-q", str(remote), str(work), cwd=tmp_path)
+    listing = tree_listing(git("ls-files", cwd=work).splitlines())
+
+    prompts = [
+        row[0]
+        for row in migrated_db.execute(
+            "SELECT prompt FROM model_calls WHERE run_id = %s ORDER BY seq", (run_id,)
+        ).fetchall()
+    ]
+
+    assert prompts[0] == read_prompt("Add subtract to calc.py", "", listing)
+    assert prompts[1] == edit_prompt(
+        "Add subtract to calc.py", "", listing, shown_files(work, ["calc.py"])
+    )
 
 
 def push_commit(remote: Path, tmp_path: Path, name: str, body: str) -> str:

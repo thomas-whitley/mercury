@@ -40,6 +40,15 @@ from pathlib import Path, PurePosixPath
 import psycopg
 
 from app.advice_text import MAX_DIFF_CHARS, advice_block
+from app.chore_prompts import (
+    MAX_FILE_CHARS,
+    MAX_FILES_READ,
+    SYSTEM,
+    edit_prompt,
+    read_prompt,
+    shown_files,
+    tree_listing,
+)
 from app.github import GitHubClient, GitHubError
 from app.loop import (
     DEFAULT_MODEL_RETRY_ATTEMPTS,
@@ -55,9 +64,6 @@ from app.test_guard import weakened_tests
 logger = logging.getLogger("agent_runs.repo_chore")
 
 MAX_ATTEMPTS = 3
-MAX_TREE_ENTRIES = 500
-MAX_FILES_READ = 10
-MAX_FILE_CHARS = 20_000
 MAX_OUTPUT_CHARS = 4_000
 HEARTBEAT_SECONDS = 30.0
 GIT_TIMEOUT_SECONDS = 120.0
@@ -80,9 +86,6 @@ _RECORD_CALL = """
 INSERT INTO model_calls (run_id, seq, provider, system, prompt, reply, tokens)
 SELECT id, %s, provider, %s, %s, %s, %s FROM runs WHERE id = %s
 """
-
-SYSTEM = """You change a git repository to carry out one instruction from its owner. \
-Answer with a single JSON object and nothing else."""
 
 
 class ChoreError(Exception):
@@ -243,26 +246,15 @@ def _run(
     write("clone", {"resumed": False, "base": base})
 
     tree = git.run("ls-files", cwd=clone).splitlines()
-    listing = "\n".join(tree[:MAX_TREE_ENTRIES])
-    if len(tree) > MAX_TREE_ENTRIES:
-        listing += f"\n... and {len(tree) - MAX_TREE_ENTRIES} more"
-    wanted = ask(
-        f"Instruction:\n{instruction}{advice}\n\nFiles in the repository:\n{listing}\n\n"
-        f'Reply {{"read": ["path", ...]}} naming up to {MAX_FILES_READ} files you need to see.'
-    )
+    listing = tree_listing(tree)
+    wanted = ask(read_prompt(instruction, advice, listing))
     paths = [p for p in (wanted or {}).get("read") or [] if isinstance(p, str)]
     shown = _read_files(clone, paths[:MAX_FILES_READ])
     write("read", {"files": sorted(shown)}, tokens=state["last_tokens"])
     if state["tokens"] >= token_budget:
         return close("budget_exhausted", {"reason": "token budget spent"})
 
-    files_block = "\n\n".join(f"=== {path} ===\n{body}" for path, body in shown.items())
-    prompt = (
-        f"Instruction:\n{instruction}{advice}\n\nFiles in the repository:\n{listing}\n\n"
-        f"Contents:\n{files_block or '(none)'}\n\n"
-        'Reply {"files": {"path": "the full new contents"}, "summary": "one line"}, '
-        "including only files you change or create."
-    )
+    prompt = edit_prompt(instruction, advice, listing, shown)
     written: set[str] = set()
     test_output = ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -485,18 +477,7 @@ def _refused_paths(files) -> list[str]:
 
 
 def _read_files(clone: Path, paths: list[str]) -> dict[str, str]:
-    shown = {}
-    for path in paths:
-        if _refused_paths({path: ""}):
-            continue
-        target = clone / path
-        if not target.is_file():
-            continue
-        try:
-            shown[path] = target.read_text()[:MAX_FILE_CHARS]
-        except UnicodeDecodeError:
-            continue
-    return shown
+    return shown_files(clone, [path for path in paths if not _refused_paths({path: ""})])
 
 
 def _scrubbed_env(home: Path) -> dict[str, str]:

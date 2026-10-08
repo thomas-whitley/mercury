@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.config import Settings
+from app.config import PROVIDERS, Settings
 from app.model import AnthropicModel, OpenAICompatibleModel, StubModel
 from app.worker import (
     build_model,
@@ -273,6 +273,13 @@ def test_build_model_reads_the_local_address_and_tag_from_the_environment(monkey
     assert model._json_mode is True
     assert str(model._client.base_url).startswith("http://127.0.0.1:11434/v1")
     assert model._client.timeout == 120.0
+
+
+@pytest.mark.parametrize("provider", ["gemini", "ollama"])
+def test_free_cloud_providers_have_room_for_a_whole_file_reply(provider):
+    # A chore replies with whole files; at 2048 a 165 line script and its tests
+    # were cut off mid JSON three times (run 54959b70 on claude-run-cost).
+    assert PROVIDERS[provider].max_tokens == 8192
 
 
 def test_build_model_refuses_local_without_an_address(monkeypatch):

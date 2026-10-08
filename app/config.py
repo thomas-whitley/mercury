@@ -60,6 +60,9 @@ PROVIDERS: dict[str, ProviderConfig] = {
         model="gemini-3.5-flash-lite",
         # The free tier.
         usd_per_million_tokens=0.0,
+        # A chore replies with whole files, which 2048 cut off mid JSON on a
+        # real repo with a 165 line script and its tests.
+        max_tokens=8192,
     ),
     "ollama": ProviderConfig(
         kind="openai_compatible",
@@ -68,6 +71,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         model="gpt-oss:120b",
         # The free tier, one request at a time, which the single worker keeps to.
         usd_per_million_tokens=0.0,
+        max_tokens=8192,
     ),
     "local": ProviderConfig(
         kind="openai_compatible",

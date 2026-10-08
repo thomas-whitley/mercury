@@ -33,7 +33,7 @@ import json, sys
 print(json.dumps({
     "url": sys.argv[1].rstrip("/") + "/telegram",
     "secret_token": sys.argv[2],
-    "allowed_updates": ["message"],
+    "allowed_updates": ["message", "callback_query"],
     "drop_pending_updates": True,
 }))' "$api_url" "$secret")"
 

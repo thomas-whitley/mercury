@@ -1,0 +1,20 @@
+[
+  {
+    "task": "divide",
+    "provider": "ollama",
+    "answered_by": "ollama",
+    "run_id": "a1397f3b-a64c-448e-b71f-eba8337c0651",
+    "status": "succeeded",
+    "graded": true,
+    "tokens": 3888,
+    "seconds": 22.382512,
+    "usd": 0.0,
+    "detail": "test_divides (grade_hidden.Grade.test_divides) ... ok\ntest_zero (grade_hidden.Grade.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n",
+    "unusable": 0,
+    "repeat": 1,
+    "diff": "diff --git a/calc.py b/calc.py\nindex d78f4fc..0ca6ee2 100644\n--- a/calc.py\n+++ b/calc.py\n@@ -1,5 +1,14 @@\n-\"\"\"A deliberately small module for Mercury's repo chore integration test to edit.\"\"\"\n+def add(a, b):\n+    \"\"\"\n+    Return the sum of a and b.\n+    \"\"\"\n+    return a + b\n \n \n-def add(a: int, b: int) -> int:\n-    return a + b\n+def divide(a, b):\n+    \"\"\"\n+    Return a / b as a float. Raises ValueError if b is zero.\n+    \"\"\"\n+    if b == 0:\n+        raise ValueError(\"cannot divide by zero\")\n+    return a / b\ndiff --git a/test_calc.py b/test_calc.py\nindex e6856e6..3e429f5 100644\n--- a/test_calc.py\n+++ b/test_calc.py\n@@ -1,6 +1,6 @@\n import unittest\n \n-from calc import add\n+from calc import add, divide\n \n \n class AddTest(unittest.TestCase):\n@@ -8,5 +8,16 @@ class AddTest(unittest.TestCase):\n         self.assertEqual(add(2, 3), 5)\n \n \n+class DivideTest(unittest.TestCase):\n+    def test_divide_normal(self):\n+        self.assertEqual(divide(10, 2), 5.0)\n+        self.assertEqual(divide(7, 2), 3.5)\n+\n+    def test_divide_by_zero(self):\n+        with self.assertRaises(ValueError) as cm:\n+            divide(5, 0)\n+        self.assertEqual(str(cm.exception), \"cannot divide by zero\")\n+\n+\n if __name__ == \"__main__\":\n     unittest.main()",
+    "test_tail": "",
+    "rescue_hint": null,
+    "rescue": null
+  }
+]

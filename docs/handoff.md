@@ -1,4 +1,48 @@
-# Handoff: Phase 5 part 5a built, the home model measured at 2 of 11 (2026-10-07)
+# Handoff: Phase 3 done, the eval with one Claude hint per failure (2026-10-08)
+
+## Phase 3, Tasks 28 to 35 of `docs/build-brief-evals.md` (2026-10-07 and 2026-10-08)
+
+Live is `dd2e934` (`mercury-config` pins it, Deploy green, `/health` 200). Detailed into tasks
+on Opus with decisions 47 to 52 settled with Thomas, built in the same session (native
+execution), then one fresh reviewer on Opus over Tasks 28 to 32. Its Critical finding was
+real and is fixed: the runner read `GET /runs/{id}/events`, the SSE stream, as JSON, which
+would have turned every live row into `error` after grading. `GET /runs/{id}/history` now
+returns the events as JSON behind the bearer. Its two Important findings are fixed too
+(`apply` is safe to run again; a hint that is not text is refused before any rerun).
+
+What is new: `advise` takes an eval chore whose pull request failed its grade (decision 47);
+an advised rerun of an `eval` or `bank` chore keeps that source and may name its provider
+(decision 48); `POST /runs/{id}/advise`; a succeeded chore records its diff; a home provider
+is refused on anything but a repo chore; `evals/rescue.py` (`brief`, `apply`, `table`); the
+summary reports passed first time, after one hint, mean pass rate and passed at least once.
+
+The measurement (README `## Evals` has the table): gemini 33 of 33; ollama 28 of 33, 31 after
+one hint; `local` (`qwen2.5-coder:7b`, compose) 7 of 33, 11 after one hint, 5 of 11 tasks at
+least once; `delegate:local` 9 of 11, 10 after one hint; `delegate:local-gpt` 6 of 11, 8 after
+one hint. Results, briefs and hints: `evals/results/2026-10-07T1318Z` (live),
+`2026-10-07T1308Z` (compose), `2026-10-07T1436Z` (delegate).
+
+What went off plan, all in the commit history and the ledger:
+
+- The delegate columns ran 1 repeat, not 3. Claude Code's memory reaper stopped two
+  background delegate runs (`qwen3-coder:30b` spills out of the 4060's 8 GB, with WSL and
+  compose also resident), and Thomas chose repeat 1 only. The first delegate rescue pass
+  then timed out on all 7 rows at 900 s under the same pressure; a reproduction finished in
+  under 240 s, so the 7 timeouts were cleared and rerun in the foreground at 540 s.
+- `MAX_RUNS_PER_DAY` was 120 for the day (22 runs were already used), and is 40 again.
+- `local`'s failures are mostly the reply format: files named `path` or `content`, literal
+  `\n` for line breaks, and whole files rewritten without their old code. That is a format
+  finding for decision 24 and the first thing 5b's training data should teach.
+
+Deferred minors from the review: the mean pass rate pools repeat numbers across results
+files (the delegate files were renumbered by hand, so keep a column in one file); Passed
+after one hint reads `n/a` when a column had no rescuable failure; a delegate hint has no
+2,000 character cap; a resumed or taken over succeeded chore records an empty diff; a
+succeeded delegate row's rerun prompt says it opened a pull request; a top level
+`__pycache__` can enter a delegate diff; no test names a succeeded `api` chore being refused.
+
+Next: Phase 5 part 5b, the bank mined from real commits, detailed into tasks in its own
+session on Opus.
 
 ## Phase 5 part 5a, Tasks 19 to 27 of `docs/build-brief-evals.md` (2026-10-07, evening)
 

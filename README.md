@@ -55,6 +55,7 @@ Every run records its `source`, the thing that asked for it, which is `telegram`
 | Two task types run on two providers in one deploy | `tests/test_tasks.py::test_chat_runs_on_ollama_and_the_rest_on_gemini`, `tests/test_fallback.py`, and the live run rows below | green |
 | Claude Code queues and reads Mercury runs through its MCP server, and cannot approve them | `tests/test_mcp.py`, and the run Claude Code created on the live deploy below | green |
 | An n8n workflow turns a labelled GitHub issue into an approved pull request | [`n8n/README.md`](n8n/README.md#the-first-run): [issue #3](https://github.com/thomas-whitley/mercury-fixture/issues/3), run `100c1125-a731-4a16-a3a3-3edfa1e8aad7`, [PR #4](https://github.com/thomas-whitley/mercury-fixture/pull/4) and [the comment back](https://github.com/thomas-whitley/mercury-fixture/issues/3#issuecomment-5949824947). The approval was sent from a shell because Telegram's apps were down | green on the live deploy, not in CI |
+| A free model completes well defined chores, graded by tests it never saw | `evals/runner.py`, `evals/rescue.py`, `tests/test_eval_runner.py`, `tests/test_eval_rescue.py`, and the table under [Evals](#evals) | gemini 33 of 33 first time; ollama 28 of 33, 31 after one Claude hint; `qwen2.5-coder:7b` in compose 7 of 33, 11 after one hint; `qwen3-coder:30b` through `delegate.ps1` 9 of 11, 10 after one hint |
 
 ## Resume, and the test that proves it
 
@@ -490,11 +491,40 @@ PASSED
 
 From the Approve press to the chore ending took 5.3 seconds on the first run, covering the clone, the fixture's tests, the push and the two GitHub calls. [Pull request 2](https://github.com/thomas-whitley/mercury-fixture/pull/2) stays on the fixture, closed, as the record.
 
+## Evals
+
+An eval task is one YAML file in `evals/chores/`: the repo, an instruction that names every file and function it expects, and a grade test. There are 11, 8 small exact ones on a calculator and a text module and 3 on a standard library `orders` package, all on the public fixture repo `thomas-whitley/mercury-fixture`. The grade test never reaches the model. Mercury runs the chore as it runs any other, and the runner grades the branch afterwards on its own clone. A result passes when it still has every test id `main` has and skips none of them, its own tests pass, and the grade test passes. A result that drops or skips one of `main`'s tests fails, whatever the grade says.
+
+After a run, each failed row can get one hint. `python -m evals.rescue brief` writes the instruction, the last diff, the tail of the repo's own test output and the reason the chore stopped, never the grade test or its output. A Claude session writes one hint per row from that, and `python -m evals.rescue apply` sends each one through `POST /runs/{id}/advise` on the column the chore failed on, then grades the rerun the same way. For the `delegate.ps1` columns the hint is added to the instruction and the script is run again.
+
+```bash
+MERCURY_URL=<deploy> uv run python -m evals.runner --columns gemini,ollama --repeats 3
+uv run python -m evals.rescue brief evals/results/<stamp>.json
+uv run python -m evals.rescue apply evals/results/<stamp>.json evals/results/<stamp>.hints.yaml
+uv run python -m evals.rescue table evals/results/<a>.json evals/results/<b>.json
+```
+
+The columns, measured on 2026-10-07 and 2026-10-08:
+
+- `gemini` and `ollama` are Mercury's two free cloud rungs on the live deploy, 3 repeats of the 11 tasks.
+- `local` is `qwen2.5-coder:7b`, an untuned 7B model on an RTX 4060 with 8 GB, run through Mercury in the local compose stack (`local/README.md`), 3 repeats.
+- `delegate:local` (`qwen3-coder:30b`) and `delegate:local-gpt` (`gpt-oss:20b`) are OpenCode on the same desktop through `delegate.ps1`, 1 repeat each, because 2 attempts at more were stopped when the desktop ran out of memory.
+
+| Column | Passed first time | Passed after one hint | Mean pass rate | Passed at least once | Opened a PR | Median tokens | Median seconds | Cost USD | Fell back | Weakened tests | Unusable replies |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| delegate:local | 9 of 11 | 10 of 11 | 82% | 9 of 11 | 10 of 11 | n/a | 103 | 0.0000 | 0 | 0 | 0 |
+| delegate:local-gpt | 6 of 11 | 8 of 11 | 55% | 6 of 11 | 9 of 11 | n/a | 119 | 0.0000 | 0 | 0 | 0 |
+| gemini | 33 of 33 | n/a | 100% | 11 of 11 | 33 of 33 | 1300 | 11 | 0.0000 | 0 | 0 | 1 |
+| local | 7 of 33 | 11 of 33 | 21% | 5 of 11 | 12 of 33 | 2338 | 19 | 0.0000 | 0 | 2 | 0 |
+| ollama | 28 of 33 | 31 of 33 | 85% | 11 of 11 | 28 of 33 | 3681 | 18 | 0.0000 | 0 | 0 | 10 |
+
+Passed after one hint counts a row that passed first time or passed on its one rerun; `n/a` means no row of the column needed one. Mean pass rate is the mean of each repeat's first time pass rate. The results, briefs and hints are in `evals/results/` (`2026-10-07T1318Z` live, `2026-10-07T1308Z` compose, `2026-10-07T1436Z` delegate). Most of `local`'s failures were the reply format rather than the change: files named `path` or `content`, the two characters `\n` written for a line break, and a whole file rewritten without the code it already had.
+
 ## When a chore escalates
 
 A chore runs on its type's provider ladder, `[gemini, ollama]` by default and set per type under `tasks:` in `mercury.yaml`. A provider that fails hands the run to the next rung, and a run that is reclaimed after a crash keeps only the rungs below the one it reached. A chore ends `escalated`, with its reason on the run row and in `GET /runs`, in four cases. Its tests are still red after 3 attempts. Its 3 replies were not the JSON asked for. Its last attempt passes the tests by leaving the repo as it was. Or its tests pass but its diff removes or skips a test the repo already has, three times running. That last check reads the staged diff (`app/test_guard.py`), so it works for any language. A green attempt that drops a test is not pushed. The model is told which test it dropped and shown the repo's own copy of the file, and tries again. In the Phase 1 eval, 6 of the 10 failed results were a green change that had dropped one of `main`'s tests.
 
-An escalated chore sends one Telegram message to the owner's chat with the reason, the tail of the test output, a link to the run page, and the Open it anyway button when it left a diff. A reply to that message is a hint, and so is `/hint <text>`, which goes to the newest chore waiting for one. It reruns the chore from `main` with the hint, the failed diff and its test output in the prompt, and it starts without Approve because the owner is the one advising. The MCP tool `advise(run_id, hint)` does the same. A chore takes 2 advised reruns. When the second also escalates, the run is marked for a Claude session and `advise` refuses a third. Eval chores and a second escalation of the same chore send no message. A model that never answers on any rung ends the run in error, and the hourly scheduler Job retries it up to 3 times before escalating it.
+An escalated chore sends one Telegram message to the owner's chat with the reason, the tail of the test output, a link to the run page, and the Open it anyway button when it left a diff. A reply to that message is a hint, and so is `/hint <text>`, which goes to the newest chore waiting for one. It reruns the chore from `main` with the hint, the failed diff and its test output in the prompt, and it starts without Approve because the owner is the one advising. The MCP tool `advise(run_id, hint)` does the same, and so does `POST /runs/{id}/advise`, which may also name a free provider for the rerun. A chore takes 2 advised reruns. When the second also escalates, the run is marked for a Claude session and `advise` refuses a third. Eval chores and a second escalation of the same chore send no message. A model that never answers on any rung ends the run in error, and the hourly scheduler Job retries it up to 3 times before escalating it.
 
 `GET /report`, the MCP tool `report` and `scripts/mercury_report.py` give one Markdown page. It lists escalations first, with every run of the chore and its provider, tokens, cost, hint, last diff and test output. Then come chores Mercury started itself, then where the eval results are, then spend against each cap. The morning digest adds one line when a chore is waiting for a hint.
 

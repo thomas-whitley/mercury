@@ -1,0 +1,14 @@
+"cli/delegate:local-gpt/1": |
+  Your calc.py has a stray "+" at the start of many lines (for example "+from __future__ import annotations"), so it does not parse. Write the file's text itself, not a diff. Also keep test_calc.py a unittest file: keep "import unittest", "from calc import add" and the AddTest class with test_adds_two_numbers exactly as they are, and add new TestCase methods beside it that run [sys.executable, "-m", "calc", ...] with subprocess.run and check stdout, stderr and the exit code. The repo runs its tests with python -m unittest, so pytest fixtures such as capfd are not available.
+"duration/delegate:local/1": |
+  int() accepts more than the format allows: it takes surrounding spaces, a leading + or - sign and underscores, so text such as "1h 30m" or "+5s" gets through. The instruction allows only digits before each unit, with no spaces. Parse with re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", text), raise ValueError when it does not match or text is empty, and sum the groups that matched. Add tests for a space and a sign.
+"duration/delegate:local-gpt/1": |
+  duration.py ends with a stray line of three backticks, left over from a Markdown code block, so it does not parse. Remove it; the rest of your parser is right. Write files as plain Python with no Markdown fences anywhere.
+"orders_gst/delegate:local-gpt/1": |
+  Your order_total change is right, but in test_orders.py you replaced test_summary_ends_with_the_total with your new test, so one of the repo's tests is gone. Keep every existing test exactly as it is, with the same name, and add test_line_rounding_difference as a new method beside them.
+"orders_quantity/delegate:local/1": |
+  You left no change that kept the repo's tests green. In orders/parse.py, change only the loop in parse_orders: set qty = int(row["quantity"]) inside the try; when qty is below 1, append the line number to bad and continue; otherwise build the Line with qty. Keep the except as it is. In test_orders.py keep every existing test and add one whose CSV has the header, a quantity 0 line and a bad price line, and check caught.exception.line_numbers lists both in line order.
+"orders_quantity/delegate:local-gpt/1": |
+  Your parse.py change is right, but in test_orders.py you replaced test_summary_ends_with_the_total with your new test, so one of the repo's tests is gone. Keep every existing test exactly as it is and add your test as a new method. Also include a line with a bad price in it, so the test checks that bad quantities and bad prices are listed together in line order.
+"orders_report/delegate:local-gpt/1": |
+  Your report.py change is right, but in test_orders.py you replaced test_order_total_includes_gst with your new test, so one of the repo's tests is gone. Keep every existing test exactly as it is, with the same name, and add test_summary_bulk_discount as a new method beside them.

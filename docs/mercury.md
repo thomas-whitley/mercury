@@ -44,6 +44,8 @@ Settled 2026-10-05 and 2026-10-07 (decisions 6 to 19 of `docs/build-brief-evals.
 
 One Telegram message per escalated chore, none for a chore whose source is `eval` and none for a second escalation of the same chore. A reply to it, `/hint <text>` for the newest chore waiting, or the MCP tool `advise(run_id, hint)` creates an advised rerun from `main` that starts without Approve. A chore takes 2 advised reruns, then it is marked `needs_claude` and `advise` refuses. The report (`GET /report`, MCP `report`, `scripts/mercury_report.py`) lists escalations, chores Mercury started itself and spend against the caps. A Claude session reads it, advises first, and does a chore itself only when it is beyond free models.
 
+`POST /runs/{id}/advise` (`{"hint": ..., "provider": ...}`, behind the bearer token) is the same advise over HTTP, for the eval's rescue pass (decisions 47 to 50 of `docs/build-brief-evals.md`). It may name a free provider for the rerun. An eval chore can also be advised after it opened a pull request that failed its hidden grade, and the rerun of an `eval` or `bank` chore keeps that source, so it tells nobody. `GET /runs/{id}/history` returns a run's events as one JSON list, behind the bearer token, for a client that does not read the event stream.
+
 ## Other ways in: MCP and n8n
 
 Telegram is not the only thing that asks for runs. Two more callers come in through the same API, and neither adds a task type.

@@ -1,0 +1,5 @@
+# The libraries the bank is mined from (decisions 31, 32 and 57 of
+# docs/build-brief-evals.md). Each is a public fork under thomas-whitley,
+# listed in local/mercury.compose.yaml with the same test command and
+# auto_approve: true.
+libraries: []

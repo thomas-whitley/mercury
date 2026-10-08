@@ -1,0 +1,17 @@
+id: json_repair-5c7d37c8c5
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: 'In src/json_repair/parse_object.py, parse_object already reads extra key and value pairs
+  after a top-level object''s closing brace and a comma. Two changes. First, after that comma, if the
+  next character is not a quote, an opening brace or an opening bracket, set the context to ContextValues.OBJECT_VALUE
+  and return the object, so the outer parser treats what follows as further top-level values: repair_json(''{"key":
+  "value"}, true'') gives ''[{"key": "value"}, true]'', and the same for null, numbers, [] and {}. Second,
+  an empty key is a valid key in that loop, so do not stop on it: ''{"key": "value"}, "" : "value2"}''
+  gives ''{"key": "value", "": "value2"}''.'
+base: 919ccc1db86cf9aca10ef1e17af7360efa5f38bb
+reference: 5c7d37c8c502e8a5d66fc14ae473146c12860fce
+grade:
+- tests/test_parse_object.py::test_parse_object_edge_cases
+test_files:
+- tests/test_parse_object.py
+split: training

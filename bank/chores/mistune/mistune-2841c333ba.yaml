@@ -1,0 +1,22 @@
+id: mistune-2841c333ba
+library: mistune
+repo: thomas-whitley/mistune
+instruction: In src/mistune/renderers/markdown.py, MarkdownRenderer drops backslash escapes, so text such
+  as "\* literal" or "\# text" comes back as a list item or a heading when the output is parsed again.
+  Add a module regex _block_prefix_re for a leading block marker (optional whitespace, then ">", one of
+  "-", "+", "*", one to six "#", or one to nine digits followed by "." or ")", then whitespace or the
+  end of the line) and a helper _escape_block_prefix(text) that, on every line of text, puts a backslash
+  before the last character of such a marker. Apply it in paragraph() and block_text() to the rendered
+  children. In text(), escape every backtick in the raw text as "\`". Real list, heading and quote syntax
+  still renders through its own tokens, and ordinary prose such as snake_case, "use - dashes" or "C# and
+  1.5" is unchanged.
+base: f21a29b451e85a9452ebc97ff1882d90c5953804
+reference: 2841c333ba5a3c8e2eb870c35ecb475ae2fbeb6c
+grade:
+- tests/test_renderers.py::TestMarkdownRendererRoundTrip::test_escaped_backtick
+- tests/test_renderers.py::TestMarkdownRendererRoundTrip::test_escaped_block_markers
+- tests/test_renderers.py::TestMarkdownRendererRoundTrip::test_escaped_marker_inside_list_item
+- tests/test_renderers.py::TestMarkdownRendererRoundTrip::test_escaped_marker_on_continuation_line
+test_files:
+- tests/test_renderers.py
+split: training

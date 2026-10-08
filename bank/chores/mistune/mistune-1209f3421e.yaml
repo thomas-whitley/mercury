@@ -1,0 +1,16 @@
+id: mistune-1209f3421e
+library: mistune
+repo: thomas-whitley/mistune
+instruction: In src/mistune/__init__.py, create_markdown(escape, hard_wrap, renderer, plugins) applies
+  escape only to the HTMLRenderer it builds itself, so create_markdown(renderer=MyRenderer(), escape=False)
+  still escapes HTML. Make escape an Optional[bool] that defaults to None, meaning keep the renderer's
+  own setting. With renderer="html" build HTMLRenderer(escape=True) when escape is None, else with the
+  given value. When an HTMLRenderer instance is passed and escape is not None, set its _escape to that
+  value. Update the docstring for the None case.
+base: b5dd9949baf3729a709ef8ae591eab86e72a9e46
+reference: 1209f3421e5057bb2525c7059c1a38ddf205ef2e
+grade:
+- tests/test_misc.py::TestMiscCases::test_escape_applies_to_custom_renderer
+test_files:
+- tests/test_misc.py
+split: training

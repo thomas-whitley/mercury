@@ -1,0 +1,18 @@
+id: json_repair-6733278cd2
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: 'In src/json_repair/parse_array.py, an array that is an object''s value and lost its closing
+  bracket swallows the next member, as in ''{"outer": ["a", "b", "next": "value"}''. In parse_array, note
+  on entry whether self.context.current is ContextValues.OBJECT_VALUE. Where a string item turns out to
+  be followed by a colon, if the array is such a value and every item so far is a scalar (no dict or list),
+  log "Closed unclosed array before object member after scalar items" and stop the array there, and in
+  that case do not step past a closing delimiter at the end. That input then gives {"outer": ["a", "b"],
+  "next": "value"}, with or without strict=True.'
+base: 7ab1ebacd57f1dbd6b411a7d9c790d8f95f136c3
+reference: 6733278cd2df965e97ec183deba4a640777ebb34
+grade:
+- tests/test_parse_array.py::test_parse_array_closes_before_object_member_after_scalar_items
+- tests/test_parse_array.py::test_parse_array_contextually_closes_in_strict_mode
+test_files:
+- tests/test_parse_array.py
+split: training

@@ -1,0 +1,14 @@
+id: mistune-e3e51de9cf
+library: mistune
+repo: thomas-whitley/mistune
+instruction: 'In src/mistune/directives/image.py, the Figure directive copies its figwidth option into
+  the figure''s attributes unchecked, so ":figwidth: 10px;position:fixed" injects CSS. Keep figwidth only
+  when it is a plain size that the module''s _num_re matches in full (fullmatch); otherwise leave it out.
+  figclass is still copied when present.'
+base: 96d0f57f8fe9eeb06bb4cff521962a27d7c402e7
+reference: e3e51de9cf0a72dc30191248dccf22087c57f046
+grade:
+- tests/test_security_image.py::TestImageDirectiveSecurity::test_figure_directive_escapes_class_and_rejects_figwidth_css_injection
+test_files:
+- tests/test_security_image.py
+split: validation

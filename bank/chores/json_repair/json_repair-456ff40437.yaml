@@ -1,0 +1,15 @@
+id: json_repair-456ff40437
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: 'In src/json_repair/parse_object.py, an object inside an array is sometimes closed twice,
+  as in ''[{"key":"value"}},{"key":"value"}]''. At the end of parse_object, where it returns early because
+  the context is not empty, first check whether the current character is "}" and self.context.current
+  is neither ContextValues.OBJECT_KEY nor ContextValues.OBJECT_VALUE; if so, log that an extra closing
+  brace is being skipped and move past it. That input should repair to ''[{"key": "value"}, {"key": "value"}]''.'
+base: bbfc716358f345dd9b6e0fdd4b49f03f462076db
+reference: 456ff404376b0c2442c6af8b5433c0cd079cde0f
+grade:
+- tests/test_parse_object.py::test_parse_object_edge_cases
+test_files:
+- tests/test_parse_object.py
+split: training

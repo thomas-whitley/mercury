@@ -1,0 +1,20 @@
+id: json_repair-3d50aca0ae
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: 'In src/json_repair/parse_object.py, parse_object merges an array that follows a key''s array
+  value into it, flattening as it goes. That breaks table-like JSON whose rows are lists of one length
+  and where a row lost its opening bracket. Do the merge only when not self.strict. When every list already
+  in the previous value has the same length n, take the trailing items that are not lists off the end;
+  if their count is a multiple of n, put them back as rows of n, else put them back as they were. Then,
+  if every item of the new array is a list, extend the previous value with them as rows, otherwise append
+  the new array as one item. Log each case. When the lengths differ, keep the old merge. So ''{"headers":
+  ["A", "B", "C"], "rows": [["r1a", "r1b", "r1c"], ["r2a", "r2b", "r2c"], "r3a", "r3b", "r3c"], ["r4a",
+  "r4b", "r4c"]]}'' gives four rows of three.'
+base: 72ba799b4244d2faa2daf8ee00ca1eb791dc06c0
+reference: 3d50aca0ae7a1f86af3739e1c9a7617e9d0076b7
+grade:
+- tests/test_parse_array.py::test_parse_array_edge_cases
+test_files:
+- tests/test_parse_array.py
+- tests/test_parse_object.py
+split: training

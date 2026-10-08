@@ -1,0 +1,15 @@
+id: mistune-85701ee64d
+library: mistune
+repo: thomas-whitley/mistune
+instruction: In src/mistune/helpers.py, parse_link_href skips the character after any backslash in a bare
+  link destination, so in "[a](foo\ bar)" the space is hidden from the check that ends the destination
+  and the link gets an illegal href. Treat a backslash as an escape only when the next character is ASCII
+  punctuation (string.punctuation), as unescape_char does. That input is then rendered as the literal
+  text "[a](foo\ bar)" in a paragraph, while "[a](foo\*bar)" still links to foo*bar.
+base: 719107f8fbc01c07af5eb51822c6888122d56afc
+reference: 85701ee64dba89ba850d93c393d533dbf38a3096
+grade:
+- tests/test_misc.py::TestMiscCases::test_backslash_space_in_link_destination_is_not_an_escape
+test_files:
+- tests/test_misc.py
+split: validation

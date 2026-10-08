@@ -1,0 +1,17 @@
+id: mistune-c7101fcbb6
+library: mistune
+repo: thomas-whitley/mistune
+instruction: In src/mistune/renderers/html.py, HTMLRenderer.safe_url compares the lowercased URL with
+  HARMFUL_PROTOCOLS, so a percent encoded scheme such as "javascript%3Aalert(1)", or one encoded twice
+  ("javascript%253A..."), gets through. Add "feed:", "jar:", "livescript:", "mocha:", "ms-its:", "mk:",
+  "res:" and "view-source:" to HARMFUL_PROTOCOLS, and add a module function _unquote_url(url) that applies
+  urllib.parse.unquote up to three times, stopping when nothing changes. In safe_url, compare _unquote_url(url).lower()
+  instead of url.lower(), for both the allowed protocols and the harmful ones; the URL that is returned
+  is still escape_text(url) of the original. A percent encoded data:image URL stays allowed.
+base: 2f2449dd0ab1976c98f4441f973c0a7f3d6f5ee4
+reference: c7101fcbb6e8790e8e39157c5ca2238fc6dd6cbc
+grade:
+- tests/test_security_urls.py::TestSafeUrlSecurity::test_percent_encoded_harmful_url_scheme_is_blocked
+test_files:
+- tests/test_security_urls.py
+split: training

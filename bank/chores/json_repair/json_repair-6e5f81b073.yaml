@@ -1,0 +1,16 @@
+id: json_repair-6e5f81b073
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: 'In src/json_repair/parse_number.py, when parse_number finds a letter right after the digits
+  it rolls back with self.index -= len(number_str) and parses a string instead. Because underscores are
+  skipped and never added to number_str, the rollback lands in the wrong place for input such as 123_456ABC.
+  Record the index where the number started at the top of parse_number and roll back to exactly that index.
+  Then repair_json(''{"sku": 123_456ABC}'', return_objects=True) gives {"sku": "123_456ABC"}, "[1_2_3ABC]"
+  gives ["1_2_3ABC"], and 123_456 is still the number 123456.'
+base: 0a7317eab4f037596b41a4bea96cbb195ce425e8
+reference: 6e5f81b0736335172517a0e360be06d5ac90b13e
+grade:
+- tests/test_parse_number.py::test_numeric_prefix_identifiers_preserve_underscored_digits
+test_files:
+- tests/test_parse_number.py
+split: training

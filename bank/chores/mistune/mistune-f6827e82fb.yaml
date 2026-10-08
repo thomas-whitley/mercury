@@ -1,0 +1,16 @@
+id: mistune-f6827e82fb
+library: mistune
+repo: thomas-whitley/mistune
+instruction: In src/mistune/renderers/markdown.py, MarkdownRenderer.codespan always wraps the code in
+  a single backtick, so code that contains backticks re-parses wrongly. Make the delimiter a run of backticks
+  one longer than the longest run of backticks inside the code (add a module regex _backtick_run_re for
+  runs of backticks), and when the code starts or ends with a backtick, put one space between the delimiter
+  and the code on each side. For example the code span "``a single ` backtick``" must render back as a
+  span that parses to the same code.
+base: 74608f5dd883c1cc85b6ec38ba459ea436a9cef4
+reference: f6827e82fb0bd032fd3cc917140282885bcf6184
+grade:
+- tests/test_renderers.py::TestMarkdownRendererRoundTrip::test_codespan_containing_backticks
+test_files:
+- tests/test_renderers.py
+split: validation

@@ -1,0 +1,15 @@
+id: mistune-e12f0d38d0
+library: mistune
+repo: thomas-whitley/mistune
+instruction: In src/mistune/helpers.py, _parse_angle_link_href(src, pos) refuses a backslash inside an
+  angle bracket link destination, so "[link](<foo\*bar>)" is left as literal text. When it meets a backslash,
+  step over it and the next character together (not past the end of src) and keep scanning; an unescaped
+  "<", a line ending or a NUL still ends the scan with no link. That link then renders as '<a href="foo*bar">link</a>',
+  and the same holds for a reference definition.
+base: 719107f8fbc01c07af5eb51822c6888122d56afc
+reference: e12f0d38d028a297ffd6c8bec9b5480627fe1903
+grade:
+- tests/test_misc.py::TestMiscCases::test_angle_link_escaped_backslash
+test_files:
+- tests/test_misc.py
+split: training

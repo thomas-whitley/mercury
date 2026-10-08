@@ -1,0 +1,15 @@
+id: mistune-2c1a51813a
+library: mistune
+repo: thomas-whitley/mistune
+instruction: 'In src/mistune/renderers/markdown.py, MarkdownRenderer writes link, image and reference
+  link titles inside double quotes without escaping them, so a title containing a double quote ends early
+  when the output is parsed again. Add a module function _escape_title(title) that escapes backslashes
+  first and then double quotes with a backslash, and use it wherever a title is written: in the reference
+  link definitions, and in link(), which image() also uses.'
+base: 0799e194b388551e7a3607e7d64450b0b979b9ee
+reference: 2c1a51813a301ea624f48b849ff5e677dc395ca2
+grade:
+- tests/test_renderers.py::TestMarkdownRendererRoundTrip::test_link_title_containing_quote
+test_files:
+- tests/test_renderers.py
+split: training

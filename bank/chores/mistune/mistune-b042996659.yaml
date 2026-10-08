@@ -1,0 +1,15 @@
+id: mistune-b042996659
+library: mistune
+repo: thomas-whitley/mistune
+instruction: In src/mistune/renderers/markdown.py, MarkdownRenderer.text only escapes backticks, so an
+  escaped emphasis marker such as "\*not emphasis\*", which the parser keeps as bare "*" text tokens,
+  comes back as emphasis on a re-parse. In text(), when the raw text is not empty and is made up only
+  of "*" and "_" characters, return it with a backslash before every character. Any other text is returned
+  as before, with backticks escaped, so "2 * 3" and snake_case are not changed.
+base: fe02f40faf091f86da9ed62c865f31e11da111d7
+reference: b042996659275aa9719d6efa37163bea62b34cd5
+grade:
+- tests/test_renderers.py::TestMarkdownRendererRoundTrip::test_escaped_emphasis_markers
+test_files:
+- tests/test_renderers.py
+split: training

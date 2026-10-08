@@ -1,0 +1,17 @@
+id: json_repair-344d25ce0e
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: 'In src/json_repair/parse_comment.py, parse_comment skips one comment and, at the top level
+  (self.context.empty), calls self.parse_json() again, which calls parse_comment for the next comment.
+  A file that starts with hundreds of comment lines therefore hits Python''s recursion limit. Turn parse_comment
+  into a loop: skip a comment exactly as now (the same termination characters and the same log text, such
+  as "Found line comment: # comment, ignoring"), then at the top level skip whitespace and, if the next
+  character is "#" or "/", go round again; only once no comment follows, return self.parse_json(). Outside
+  the top level it returns "" after one comment, as now.'
+base: eea54ac0b924d47cc726de710e92db1ec8e3adce
+reference: 344d25ce0e30ef0a1ce732e67f80a67d01e94521
+grade:
+- tests/test_parse_comment.py::test_parse_many_top_level_comments_without_recursion_error
+test_files:
+- tests/test_parse_comment.py
+split: training

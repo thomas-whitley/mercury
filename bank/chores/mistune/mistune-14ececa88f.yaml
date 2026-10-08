@@ -1,0 +1,14 @@
+id: mistune-14ececa88f
+library: mistune
+repo: thomas-whitley/mistune
+instruction: In src/mistune/renderers/markdown.py, MarkdownRenderer.heading always writes an ATX heading
+  ("# ..."), so a setext heading that spans several lines loses every line after the first on a re-parse.
+  When the rendered text contains a newline and the level is 1 or 2, write the text followed by a line
+  of "===" for level 1 or "---" for level 2, then a blank line. Otherwise write the ATX heading as before.
+base: 719107f8fbc01c07af5eb51822c6888122d56afc
+reference: 14ececa88fc61a7f9ab06413c82f18e3cfea1533
+grade:
+- tests/test_renderers.py::TestMarkdownRendererRoundTrip::test_multiline_setext_heading
+test_files:
+- tests/test_renderers.py
+split: validation

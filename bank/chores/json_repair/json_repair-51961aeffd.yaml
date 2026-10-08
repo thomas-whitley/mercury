@@ -1,0 +1,24 @@
+id: json_repair-51961aeffd
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: 'In src/json_repair/utils/string_file_wrapper.py, StringFileWrapper reads a file in chunks
+  but seeks by character offsets, which breaks on multi-byte characters. Make chunk_length a number of
+  characters, record the file position (fd.tell()) where each chunk starts in a list self._chunk_positions
+  starting at [0], and add a method _ensure_chunk_position(chunk_index) that reads forward until the start
+  of that chunk is known, raising IndexError when the file ends first. self.length starts as None and
+  is set once the last, shorter chunk is read; __len__ reads chunks until it is known. get_buffer(index)
+  raises IndexError for a negative index or a chunk past the end of the file. __getitem__ supports negative
+  indexes (IndexError when still out of range) and full slices: None bounds, negative bounds, an empty
+  result when start is not below stop, a step other than 1, and ValueError("slice step cannot be zero")
+  for a zero step.'
+base: 72de7f537fca660961d6c78506e18edeff2f846c
+reference: 51961aeffdd54ce5f8bcce09d57e9e64f835095c
+grade:
+- tests/utils/test_string_file_wrapper.py::test_string_file_wrapper_ensure_chunk_position_raises
+- tests/utils/test_string_file_wrapper.py::test_string_file_wrapper_handles_multibyte
+- tests/utils/test_string_file_wrapper.py::test_string_file_wrapper_invalid_buffer_access
+- tests/utils/test_string_file_wrapper.py::test_string_file_wrapper_negative_indices
+- tests/utils/test_string_file_wrapper.py::test_string_file_wrapper_slice_variations
+test_files:
+- tests/utils/test_string_file_wrapper.py
+split: training

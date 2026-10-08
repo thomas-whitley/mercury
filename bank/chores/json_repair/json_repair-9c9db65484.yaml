@@ -1,0 +1,16 @@
+id: json_repair-9c9db65484
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: 'In src/json_repair/parse_string_helpers/object_value_context.py, classify_object_value_comma(parser)
+  decides what a comma inside an object value starts. Prose with a bracketed comma group followed by a
+  LaTeX command is wrongly split, as in the input { "key": "x [0,2] f(-\\frac{3}{4})" }. Return "container"
+  straight away when the character right after the comma (next_c) is "{" or "[". Later, where an opening
+  brace or bracket is found before the next quote, return "string" instead of "container". With return_objects=True
+  and skip_json_loads=True that input keeps its value whole, a Python string of x [0,2] f(-\frac{3}{4}).'
+base: dbec25a4ee6dd1c58ba7040f01327b9e58ebba9b
+reference: 9c9db65484d7b7186206fd2b1f3d2aa32438015d
+grade:
+- tests/test_parse_string.py::test_parse_string_preserves_latex_command_after_bracketed_comma
+test_files:
+- tests/test_parse_string.py
+split: training

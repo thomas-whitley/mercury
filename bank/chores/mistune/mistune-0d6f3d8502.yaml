@@ -1,0 +1,15 @@
+id: mistune-0d6f3d8502
+library: mistune
+repo: thomas-whitley/mistune
+instruction: In src/mistune/renderers/html.py, HTMLRenderer.image(text, url, title) builds the alt attribute
+  with escape_text(striptags(text)), but text has already been HTML escaped by the rendering pipeline,
+  so an ampersand in the alt text comes out as &amp;amp;. Use striptags(text) alone for alt. Then mistune.html("![dogs
+  & cats](dogs.png)") gives '<p><img src="dogs.png" alt="dogs &amp; cats" /></p>', and a quote in the
+  alt text comes out once as &quot;.
+base: 2855622d7fe235c6c805716edff943b5945d1eea
+reference: 0d6f3d850283d51e9c60e5a1b3c9343a18df3722
+grade:
+- tests/test_misc.py::TestMiscCases::test_image_alt_no_double_encoding
+test_files:
+- tests/test_misc.py
+split: training

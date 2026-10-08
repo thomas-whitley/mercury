@@ -1,0 +1,15 @@
+id: mistune-18c21d7dc0
+library: mistune
+repo: thomas-whitley/mistune
+instruction: In src/mistune/directives/include.py, the Include directive reads a Markdown file and parses
+  it, but a file with Windows ("\r\n") or old Mac ("\r") line endings is not parsed as the same lines,
+  so the directive inside it, and the check that refuses a file including itself in a loop, do not work.
+  Before making the child state for an included .md, .markdown or .mkd file, replace "\r\n" and then "\r"
+  in its content with "\n".
+base: ae850f50cdf20ae0852bfe8daa44e1a87c31a6c3
+reference: 18c21d7dc0bf2d4b36792e425e4705d457c5402a
+grade:
+- tests/test_security_include.py::TestIncludeSecurity::test_include_rejects_circular_references
+test_files:
+- tests/test_security_include.py
+split: training

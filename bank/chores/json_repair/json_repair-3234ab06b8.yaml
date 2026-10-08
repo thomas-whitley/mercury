@@ -1,0 +1,17 @@
+id: json_repair-3234ab06b8
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: 'In src/json_repair/parse_object.py, parse_object closes the current object and rolls the
+  index back when it meets a key it has already seen while inside an array, so that the rest becomes a
+  new object. When the parser runs with stream_stable=True (self.stream_stable) this goes wrong for a
+  stream cut off in the middle of a key, which only looks like a duplicate. In that case do nothing: keep
+  the object as it is and break out as before, without logging, rolling back or inserting a brace. Without
+  stream_stable the behaviour stays as it is. For example, repair_json(''[{"key": "value", "key'', stream_stable=True)
+  should give ''[{"key": "value"}]''.'
+base: 604b96b7b1451102e1b41511ffa10e39ef527169
+reference: 3234ab06b8f25eab2a72329f68857597e4af0c22
+grade:
+- tests/test_json_repair.py::test_stream_stable
+test_files:
+- tests/test_json_repair.py
+split: training

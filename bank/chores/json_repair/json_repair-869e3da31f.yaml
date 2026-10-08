@@ -1,0 +1,16 @@
+id: json_repair-869e3da31f
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: 'In src/json_repair/json_parser.py, JSONParser.skip_to_character(character, idx) returns
+  the offset of the next matching character, but it treats an escaped occurrence (one preceded by a backslash)
+  as a real delimiter, which breaks strings that contain escaped quotes. When the character found is preceded
+  by a backslash, keep searching after it, so skip_to_character returns the first unescaped match. For
+  example, the input {''key'': "{\"key\": 1, \"key2\": 1}"} must keep the inner escaped quotes, and repair_json
+  returns {"key": "{\"key\": 1, \"key2\": 1}"}.'
+base: 490e8c9f42e5017a7b2b9cc7608e8b991629cacb
+reference: 869e3da31f275ae0420b4cec2798cc977231af8e
+grade:
+- tests/test_parse_string.py::test_escaping
+test_files:
+- tests/test_parse_string.py
+split: validation

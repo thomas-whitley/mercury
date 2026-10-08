@@ -1,0 +1,17 @@
+id: mistune-c4093c4742
+library: mistune
+repo: thomas-whitley/mistune
+instruction: In src/mistune/toc.py, add_toc_hook gives headings the ids toc_1, toc_2 and so on, which
+  can clash with an id already used in raw HTML in the document, as in '<div id="toc_1"></div>'. When
+  no heading_id function is passed, collect the ids already in state.src with a new module regex _HTML_ID_RE
+  (an id attribute in double or single quotes, case insensitive) through _find_html_ids(src), and make
+  each generated id unique with _unique_id(value, used_ids), which appends _1, _2 and so on until the
+  id is unused. Add each id to the used set as it is assigned. A custom heading_id is used as given. That
+  document's heading then gets id "toc_1_1", in the heading and in the toc.
+base: e3e51de9cf0a72dc30191248dccf22087c57f046
+reference: c4093c4742ed0d10d9332fb8edb455869b7b581b
+grade:
+- tests/test_security_toc.py::TestTocSecurity::test_default_toc_id_avoids_existing_html_id_collision
+test_files:
+- tests/test_security_toc.py
+split: validation

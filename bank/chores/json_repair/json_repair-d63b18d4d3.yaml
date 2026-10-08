@@ -1,0 +1,23 @@
+id: json_repair-d63b18d4d3
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: 'In src/json_repair/parse_number.py, parse_number drops a positive exponent, so 1e+10 is
+  not read as 1e10. In its loop, also accept "+" when number_str so far ends with "e" or "E", and add
+  "+" to the characters that are rolled back when the number ends on one (now "+-eE/,"). A plus anywhere
+  else still ends the number, so "[1+2]" gives [1, 2], and "[1e+]" repairs the same way as "[1e-]". This
+  must hold for repair_json and for load(StringIO(...), chunk_length=2), with skip_json_loads True or
+  False: ''{"value": -2.5E+3'' gives {"value": -2500.0}.'
+base: 6e5f81b0736335172517a0e360be06d5ac90b13e
+reference: d63b18d4d3406b539eda99e11cbe858a01d1bd49
+grade:
+- tests/test_parse_number.py::test_parse_number_plus_outside_exponent
+- tests/test_parse_number.py::test_parse_number_positive_exponent[False-[6.02e+23, 2-expected2]
+- 'tests/test_parse_number.py::test_parse_number_positive_exponent[False-{"value": -2.5E+3-expected1]'
+- 'tests/test_parse_number.py::test_parse_number_positive_exponent[False-{"value": 1e+10-expected0]'
+- tests/test_parse_number.py::test_parse_number_positive_exponent[True-[6.02e+23, 2-expected2]
+- 'tests/test_parse_number.py::test_parse_number_positive_exponent[True-{"value": -2.5E+3-expected1]'
+- 'tests/test_parse_number.py::test_parse_number_positive_exponent[True-{"value": 1e+10-expected0]'
+- 'tests/test_parse_number.py::test_parse_number_positive_exponent[True-{"value": 1e+2, "next": true}-expected3]'
+test_files:
+- tests/test_parse_number.py
+split: training

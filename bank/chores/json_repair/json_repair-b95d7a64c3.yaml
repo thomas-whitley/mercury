@@ -1,0 +1,16 @@
+id: json_repair-b95d7a64c3
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: In src/json_repair/utils/string_file_wrapper.py, StringFileWrapper assumes its file starts
+  at position 0, so load() on a file object that has already been read part way repairs the wrong text.
+  In __init__, record fd.tell() as self._initial_position and start self._chunk_positions from it instead
+  of 0, and in __setitem__ seek to self._initial_position + start. Then load(fd, skip_json_loads=...,
+  chunk_length=2) on a StringIO positioned after a first JSON document repairs only what follows that
+  position.
+base: 6c09b6230100aa2b8c97e45d36d40882884f8800
+reference: b95d7a64c316b64134e1ba4873a0cd859603e4cd
+grade:
+- tests/test_repair_json_from_file.py::test_load_repairs_from_current_file_position
+test_files:
+- tests/test_repair_json_from_file.py
+split: validation

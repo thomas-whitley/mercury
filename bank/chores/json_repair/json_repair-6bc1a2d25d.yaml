@@ -1,0 +1,14 @@
+id: json_repair-6bc1a2d25d
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: 'In src/json_repair/parse_number.py, numbers written with Python style underscore separators
+  are not parsed. Add "_" to NUMBER_CHARS and have parse_number skip each underscore rather than keep
+  it, so repair_json(''{"value": 82_461_110}'', return_objects=True) gives {"value": 82461110} and 1_234.5_6
+  gives 1234.56.'
+base: 9c7c295301dd60dc47ee686b75b6dbce5f640528
+reference: 6bc1a2d25de5dd9a628ef72bef56456e2da7d93e
+grade:
+- tests/test_parse_number.py::test_parse_number
+test_files:
+- tests/test_parse_number.py
+split: training

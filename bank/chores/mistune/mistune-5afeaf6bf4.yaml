@@ -1,0 +1,16 @@
+id: mistune-5afeaf6bf4
+library: mistune
+repo: thomas-whitley/mistune
+instruction: 'In src/mistune/directives/image.py, render_block_image renders the image directive''s src
+  with escape_text(src), while the inline image renderer passes its URL through safe_url. So ".. image::
+  javascript:alert" produces an img whose src is the harmful URL. Render the src with self.safe_url(src)
+  instead, which escapes a safe URL exactly as before and turns a harmful scheme into "#harmful-link",
+  so that directive gives src="#harmful-link" and the javascript: text no longer appears in the HTML.'
+base: 067f90861088a496942f5eb43236135352b85d39
+reference: 5afeaf6bf43649c575ebf016316fb46096993ece
+grade:
+- tests/test_directives.py::TestImageDirectiveSrc::test_harmful_src_blocked
+test_files:
+- tests/test_directives.py
+- tests/test_misc.py
+split: training

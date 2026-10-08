@@ -1,0 +1,15 @@
+id: mistune-ac53009ece
+library: mistune
+repo: thomas-whitley/mistune
+instruction: 'In src/mistune/toc.py, render_toc_ul(toc) returns an empty string for an empty list, but
+  for an empty iterable that is not a list, such as a filter object that yields nothing, it returns a
+  dangling ''<ul>\n'' plus closing tags. Build the items without the opening ''<ul>\n'' and, at the end,
+  return '''' when no item was rendered; otherwise wrap the result as before, ''<ul>\n'' + items + ''</li>\n</ul>\n''.
+  So render_toc_ul(filter(lambda _: False, [])) returns ''''.'
+base: 34f5a77789a03d7a196f19ee029a3a7aea724da1
+reference: ac53009ecee7c8bd463c6bc18da885bf20a0167b
+grade:
+- tests/test_hooks.py::TestTocHook::test_render_empty_toc
+test_files:
+- tests/test_hooks.py
+split: training

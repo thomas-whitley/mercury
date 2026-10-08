@@ -1,0 +1,18 @@
+id: json_repair-8dfa5a64c1
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: 'In src/json_repair/parse_object.py, make parse_object accept more key and value pairs that
+  follow an object''s closing brace at the top level, which LLMs sometimes produce, such as ''{"key":
+  "value"}, "key2": "value2"}''. After the closing brace, and only when the parser''s context is empty
+  (self.context.empty), skip whitespace; if the next character is a comma, log it, move past it and keep
+  reading pairs into the same dict: a quoted key (parsed with parse_string in OBJECT_KEY context), a colon,
+  then a value (parse_json in OBJECT_VALUE context), separated by commas, stopping at a closing brace,
+  at anything that is not a quoted key, or when the colon is missing. A missing value becomes an empty
+  string, so repair_json(''{"key": "value"}, "key2": }'') gives ''{"key": "value", "key2": ""}''.'
+base: 0dae377b7258293014aaef83e67de6dab4a648ed
+reference: 8dfa5a64c1ecb3e38aab5c7d2e7ba7255f1e71c6
+grade:
+- tests/test_parse_object.py::test_parse_object_edge_cases
+test_files:
+- tests/test_parse_object.py
+split: training

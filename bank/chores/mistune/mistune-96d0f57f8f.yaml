@@ -1,0 +1,18 @@
+id: mistune-96d0f57f8f
+library: mistune
+repo: thomas-whitley/mistune
+instruction: In src/mistune/plugins/formatting.py, the strikethrough, mark and insert plugins find their
+  closing marker with the regexes _STRIKE_END, _MARK_END and _INSERT_END, which take quadratic time on
+  text such as "~~x~~" repeated thousands of times. Remove those regexes and pass the marker itself ("~~",
+  "==" or "^^") to _parse_to_end(inline, m, state, tok_type, marker). Add _find_end_marker(src, pos, marker),
+  which scans forward with str.find for the next marker that is not followed by a further marker character,
+  unless that is the start of another full marker, and whose preceding character is not whitespace and
+  not the marker character, or is an escaped marker character (a backslash before it that is not itself
+  escaped; add _has_odd_backslashes(src, pos) for that), and returns the index just after it, or None.
+base: 2b04d7ba341c16ac78fe82d3076bdd5c3de87c69
+reference: 96d0f57f8fe9eeb06bb4cff521962a27d7c402e7
+grade:
+- tests/test_security_formatting.py::TestFormattingSecurity::test_repeated_formatting_pairs_return_quickly
+test_files:
+- tests/test_security_formatting.py
+split: training

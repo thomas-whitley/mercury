@@ -1,0 +1,16 @@
+id: json_repair-d4b23af575
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: 'In src/json_repair/parse_object.py, when an object inside an array is missing its closing
+  brace and the next character is the array''s closing bracket, parse_object repairs it wrongly. In the
+  loop over members, after skipping a comma or quote, if the current character is "]" and ContextValues.ARRAY
+  is in self.context.context, log that the object is being closed at the array bracket, step the index
+  back by one and break, so the object ends there and the array can close. For example repair_json(''{"array":[{"key":
+  "value"], "key2": "value2"}'') gives ''{"array": [{"key": "value"}], "key2": "value2"}''.'
+base: 7a3aef95f245c14dd258b443af60a3f597e682a1
+reference: d4b23af5754974700a2d050c5b48e839c689a649
+grade:
+- tests/test_parse_object.py::test_parse_object_edge_cases
+test_files:
+- tests/test_parse_object.py
+split: training

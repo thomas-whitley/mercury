@@ -1,0 +1,17 @@
+id: json_repair-7ab1ebacd5
+library: json_repair
+repo: thomas-whitley/json_repair
+instruction: 'Python style tuples are parsed as arrays, but a tuple of booleans or None fails, such as
+  "(True, False, None)" or ''{"coords": (True, None)}''. Two changes. In src/json_repair/parse_string_helpers/parse_boolean_or_null.py,
+  parse_boolean_or_null(parser) must accept a closing parenthesis ")" after a literal, as it accepts a
+  comma, "]", "}" or whitespace. In src/json_repair/parser_parenthesized.py, top_level_parenthesized_can_start_value(parser)
+  must compare the text inside the parenthesis case insensitively, and accept "none" as well as "true",
+  "null" and "false". With return_objects=True and skip_json_loads=True, "(True, False, None)" gives [True,
+  False, None].'
+base: 1e95cbdcb054262d9ac8b39ed0a073c60a4ecd56
+reference: 7ab1ebacd57f1dbd6b411a7d9c790d8f95f136c3
+grade:
+- tests/test_parse_array.py::test_parse_array_python_tuple_literals_accept_boolean_and_null_values
+test_files:
+- tests/test_parse_array.py
+split: training

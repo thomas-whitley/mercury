@@ -1,0 +1,14 @@
+id: mistune-cff35d57e8
+library: mistune
+repo: thomas-whitley/mistune
+instruction: In src/mistune/renderers/markdown.py, MarkdownRenderer.block_quote indents the rendered children
+  with "> " and then calls rstrip("> \n"), which also strips a ">" that ends the quote's own content,
+  so "> <https://example.com>" loses its closing bracket. Instead strip only the trailing newlines from
+  the rendered children, then indent every line with "> ", and return that followed by "\n\n".
+base: ecd435a39f13bda731fa8bd40db0fa210fe3b724
+reference: cff35d57e83608a9e20a39d646f6c4de2306ed53
+grade:
+- tests/test_renderers.py::TestMarkdownRendererRoundTrip::test_block_quote_content_ending_in_gt
+test_files:
+- tests/test_renderers.py
+split: training

@@ -119,3 +119,12 @@ def test_a_branch_that_was_never_pushed_fails_without_raising(tmp_path):
 
     assert not ok
     assert detail.startswith("clone failed")
+
+
+def test_a_library_s_ignored_test_files_are_left_out_of_every_run(tmp_path):
+    path, shas = mirror(tmp_path)
+    tree = grade.checkout(path, shas["breaks_base"], tmp_path / "t")
+    quiet = grade.Library("pkg", "up/pkg", "thomas-whitley/pkg", ignore=("tests/test_core.py",))
+
+    assert grade.run_pytest(tree, PKG).returncode == 1
+    assert grade.run_pytest(tree, quiet).returncode in (0, grade.NO_TESTS_RAN)

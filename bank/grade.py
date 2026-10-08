@@ -79,7 +79,8 @@ def _pytest(work: Path, library: Library, *args: str) -> subprocess.CompletedPro
         env["PYTHONPATH"] = str(work / library.pythonpath)
     command = [
         sys.executable, "-m", "pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider",
-        "-o", "addopts=", "--rootdir=.", "--continue-on-collection-errors", *args,
+        "-o", "addopts=", "--rootdir=.", "--continue-on-collection-errors",
+        *library.pytest_args, *args,
     ]  # fmt: skip
     return subprocess.run(command, cwd=work, env=env, timeout=TEST_TIMEOUT_SECONDS, **_TEXT)
 

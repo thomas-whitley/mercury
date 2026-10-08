@@ -30,10 +30,18 @@ class Library:
     upstream: str  # owner/repo it was forked from
     repo: str  # the fork, thomas-whitley/<repo>
     pythonpath: str = ""  # "src" for a src layout, "" for the repo root
+    # Test files left out of every run: a benchmark that needs a plugin the
+    # worker image lacks, say (decision 57).
+    ignore: tuple[str, ...] = ()
+
+    @property
+    def pytest_args(self) -> tuple[str, ...]:
+        return tuple(f"--ignore={path}" for path in self.ignore)
 
     @property
     def test_command(self) -> str:
-        return f"PYTHONPATH={self.pythonpath} {PYTEST}" if self.pythonpath else PYTEST
+        command = f"PYTHONPATH={self.pythonpath} {PYTEST}" if self.pythonpath else PYTEST
+        return " ".join((command, *self.pytest_args))
 
 
 @dataclass(frozen=True)
@@ -62,7 +70,7 @@ def load_libraries(path: Path = HERE / "libraries.yaml") -> dict[str, Library]:
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     libraries = {}
     for entry in data.get("libraries") or []:
-        library = Library(**entry)
+        library = Library(**{**entry, "ignore": tuple(entry.get("ignore") or ())})
         if not library.repo.startswith(f"{OWNER}/"):
             raise ValueError(f"{library.name}: the bank runs on forks under {OWNER} only")
         libraries[library.name] = library

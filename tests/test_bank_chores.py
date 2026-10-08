@@ -110,3 +110,26 @@ def test_a_library_must_be_a_fork_under_thomas_whitley(tmp_path):
 def test_the_bank_s_own_files_load():
     assert isinstance(load_bank(), list)
     assert isinstance(load_libraries(), dict)
+
+
+def test_a_library_can_leave_test_files_out_of_its_command(tmp_path):
+    path = tmp_path / "libraries.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "libraries": [
+                    {
+                        "name": "pkg",
+                        "upstream": "up/pkg",
+                        "repo": "thomas-whitley/pkg",
+                        "ignore": ["tests/test_performance.py"],
+                    }
+                ]
+            }  # fmt: skip
+        )
+    )
+
+    library = load_libraries(path)["pkg"]
+
+    assert library.ignore == ("tests/test_performance.py",)
+    assert library.test_command.endswith(" --ignore=tests/test_performance.py")

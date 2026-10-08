@@ -23,6 +23,7 @@ from app.run_api import (
     get_run,
     list_runs,
     report_text,
+    run_calls,
     run_events,
 )
 from app.run_list import DEFAULT_LIMIT, MAX_LIMIT
@@ -126,6 +127,13 @@ def create_app() -> FastAPI:
         such as the eval runner (Phase 3 of docs/build-brief-evals.md)."""
         require_bearer_token(request)
         return await run_events(request.app.state.pool, str(run_id))
+
+    @app.get("/runs/{run_id}/calls")
+    async def run_model_calls(run_id: uuid.UUID, request: Request) -> list[dict]:
+        """A run's model calls, the newest per step, as JSON (decision 59 of
+        docs/build-brief-evals.md)."""
+        require_bearer_token(request)
+        return await run_calls(request.app.state.pool, str(run_id))
 
     app.state.mcp = mount_mcp(app)
 

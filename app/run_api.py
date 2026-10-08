@@ -28,6 +28,14 @@ _INSERT = (
     "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, status"
 )
 _EVENTS = "SELECT id, payload FROM events WHERE run_id = %s AND id > %s ORDER BY id"
+# The newest row per step: a takeover can record a step's call twice, and
+# the newer one is the call that led to the step (decision 59 of
+# docs/build-brief-evals.md).
+_CALLS = """
+SELECT DISTINCT ON (seq) seq, provider, system, prompt, reply, tokens
+FROM model_calls WHERE run_id = %s ORDER BY seq, id DESC
+"""
+_CALL_KEYS = ("seq", "provider", "system", "prompt", "reply", "tokens")
 
 
 class RunCreated(BaseModel):
@@ -189,3 +197,12 @@ async def run_events(pool, run_id: str, after: int = 0) -> list[dict]:
     async with pool.connection() as conn:
         rows = await (await conn.execute(_EVENTS, (run_id, after))).fetchall()
     return [{"id": event_id, **payload} for event_id, payload in rows]
+
+
+async def run_calls(pool, run_id: str) -> list[dict]:
+    """Every model call of a run as the model saw it and as it answered, one
+    per step, for the bank's export (bank/export.py)."""
+    await get_run(pool, run_id)
+    async with pool.connection() as conn:
+        rows = await (await conn.execute(_CALLS, (run_id,))).fetchall()
+    return [dict(zip(_CALL_KEYS, row, strict=True)) for row in rows]

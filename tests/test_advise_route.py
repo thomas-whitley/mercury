@@ -128,3 +128,36 @@ def test_a_run_s_history_is_its_events_as_json_behind_the_bearer(api, clean_db):
     assert response.status_code == 200
     [event] = response.json()
     assert (event["kind"], event["output"]["diff"]) == ("done", "+x\n")
+
+
+def calls(database_url: str, run_id: str, *rows: tuple[int, str]) -> None:
+    with psycopg.connect(database_url, autocommit=True) as conn:
+        for seq, reply in rows:
+            conn.execute(
+                "INSERT INTO model_calls (run_id, seq, provider, system, prompt, reply, tokens) "
+                "VALUES (%s, %s, 'local', 'sys', 'prompt', %s, 10)",
+                (run_id, seq, reply),
+            )
+
+
+def test_a_run_s_calls_are_the_newest_row_per_step_behind_the_bearer(api, clean_db):
+    run_id = chore(clean_db)
+    # A takeover recorded step 3 twice; the second row led to the step.
+    calls(clean_db, run_id, (2, '{"read": []}'), (3, "old"), (3, "new"))
+
+    without = httpx2.get(f"{api}/runs/{run_id}/calls")
+    response = httpx2.get(f"{api}/runs/{run_id}/calls", headers=HEADERS)
+
+    assert without.status_code == 401
+    assert response.status_code == 200
+    assert [(c["seq"], c["reply"]) for c in response.json()] == [
+        (2, '{"read": []}'),
+        (3, "new"),
+    ]
+    assert set(response.json()[0]) == {"seq", "provider", "system", "prompt", "reply", "tokens"}
+
+
+def test_the_calls_of_an_unknown_run_are_404(api, clean_db):
+    response = httpx2.get(f"{api}/runs/00000000-0000-0000-0000-000000000000/calls", headers=HEADERS)
+
+    assert response.status_code == 404

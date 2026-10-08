@@ -181,10 +181,16 @@ var configSecret = [
   }
 ]
 
+// A changed secret makes no new revision, so running replicas would keep the
+// old config. The hash is a plain value, so a config change rolls a revision.
 var configEnvironment = [
   {
     name: 'MERCURY_CONFIG_B64'
     secretRef: 'mercury-config'
+  }
+  {
+    name: 'MERCURY_CONFIG_HASH'
+    value: uniqueString(schedulerConfigB64)
   }
 ]
 

@@ -8,6 +8,7 @@ import subprocess
 
 import pytest
 
+from bank.chores import BankChore
 from evals import rescue, runner
 from evals.runner import EvalRow, EvalTask, load_rows, row_key, write_rows
 
@@ -269,3 +270,76 @@ def test_a_hint_that_is_not_text_stops_before_any_rerun(value):
 def test_a_hints_file_that_is_not_a_mapping_is_refused():
     with pytest.raises(ValueError, match="mapping"):
         _apply([failed()], ["divide/gemini/1"])
+
+
+def bank_chore(key: str, split: str) -> BankChore:
+    return BankChore(
+        key, "pkg", "thomas-whitley/pkg", f"Do {key}.", "a" * 40, "b" * 40,
+        ("t::x",), ("t.py",), split,
+    )  # fmt: skip
+
+
+def bank_row(key: str, status: str = "escalated") -> EvalRow:
+    return EvalRow(
+        key, "local", "local", f"run-{key}", status, False, 9, 1.0, 0.0,
+        "tests still failing after 3 attempts", diff="+x\n",
+    )  # fmt: skip
+
+
+def test_a_bank_brief_skips_validation_and_stops_at_25():
+    keys = [f"pkg-{n:02d}" for n in range(27)]
+    tasks = {k: bank_chore(k, "training") for k in keys}
+    tasks["pkg-v"] = bank_chore("pkg-v", "validation")
+    rows = [bank_row(k) for k in [*keys, "pkg-v"]]
+
+    text, hints = rescue.brief(rows, tasks, bank=True)
+
+    assert list(hints) == [f"{k}/local/1" for k in keys[:25]]
+    assert "- pkg-v/local/1: validation" in text
+    assert "## Left for the next brief" in text
+    assert "- pkg-26/local/1" in text
+    assert "## pkg-v/local/1" not in text
+
+
+def test_a_bank_brief_skips_a_row_already_rescued():
+    row = bank_row("pkg-1")
+    row.rescue = bank_row("pkg-1")
+
+    _, hints = rescue.brief([row], {"pkg-1": bank_chore("pkg-1", "training")}, bank=True)
+
+    assert hints == {}
+
+
+def test_a_bank_hint_for_a_validation_row_is_refused():
+    tasks = {"pkg-v": bank_chore("pkg-v", "validation")}
+
+    with pytest.raises(ValueError, match="pkg-v"):
+        rescue.check_hints([bank_row("pkg-v")], {"pkg-v/local/1": "x"}, tasks, bank=True)
+
+
+def test_more_than_25_bank_hints_are_refused():
+    keys = [f"pkg-{n:02d}" for n in range(26)]
+    tasks = {k: bank_chore(k, "training") for k in keys}
+
+    with pytest.raises(ValueError, match="25"):
+        rescue.check_hints(
+            [bank_row(k) for k in keys], {f"{k}/local/1": "x" for k in keys}, tasks, bank=True
+        )
+
+
+def test_a_bank_rescue_is_graded_by_the_grade_it_is_given():
+    row = bank_row("pkg-1", status="succeeded")
+    seen = []
+
+    def grade(branch):
+        seen.append(branch)
+        return True, ""
+
+    rescue.apply_hints(
+        [row], {"pkg-1/local/1": "Keep add."}, {"pkg-1": bank_chore("pkg-1", "training")},
+        _Api(), _GitHub(), "file:///unused", None, timeout_seconds=60, poll_seconds=0,
+        sleep=lambda s: None, bank=True, grade_for=lambda r: grade,
+    )  # fmt: skip
+
+    assert seen == ["agent/run-2"]
+    assert row.rescue.graded

@@ -24,6 +24,10 @@ with the same advice block Mercury would add. The rows are written back to
 the JSON with their rescue, and the summary beside it is rewritten. Run it
 against the Mercury that ran the rows: MERCURY_URL, MERCURY_BEARER_TOKEN and
 MERCURY_GITHUB_TOKEN are read as the runner reads them.
+
+With --bank, brief and apply take a bank results file (bank/run.py): only
+training chores are briefed, at most 25 per Claude session (decision 37), and
+a rerun is graded against its commit's tests (bank/grade.py).
 """
 
 import argparse
@@ -38,6 +42,8 @@ import httpx2
 import yaml
 
 from app.advice_text import advice_block
+from bank.chores import TRAINING, load_bank, load_libraries
+from bank.grade import ensure_mirror, grade_branch
 from evals.runner import (
     FIXTURE_URL,
     HERE,
@@ -58,6 +64,8 @@ from evals.runner import (
 WRONG_PULL = "It opened a pull request; a check outside the repo's tests found it wrong."
 STAYED_RED = "It did not leave a change with the repo's own tests green."
 FENCE = "````"
+# One Claude session writes at most this many bank hints (decision 37).
+MAX_RESCUES = 25
 
 
 def rescuable(row: EvalRow) -> bool:
@@ -73,8 +81,20 @@ def _reason(row: EvalRow) -> str:
     return STAYED_RED
 
 
-def brief(rows: list[EvalRow], tasks: dict[str, EvalTask]) -> tuple[str, dict[str, str]]:
-    """The brief's Markdown, and a blank hint for each row it asks about."""
+def _briefable(row: EvalRow, tasks: dict, bank: bool) -> bool:
+    """A bank row is briefed only once, and only from the training split
+    (decision 37); an eval row whenever it failed in a way a hint might fix."""
+    if not rescuable(row):
+        return False
+    return not bank or (row.rescue is None and tasks[row.task].split == TRAINING)
+
+
+def brief(
+    rows: list[EvalRow], tasks: dict[str, EvalTask], *, bank: bool = False
+) -> tuple[str, dict[str, str]]:
+    """The brief's Markdown, and a blank hint for each row it asks about. A
+    bank brief asks about at most MAX_RESCUES rows; the rest wait for the
+    next one."""
     lines = [
         "# Rescue brief",
         "",
@@ -84,8 +104,17 @@ def brief(rows: list[EvalRow], tasks: dict[str, EvalTask]) -> tuple[str, dict[st
         "should not guess at it.",
     ]
     hints: dict[str, str] = {}
+    validation, left = [], []
     for row in rows:
         if not rescuable(row):
+            continue
+        if bank and tasks[row.task].split != TRAINING:
+            validation.append(row)
+            continue
+        if not _briefable(row, tasks, bank):
+            continue
+        if bank and len(hints) >= MAX_RESCUES:
+            left.append(row)
             continue
         key = row_key(row)
         hints[key] = ""
@@ -117,9 +146,13 @@ def brief(rows: list[EvalRow], tasks: dict[str, EvalTask]) -> tuple[str, dict[st
                 FENCE,
             ]
     skipped = [row for row in rows if not row.graded and not rescuable(row)]
-    if skipped:
+    if skipped or validation:
         lines += ["", "## Not rescued", "", "These failed for a reason no hint can fix.", ""]
         lines += [f"- {row_key(row)}: {row.status}" for row in skipped]
+        lines += [f"- {row_key(row)}: validation" for row in validation]
+    if left:
+        lines += ["", "## Left for the next brief", ""]
+        lines += [f"- {row_key(row)}" for row in left]
     return "\n".join(lines) + "\n", hints
 
 
@@ -127,7 +160,9 @@ def table(paths: list[Path]) -> str:
     return summarise([row for path in paths for row in load_rows(path)])
 
 
-def check_hints(rows: list[EvalRow], hints: dict[str, str]) -> None:
+def check_hints(
+    rows: list[EvalRow], hints: dict[str, str], tasks: dict | None = None, *, bank: bool = False
+) -> None:
     """The hints file must map briefed rows to text, before anything is
     rerun. YAML reads an unquoted no, 1.5 or a date as something else."""
     if not isinstance(hints, dict):
@@ -135,15 +170,21 @@ def check_hints(rows: list[EvalRow], hints: dict[str, str]) -> None:
     for key, value in hints.items():
         if value is not None and not isinstance(value, str):
             raise ValueError(f"the hint for {key} is not text; put it in quotes")
-    known = {row_key(row) for row in rows if rescuable(row)}
+    known = {row_key(row) for row in rows if _briefable(row, tasks or {}, bank)}
     unknown = sorted(set(hints) - known)
     if unknown:
         raise ValueError(f"no failed row is called {unknown[0]}; check the hints file")
+    written = sum(bool((value or "").strip()) for value in hints.values())
+    if bank and written > MAX_RESCUES:
+        raise ValueError(
+            f"at most {MAX_RESCUES} bank hints per Claude session; this file has {written}"
+        )
 
 
 def _rescue_mercury(
-    row, task, hint, api, github, clone_base, token, *, timeout_seconds, poll_seconds, sleep, clock
-) -> EvalRow:
+    row, task, hint, api, github, clone_base, token, *, timeout_seconds, poll_seconds, sleep, clock,
+    grade=None,
+) -> EvalRow:  # fmt: skip
     response = api.post(f"/runs/{row.run_id}/advise", json={"hint": hint, "provider": row.provider})
     if response.status_code != 201:
         return EvalRow(
@@ -153,6 +194,7 @@ def _rescue_mercury(
     rescued = follow(
         api, github, task, row.provider, response.json()["id"], clone_base, token,
         timeout_seconds=timeout_seconds, poll_seconds=poll_seconds, sleep=sleep, clock=clock,
+        grade=grade,
     )  # fmt: skip
     rescued.repeat = row.repeat
     return rescued
@@ -187,11 +229,14 @@ def apply_hints(
     clock: Callable[[], float] = time.monotonic,
     delegate=None,
     clone_url: str = FIXTURE_URL,
+    bank: bool = False,
+    grade_for: Callable[[EvalRow], Callable[[str], tuple[bool, str]]] | None = None,
 ) -> list[EvalRow]:
     """Rerun each row that has a non blank hint and record the rerun on it.
     An EvalAborted stops the pass; the rows done so far keep their rescue, and
-    a second apply skips them, so each row gets one hint (decision 37)."""
-    check_hints(rows, hints)
+    a second apply skips them, so each row gets one hint (decision 37).
+    grade_for gives a bank row's rerun its grader (bank/grade.py)."""
+    check_hints(rows, hints, tasks, bank=bank)
     for row in rows:
         hint = (hints.get(row_key(row)) or "").strip()
         if not hint or not rescuable(row) or row.rescue is not None:
@@ -206,7 +251,7 @@ def apply_hints(
             run = partial(
                 _rescue_mercury, row, task, hint, api, github, clone_base, token,
                 timeout_seconds=timeout_seconds, poll_seconds=poll_seconds, sleep=sleep,
-                clock=clock,
+                clock=clock, grade=grade_for(row) if grade_for else None,
             )  # fmt: skip
         row.rescue = contained(run, row.task, row.provider, token)
         row.rescue_hint = hint
@@ -218,10 +263,12 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives a l
     commands = parser.add_subparsers(dest="command", required=True)
     brief_cmd = commands.add_parser("brief", help="write the brief and a blank hints file")
     brief_cmd.add_argument("results", type=Path)
+    brief_cmd.add_argument("--bank", action="store_true", help="a bank results file")
     apply_cmd = commands.add_parser("apply", help="send the hints and grade the reruns")
     apply_cmd.add_argument("results", type=Path)
     apply_cmd.add_argument("hints", type=Path)
     apply_cmd.add_argument("--timeout", type=float, default=900.0)
+    apply_cmd.add_argument("--bank", action="store_true", help="a bank results file")
     table_cmd = commands.add_parser("table", help="one summary of several results files")
     table_cmd.add_argument("results", type=Path, nargs="+")
     args = parser.parse_args(argv)
@@ -231,10 +278,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives a l
         return 0
 
     rows = load_rows(args.results)
-    tasks = {task.id: task for task in load_tasks(HERE / "chores")}
+    chores = load_bank() if args.bank else load_tasks(HERE / "chores")
+    tasks = {task.id: task for task in chores}
     stem = args.results.with_suffix("")
     if args.command == "brief":
-        text, hints = brief(rows, tasks)
+        text, hints = brief(rows, tasks, bank=args.bank)
         Path(f"{stem}.rescue.md").write_text(text, encoding="utf-8")
         Path(f"{stem}.hints.yaml").write_text(
             yaml.safe_dump(hints, sort_keys=False, allow_unicode=True), encoding="utf-8"
@@ -256,10 +304,22 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives a l
             headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
             timeout=30,
         )
+    grade_for = None
+    if args.bank:
+        libraries = load_libraries()
+        mirrors = {n: ensure_mirror(lib, token=token) for n, lib in libraries.items()}
+
+        def grade_for(row: EvalRow):
+            chore = tasks[row.task]
+            return partial(
+                grade_branch, chore, libraries[chore.library], mirrors[chore.library],
+                "https://github.com", token,
+            )  # fmt: skip
+
     try:
         apply_hints(
             rows, hints, tasks, api, github, "https://github.com", token,
-            timeout_seconds=args.timeout,
+            timeout_seconds=args.timeout, bank=args.bank, grade_for=grade_for,
         )  # fmt: skip
     except EvalAborted as stop:
         print(stop, file=sys.stderr)

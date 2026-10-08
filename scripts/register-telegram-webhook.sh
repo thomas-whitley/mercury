@@ -55,5 +55,6 @@ import json, sys
 info = json.load(sys.stdin).get("result", {})
 print("url:", info.get("url"))
 print("pending updates:", info.get("pending_update_count"))
+print("allowed updates:", info.get("allowed_updates"))
 if info.get("last_error_message"):
     print("last error:", info["last_error_message"])'

@@ -127,17 +127,30 @@ def test_the_second_failed_advised_rerun_is_marked_for_a_claude_session(migrated
     assert flags == {one: False, two: True}
 
 
-def test_an_eval_chore_that_opened_a_pull_request_can_be_advised(migrated_db):
-    run_id = escalated_chore(migrated_db, "x", source="eval")
+@pytest.mark.parametrize("graded_elsewhere", ["eval", "bank"])
+def test_a_quiet_chore_that_opened_a_pull_request_can_be_advised(migrated_db, graded_elsewhere):
+    run_id = escalated_chore(migrated_db, "x", source=graded_elsewhere)
     migrated_db.execute("UPDATE runs SET status = 'succeeded' WHERE id = %s", (run_id,))
 
     new_id = advise(migrated_db, run_id, "Name it divide.", "api", REPOS)
 
     assert run_row(migrated_db, new_id)["source_run_id"] == run_id
+    assert run_row(migrated_db, new_id)["source"] == graded_elsewhere
+
+
+def test_a_bank_chore_rerun_after_a_wrong_pull_request_stays_on_the_home_rung(migrated_db):
+    run_id = escalated_chore(migrated_db, "x", source="bank")
+    migrated_db.execute(
+        "UPDATE runs SET status = 'succeeded', provider = 'local' WHERE id = %s", (run_id,)
+    )
+
+    new_id = advise(migrated_db, run_id, "Keep the old branch.", "api", REPOS)
+
+    assert run_row(migrated_db, new_id)["provider"] == "local"
 
 
 def test_a_succeeded_chore_that_is_not_an_eval_chore_is_still_refused(migrated_db):
-    run_id = escalated_chore(migrated_db, "x", source="bank")
+    run_id = escalated_chore(migrated_db, "x", source="api")
     migrated_db.execute("UPDATE runs SET status = 'succeeded' WHERE id = %s", (run_id,))
 
     with pytest.raises(AdviceRefused, match="escalated"):

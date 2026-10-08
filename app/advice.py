@@ -9,14 +9,16 @@ them, is the one advising. A chore takes at most MAX_ADVISED advised reruns;
 when the last of them escalates too, it is marked needs_claude and advise
 refuses another.
 
-An eval chore that opened a pull request which then failed its hidden grade
-can be advised too (decision 47 of docs/build-brief-evals.md). The rerun of a
-quiet chore (eval, bank) keeps its source, so it tells nobody either, and the
-caller may name the rerun's provider (decision 48).
+An eval or bank chore that opened a pull request which then failed its
+hidden grade can be advised too (decisions 47 and 53 of
+docs/build-brief-evals.md). The rerun of a quiet chore (eval, bank) keeps its
+source, so it tells nobody either, and the caller may name the rerun's
+provider (decision 48).
 
 An advised rerun is a run with a hint whose source run ended escalated, or
-succeeded as such an eval chore. An outage retry (app/outage.py) copies the
-hint too, but comes from a run that ended in error, so it is not counted.
+succeeded as such an eval or bank chore. An outage retry (app/outage.py)
+copies the hint too, but comes from a run that ended in error, so it is not
+counted.
 """
 
 import psycopg
@@ -30,8 +32,8 @@ from app.tasks import TASK_TYPES
 MAX_ADVISED = 2
 MAX_HINT_CHARS = 2000
 # A chore that opened a pull request is done unless its source grades it
-# against a test it never saw.
-_GRADED_ELSEWHERE = ("eval",)
+# against a test it never saw (decisions 47 and 53 of docs/build-brief-evals.md).
+_GRADED_ELSEWHERE = ("eval", "bank")
 
 _RUN = "SELECT type, status, task, repo, base_sha, provider, source FROM runs WHERE id = %s"
 _NEWER = "SELECT count(*) FROM runs WHERE source_run_id = %s"

@@ -12,7 +12,7 @@ def advice_block(hint: str | None, output: dict) -> str:
     block = f"\n\nThe owner's hint: {hint}" if hint else ""
     diff, test_output = output.get("diff") or "", output.get("test_output") or ""
     if diff.strip() and output.get("status") == "succeeded":
-        # An eval chore whose pull request failed a grade it never saw.
+        # An eval or bank chore whose pull request failed a grade it never saw.
         block += (
             "\n\nAn earlier attempt at this chore passed the repository's tests and opened a "
             "pull request, but a check outside those tests found it wrong. "

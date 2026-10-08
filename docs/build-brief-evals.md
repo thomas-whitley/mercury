@@ -1,6 +1,6 @@
 # Build brief: Mercury as a cheap task runner, with evals and an escalation ladder
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement Phase 1 task by task (Thomas chose native execution, then one review of the whole branch). Steps use checkbox (`- [ ]`) syntax for tracking. Phase 2 was turned into Tasks 8 to 18 on 2026-10-07 and is done and live at `f453720` the same day. Phases 3, 4 and 5 are still specs, not tasks: each one is turned into tasks in its own session, after the phase before it has landed, except that Phase 5's part 5a comes before Phase 3. Part 5a was turned into Tasks 19 to 27 on 2026-10-07 and built the same day (live at `7ec6995`); by decision 46 the local rung runs in local compose, not live. Phase 3 was turned into Tasks 28 to 35 on 2026-10-07 (decisions 47 to 52) and is done and live at `dd2e934` (2026-10-08; the delegate columns ran 1 repeat, see `docs/handoff.md`). Part 5b is next.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement Phase 1 task by task (Thomas chose native execution, then one review of the whole branch). Steps use checkbox (`- [ ]`) syntax for tracking. Phase 2 was turned into Tasks 8 to 18 on 2026-10-07 and is done and live at `f453720` the same day. Phases 3, 4 and 5 are still specs, not tasks: each one is turned into tasks in its own session, after the phase before it has landed, except that Phase 5's part 5a comes before Phase 3. Part 5a was turned into Tasks 19 to 27 on 2026-10-07 and built the same day (live at `7ec6995`); by decision 46 the local rung runs in local compose, not live. Phase 3 was turned into Tasks 28 to 35 on 2026-10-07 (decisions 47 to 52) and is done and live at `dd2e934` (2026-10-08; the delegate columns ran 1 repeat, see `docs/handoff.md`). Part 5b was turned into Tasks 36 to 50 on 2026-10-08 (decisions 53 to 61), the pilot first; the full bank is detailed after the pilot.
 
 **Goal:** Mercury completes well defined chores on free models, proves how often it gets them right with tests the model never saw, and escalates what it cannot fix to Thomas and then to a Claude session.
 
@@ -3317,7 +3317,7 @@ The measurement in decision 21, then the Funnel and Caddy setup on the desktop w
 
 ### 5b: the bank
 
-The library shortlist (decision 31), the forks, a miner that turns a commit into a chore file in the same shape as `evals/chores/` plus `base` and `reference`, the gate, the split, `queue-bank.ps1`, the rescue script and the example export. The pilot (decision 35) first.
+The library shortlist (decision 31), the forks, a miner that turns a commit into a chore file in the same shape as `evals/chores/` plus `base` and `reference`, the gate, the split, `queue-bank.ps1`, the rescue script and the example export. The pilot (decision 35) first. Detailed into Tasks 36 to 50 under Part 5b, as tasks below, with decisions 53 to 61.
 
 ### 5c: memory
 
@@ -4326,6 +4326,2293 @@ Set the variable with `gh variable set LOCAL_MODEL_URL -R thomas-whitley/mercury
 - [ ] **Step 1: Handoff.** A dated section at the top of `docs/handoff.md`: the live `PUBLIC_SHA`, the Task 25 numbers (model, pass count, unusable replies, VRAM used), the Funnel address's shape without the tailnet name, the Step 8 smoke results, and that Phase 3 is next with a `local` column, detailed into tasks in its own session on Opus. Mark part 5a done in this brief's header.
 
 - [ ] **Step 2: Commit.** `Hand over part 5a: the home model is a live rung and measured at <n> of 11`.
+
+### Part 5b decisions (2026-10-08)
+
+Settled with Thomas on 2026-10-08 while detailing part 5b on Opus (53 and 54 by question, the rest follow from the code and decisions 30 to 38); do not re-ask them.
+
+53. **A bank chore whose pull request failed its grade can be advised,** as an eval chore can (decision 47). `_GRADED_ELSEWHERE` in `app/advice.py` becomes `("eval", "bank")`. In Phase 3, 3 of `local`'s 9 first failures were wrong pull requests, so without this the rescue would see escalations only.
+54. **The bank is files in the repo.** One YAML file per chore under `bank/chores/<library>/<id>.yaml`, committed and public, holding the instruction, the base and reference shas, the grade test ids, the commit's test files and the split. The runs and their `model_calls` live in the compose Postgres (decision 46). The bank's results files go in `bank/results/` and are committed, as `evals/results/` are. Exported training examples go in `bank/data/`, which is gitignored, and are exported again after every batch, so a lost compose volume costs at most one batch. They are published in 5d (decision 42).
+55. **How a bank chore is graded.** The grade is the set of pytest node ids, in the test files the commit changed, that pass on the reference and fail on the base with the reference's versions of those test files copied over it. A test file that cannot import on the base (a new module, a new name) makes its ids fail there, so they belong to the grade. A branch is graded like an eval branch: every test id the base has is still there, its own suite passes, then the reference's test files are copied over it and every grade id must pass. The gate (decision 33) also needs the base suite green in under 60 seconds, the reference suite green, and the grade ids passing twice on the reference, so a flaky test never becomes a grade. Pytest runs every library, whether its tests are written for pytest or unittest.
+56. **A commit fits one reply or it is not mined.** The `local` rung has a 120 second timeout and 8,192 output tokens (decision 23), and a 7B model on the 4060 writes roughly 40 tokens a second, so a reply is held to about 3,500 tokens. A candidate commit changes only `.py` files and docs, changes 1 to 3 source files and at least one test file, and its changed source files total at most 12,000 characters at the reference, each at most 12,000 at the base (`MAX_REPLY_CHARS`). The instruction asks for the source change only, so neither the model nor a reference example rewrites a test file.
+57. **Library criteria, one addition to decision 31.** No runtime dependency outside the standard library, and tests that need nothing but pytest or unittest, because a chore's test command runs in the worker image's own virtualenv (Python 3.12 with pytest). The test command is `python -m pytest -q -p no:cacheprovider -o addopts=`, with `PYTHONPATH=src` in front for a `src` layout, written into both `bank/libraries.yaml` and `local/mercury.compose.yaml`.
+58. **The bank's tools run in WSL, and `local/queue-bank.ps1` wraps them.** The gate and the grader run each library's tests on Linux, as the worker does. Correction to decision 36: the script sets no `OLLAMA_KEEP_ALIVE`. That variable belongs to the Ollama server, and every request resets its timer to the server's default of 5 minutes anyway, which back to back chores never reach. The script unloads the model when the batch ends (`keep_alive: 0`), so the GPU is free for games.
+59. **One training example per training chore,** from the first of these that exists: a run that passed unaided (`self`), a rerun that passed after one hint (`rescued`), or the commit itself (`reference`). Self and rescued examples are the run's own recorded calls, read through a new `GET /runs/{id}/calls` that keeps the newest row per step (a takeover can record a step twice): the first call is the read turn and the last is the edit turn that went green. A rescued example's prompts have the advice block taken out, so neither the hint nor the earlier attempt's diff remains, and the example is dropped for a reference one if the hint still appears anywhere. A reference example is built with the same prompt functions the chore serves (`app/chore_prompts.py`): the read turn names the changed source files and the source modules the commit's tests import, at most 10, and the edit turn replies with the reference's full source files and the commit's subject as the summary.
+60. **Instructions are written by a Claude session from a brief.** `python -m bank.mine gate` writes a brief of every gated commit (its message, its source diff, its test diff and its grade ids) and a blank instructions file. The Claude session writes one paragraph per chore, at most 1,500 characters, naming every module, function, class, method, parameter and error message the tests rely on, exactly as the reference spells them, and never naming or describing a test. `python -m bank.mine write` refuses, before writing any chore, an instruction that contains a grade test's name, a test class's name or a test file's name.
+61. **The pilot's training run proves the pipe, not the model.** It trains one epoch on the pilot's examples at a sequence length of 8,192 tokens, drops and counts any longer example, exports the tag `mercury-local:pilot`, and checks it answers one training chore in the reply format. No figure from the pilot tag is published or measured on validation or on the 11, and decision 43 still holds.
+
+### Part 5b, as tasks
+
+Detailed into tasks on 2026-10-08, on Opus. Execute with superpowers:executing-plans and superpowers:test-driven-development, one task per commit, the full suite, `ruff check` and `ruff format --check` green before each commit (`.superpowers/t.sh`, `.superpowers/lint.sh`). Tasks 36 to 44 are code and their tests run in CI with local git repos only. Task 45 deploys. Tasks 46 to 49 are the pilot (decision 35), on the desktop. Task 50 hands over. The full bank, about 250 more chores from the other 2 to 4 libraries, is detailed after the pilot's handoff, in the light of what it found.
+
+**5b Global Constraints.** Everything under Global Constraints, 5a and Phase 3 above still applies. In addition:
+
+- A run whose source is not `bank` takes exactly the path it takes today. The only shared changes are `_GRADED_ELSEWHERE`, a `grade` argument on the runner's `follow` and `run_one` whose default is today's grading, and the prompt functions moved into `app/chore_prompts.py` with the same text.
+- Nothing from a reference commit reaches the model or the rescuer except the instruction written from it: not its diff, its tests, its message, nor any output of grading it.
+- No training example comes from a validation chore, from the 11 eval chores, or from `thomas-whitley/mercury-fixture`. A rescued example carries neither the hint nor the earlier attempt's diff.
+- Chore branches go only to forks under `thomas-whitley`. Every pull request and branch a bank run causes is closed and deleted by the runner. Nothing is pushed upstream.
+- `bank/data/`, `bank/work/` and `train/out/` are gitignored. Results, briefs and hints are grepped for the `.env` token values before they are committed.
+- `train/` is its own uv project and stays out of CI.
+
+**5b Review Focus.**
+
+- A grade id with brackets or a class in it (`tests/test_core.py::TestSub::test_neg`, `tests/test_core.py::test_many[1-2]`) must be selected and recognised exactly, on the reference, on the base and on a branch. Test in Task 40.
+- A commit that adds a test file importing a module the base does not have is a valid chore: the base's collection error makes those ids fail there, and the gate keeps them rather than crashing or dropping the commit. Test in Task 40.
+- A gated commit whose grade passes on its base measures nothing and is dropped (the Phase 5 Review Focus). Test in Task 40.
+- A rescued example must contain neither the hint nor the earlier diff, and a validation chore is never exported, even with a graded row (the Phase 5 Review Focus). Test in Task 44.
+- A bank row that ended `error`, `timeout` or `refused` (Ollama stopped, compose down, the daily cap) is queued again by the next batch, and a chore with a row that has the model's answer is never queued twice. Test in Task 42.
+
+---
+
+### Task 36: A bank chore whose pull request failed its grade can be advised
+
+**Files:**
+- Modify: `app/advice.py` (`_GRADED_ELSEWHERE`, the module docstring), `app/advice_text.py` (the comment on the succeeded branch)
+- Test: `tests/test_advice.py`
+
+**Interfaces:**
+- Produces: `advise` accepts a `succeeded` run whose source is `eval` or `bank`. Nothing else changes.
+
+- [ ] **Step 1: Write the failing tests** in `tests/test_advice.py`. Parametrize the existing `test_an_eval_chore_that_opened_a_pull_request_can_be_advised` over the source:
+
+```python
+@pytest.mark.parametrize("graded_elsewhere", ["eval", "bank"])
+def test_a_quiet_chore_that_opened_a_pull_request_can_be_advised(migrated_db, graded_elsewhere):
+    run_id = escalated_chore(migrated_db, "x")
+    migrated_db.execute(
+        "UPDATE runs SET status = 'succeeded', source = %s WHERE id = %s",
+        (graded_elsewhere, run_id),
+    )
+
+    new_id = advise(migrated_db, run_id, "Name it divide.", "api", REPOS)
+
+    assert run_row(migrated_db, new_id)["source_run_id"] == run_id
+    assert run_row(migrated_db, new_id)["source"] == graded_elsewhere
+
+
+def test_a_bank_chore_rerun_after_a_wrong_pull_request_stays_on_the_home_rung(migrated_db):
+    run_id = escalated_chore(migrated_db, "x")
+    migrated_db.execute(
+        "UPDATE runs SET status = 'succeeded', source = 'bank', provider = 'local' "
+        "WHERE id = %s",
+        (run_id,),
+    )
+
+    new_id = advise(migrated_db, run_id, "Keep the old branch.", "api", REPOS)
+
+    assert run_row(migrated_db, new_id)["provider"] == "local"
+```
+
+Rename the old test rather than keeping both. `test_a_succeeded_chore_that_is_not_an_eval_chore_is_still_refused` stays as it is (source `api`, refused).
+
+- [ ] **Step 2: Run them and see them fail.** `.superpowers/t.sh tests/test_advice.py` fails on the `bank` case with `is succeeded, not escalated`.
+
+- [ ] **Step 3: Implement.** In `app/advice.py`:
+
+```python
+# A chore that opened a pull request is done unless its source grades it
+# against a test it never saw (decisions 47 and 53 of docs/build-brief-evals.md).
+_GRADED_ELSEWHERE = ("eval", "bank")
+```
+
+In the module docstring, the paragraph that begins `An eval chore that opened a pull request` becomes `An eval or bank chore that opened a pull request which then failed its hidden grade can be advised too (decisions 47 and 53 of docs/build-brief-evals.md).`, and the last paragraph's `succeeded as such an eval chore` becomes `succeeded as such an eval or bank chore`. In `app/advice_text.py` the comment `# An eval chore whose pull request failed a grade it never saw.` becomes `# An eval or bank chore whose pull request failed a grade it never saw.`
+
+- [ ] **Step 4: Full suite, lint, commit** `Advise a bank chore whose pull request failed its grade, as an eval chore is`.
+
+### Task 37: `GET /runs/{id}/calls`
+
+The export (Task 44) reads a run's model calls from the compose Mercury over HTTP, as the runner reads its history.
+
+**Files:**
+- Modify: `app/run_api.py`, `app/main.py`
+- Test: `tests/test_advise_route.py` (it has the `api` fixture, `HEADERS` and the `chore` helper)
+
+**Interfaces:**
+- Produces: `GET /runs/{run_id}/calls`, behind the bearer, returning `[{"seq": int, "provider": str | None, "system": str, "prompt": str, "reply": str, "tokens": int}, ...]` ordered by `seq`, one per `seq`, the newest row of each. 401 without the bearer, 404 for an unknown run. `run_calls(pool, run_id) -> list[dict]` in `app/run_api.py`.
+
+- [ ] **Step 1: Write the failing tests** in `tests/test_advise_route.py`:
+
+```python
+def calls(database_url: str, run_id: str, *rows: tuple[int, str]) -> None:
+    with psycopg.connect(database_url, autocommit=True) as conn:
+        for seq, reply in rows:
+            conn.execute(
+                "INSERT INTO model_calls (run_id, seq, provider, system, prompt, reply, tokens) "
+                "VALUES (%s, %s, 'local', 'sys', 'prompt', %s, 10)",
+                (run_id, seq, reply),
+            )
+
+
+def test_a_run_s_calls_are_the_newest_row_per_step_behind_the_bearer(api, clean_db):
+    run_id = chore(clean_db)
+    # A takeover recorded step 3 twice; the second row led to the step.
+    calls(clean_db, run_id, (2, '{"read": []}'), (3, "old"), (3, "new"))
+
+    without = httpx2.get(f"{api}/runs/{run_id}/calls")
+    response = httpx2.get(f"{api}/runs/{run_id}/calls", headers=HEADERS)
+
+    assert without.status_code == 401
+    assert response.status_code == 200
+    assert [(c["seq"], c["reply"]) for c in response.json()] == [
+        (2, '{"read": []}'),
+        (3, "new"),
+    ]
+    assert set(response.json()[0]) == {"seq", "provider", "system", "prompt", "reply", "tokens"}
+
+
+def test_the_calls_of_an_unknown_run_are_404(api, clean_db):
+    response = httpx2.get(
+        f"{api}/runs/00000000-0000-0000-0000-000000000000/calls", headers=HEADERS
+    )
+
+    assert response.status_code == 404
+```
+
+- [ ] **Step 2: Run them and see them fail** (404 from the router for the first, since the route does not exist, and the assertion on 401 fails).
+
+- [ ] **Step 3: Implement.** In `app/run_api.py`, beside `_EVENTS`:
+
+```python
+# The newest row per step: a takeover can record a step's call twice, and
+# the newer one is the call that led to the step (decision 59 of
+# docs/build-brief-evals.md).
+_CALLS = """
+SELECT DISTINCT ON (seq) seq, provider, system, prompt, reply, tokens
+FROM model_calls WHERE run_id = %s ORDER BY seq, id DESC
+"""
+_CALL_KEYS = ("seq", "provider", "system", "prompt", "reply", "tokens")
+```
+
+and beside `run_events`:
+
+```python
+async def run_calls(pool, run_id: str) -> list[dict]:
+    """Every model call of a run as the model saw it and as it answered, one
+    per step, for the bank's export (bank/export.py)."""
+    await get_run(pool, run_id)
+    async with pool.connection() as conn:
+        rows = await (await conn.execute(_CALLS, (run_id,))).fetchall()
+    return [dict(zip(_CALL_KEYS, row, strict=True)) for row in rows]
+```
+
+In `app/main.py`, after the history route, importing `run_calls`:
+
+```python
+    @app.get("/runs/{run_id}/calls")
+    async def run_model_calls(run_id: uuid.UUID, request: Request) -> list[dict]:
+        """A run's model calls, the newest per step, as JSON (decision 59 of
+        docs/build-brief-evals.md)."""
+        require_bearer_token(request)
+        return await run_calls(request.app.state.pool, str(run_id))
+```
+
+- [ ] **Step 4: Full suite, lint, commit** `Read a run's model calls from GET /runs/{id}/calls, the newest per step`.
+
+### Task 38: The chore's prompts live in one module
+
+A reference example must be built from the text a chore serves, and `app/repo_chore.py` cannot be imported outside Linux (`pwd`). This moves the read prompt, the edit prompt, the tree listing and the file reading into `app/chore_prompts.py`, with the same text. It is a refactor: no prompt changes by a character.
+
+**Files:**
+- Create: `app/chore_prompts.py`, `tests/test_chore_prompts.py`
+- Modify: `app/repo_chore.py` (`_run`, `_read_files`, the constants and `SYSTEM`)
+- Test: `tests/test_repo_chore.py`
+
+**Interfaces:**
+- Produces, in `app/chore_prompts.py`: `SYSTEM: str`, `MAX_TREE_ENTRIES = 500`, `MAX_FILES_READ = 10`, `MAX_FILE_CHARS = 20_000`, `tree_listing(tree: list[str]) -> str`, `read_prompt(instruction: str, advice: str, listing: str) -> str`, `edit_prompt(instruction: str, advice: str, listing: str, shown: dict[str, str]) -> str`, `shown_files(root: Path, paths: list[str]) -> dict[str, str]`. `app/repo_chore.py` still exports `SYSTEM`, `MAX_FILES_READ`, `MAX_FILE_CHARS` and `MAX_TREE_ENTRIES` by importing them, so existing imports keep working.
+
+- [ ] **Step 1: Write the failing tests.** `tests/test_chore_prompts.py`:
+
+```python
+from app.chore_prompts import (
+    MAX_FILE_CHARS,
+    MAX_TREE_ENTRIES,
+    edit_prompt,
+    read_prompt,
+    shown_files,
+    tree_listing,
+)
+
+
+def test_a_long_tree_is_cut_with_a_count():
+    listing = tree_listing([f"f{i}.py" for i in range(MAX_TREE_ENTRIES + 3)])
+
+    assert listing.endswith("\n... and 3 more")
+    assert listing.count("\n") == MAX_TREE_ENTRIES
+
+
+def test_the_read_prompt_asks_for_files_by_name():
+    prompt = read_prompt("Add sub.", "", "pkg/core.py")
+
+    assert prompt == (
+        "Instruction:\nAdd sub.\n\nFiles in the repository:\npkg/core.py\n\n"
+        'Reply {"read": ["path", ...]} naming up to 10 files you need to see.'
+    )
+
+
+def test_the_edit_prompt_shows_each_file_and_says_none_when_empty():
+    shown = edit_prompt("Add sub.", "", "pkg/core.py", {"pkg/core.py": "x = 1\n"})
+
+    assert "Contents:\n=== pkg/core.py ===\nx = 1\n\n\n" in shown
+    assert "Contents:\n(none)" in edit_prompt("Add sub.", "", "pkg/core.py", {})
+
+
+def test_files_are_shown_cut_to_the_limit_and_missing_ones_skipped(tmp_path):
+    (tmp_path / "big.py").write_text("x" * (MAX_FILE_CHARS + 5))
+
+    shown = shown_files(tmp_path, ["big.py", "gone.py"])
+
+    assert list(shown) == ["big.py"]
+    assert len(shown["big.py"]) == MAX_FILE_CHARS
+```
+
+In `tests/test_repo_chore.py`, after `test_every_model_call_is_recorded_with_its_prompt_and_reply`, a test that ties the served text to the functions:
+
+```python
+def test_the_recorded_prompts_are_the_ones_chore_prompts_builds(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = chore_run(migrated_db)
+    run_repo_chore(
+        migrated_db, run_id, StubModel(replies=[pick("calc.py"), change(GOOD_CALC)]),
+        setup(tmp_path, github), worker_id=WORKER,
+    )  # fmt: skip
+    work = tmp_path / "check"
+    git("clone", "-q", str(remote), str(work), cwd=tmp_path)
+    listing = tree_listing(git("ls-files", cwd=work).splitlines())
+
+    prompts = [
+        row[0]
+        for row in migrated_db.execute(
+            "SELECT prompt FROM model_calls WHERE run_id = %s ORDER BY seq", (run_id,)
+        ).fetchall()
+    ]
+
+    assert prompts[0] == read_prompt("Add subtract to calc.py", "", listing)
+    assert prompts[1] == edit_prompt(
+        "Add subtract to calc.py", "", listing, shown_files(work, ["calc.py"])
+    )
+```
+
+`git` in that file returns the command's stdout; if it returns `None`, use `subprocess.run(..., capture_output=True, text=True).stdout` for the `ls-files` call.
+
+- [ ] **Step 2: Run them and see them fail** (`ModuleNotFoundError: app.chore_prompts`).
+
+- [ ] **Step 3: Implement.** `app/chore_prompts.py`:
+
+```python
+"""The prompts a repo chore serves its model (app/repo_chore.py). They live
+here, in a module with nothing POSIX only, so the bank's export
+(bank/export.py) builds a reference example from the same text the model is
+served (decisions 28 and 59 of docs/build-brief-evals.md). The retry prompts,
+which only a run produces, stay in app/repo_chore.py."""
+
+from pathlib import Path
+
+MAX_TREE_ENTRIES = 500
+MAX_FILES_READ = 10
+MAX_FILE_CHARS = 20_000
+
+SYSTEM = """You change a git repository to carry out one instruction from its owner. \
+Answer with a single JSON object and nothing else."""
+
+
+def tree_listing(tree: list[str]) -> str:
+    listing = "\n".join(tree[:MAX_TREE_ENTRIES])
+    if len(tree) > MAX_TREE_ENTRIES:
+        listing += f"\n... and {len(tree) - MAX_TREE_ENTRIES} more"
+    return listing
+
+
+def read_prompt(instruction: str, advice: str, listing: str) -> str:
+    return (
+        f"Instruction:\n{instruction}{advice}\n\nFiles in the repository:\n{listing}\n\n"
+        f'Reply {{"read": ["path", ...]}} naming up to {MAX_FILES_READ} files you need to see.'
+    )
+
+
+def edit_prompt(instruction: str, advice: str, listing: str, shown: dict[str, str]) -> str:
+    files_block = "\n\n".join(f"=== {path} ===\n{body}" for path, body in shown.items())
+    return (
+        f"Instruction:\n{instruction}{advice}\n\nFiles in the repository:\n{listing}\n\n"
+        f"Contents:\n{files_block or '(none)'}\n\n"
+        'Reply {"files": {"path": "the full new contents"}, "summary": "one line"}, '
+        "including only files you change or create."
+    )
+
+
+def shown_files(root: Path, paths: list[str]) -> dict[str, str]:
+    """Each file that exists and is text, cut to MAX_FILE_CHARS. The caller
+    has already refused any path outside the repository."""
+    shown = {}
+    for path in paths:
+        target = root / path
+        if not target.is_file():
+            continue
+        try:
+            shown[path] = target.read_text()[:MAX_FILE_CHARS]
+        except UnicodeDecodeError:
+            continue
+    return shown
+```
+
+In `app/repo_chore.py`: delete the four constants and `SYSTEM` and import them from `app.chore_prompts`, with `edit_prompt`, `read_prompt`, `shown_files` and `tree_listing`. In `_run`, `listing = tree_listing(tree)`, `wanted = ask(read_prompt(instruction, advice, listing))`, and `prompt = edit_prompt(instruction, advice, listing, shown)` (drop the local `files_block`). `_read_files(clone, paths)` keeps its `_refused_paths` filter and returns `shown_files(clone, [p for p in paths if not _refused_paths({p: ""})])`. `MAX_FILE_CHARS` is still used by the weakened tests prompt; it now comes from the import.
+
+- [ ] **Step 4: Full suite, lint, commit** `Build a chore's read and edit prompts in app/chore_prompts.py, with the same text`.
+
+### Task 39: The bank's chores, libraries and split
+
+**Files:**
+- Create: `bank/__init__.py` (empty), `bank/chores.py`, `bank/libraries.yaml`, `bank/chores/.gitkeep`, `tests/test_bank_chores.py`
+- Modify: `.gitignore` (add `bank/data/`, `bank/work/`, `train/out/`)
+
+**Interfaces:**
+- Produces, in `bank/chores.py`: `HERE`, `CHORES = HERE / "chores"`, `FIXTURE = "thomas-whitley/mercury-fixture"`, `TRAINING = "training"`, `VALIDATION = "validation"`;
+
+```python
+@dataclass(frozen=True)
+class Library:
+    name: str          # the chore id prefix and folder, e.g. "boltons"
+    upstream: str      # owner/repo it was forked from
+    repo: str          # the fork, thomas-whitley/<repo>
+    pythonpath: str = ""  # "src" for a src layout, "" for the repo root
+
+    @property
+    def test_command(self) -> str: ...
+
+
+@dataclass(frozen=True)
+class BankChore:
+    id: str
+    library: str
+    repo: str
+    instruction: str
+    base: str
+    reference: str
+    grade: tuple[str, ...]
+    test_files: tuple[str, ...]
+    split: str
+```
+
+`chore_id(library: str, sha: str) -> str`, `split_of(chore_id: str) -> str`, `load_libraries(path: Path = HERE / "libraries.yaml") -> dict[str, Library]`, `load_bank(directory: Path = CHORES) -> list[BankChore]`, `write_chore(chore: BankChore, directory: Path = CHORES) -> Path`. `BankChore` has `id`, `repo` and `instruction`, which is all the eval runner's `run_one` and `follow` read from a task when they are given a `grade` (Task 42).
+
+- [ ] **Step 1: Write the failing tests.** `tests/test_bank_chores.py`:
+
+```python
+import pytest
+import yaml
+
+from bank.chores import (
+    FIXTURE,
+    BankChore,
+    Library,
+    chore_id,
+    load_bank,
+    load_libraries,
+    split_of,
+    write_chore,
+)
+
+SHA = "a" * 40
+REF = "b" * 40
+
+
+def chore(**changes) -> BankChore:
+    fields = {
+        "id": chore_id("pkg", REF), "library": "pkg", "repo": "thomas-whitley/pkg",
+        "instruction": "In pkg/core.py add sub(a, b).", "base": SHA, "reference": REF,
+        "grade": ("tests/test_core.py::test_sub",), "test_files": ("tests/test_core.py",),
+        "split": split_of(chore_id("pkg", REF)),
+    }  # fmt: skip
+    return BankChore(**(fields | changes))
+
+
+def test_a_chore_id_is_the_library_and_ten_characters_of_the_commit():
+    assert chore_id("pkg", REF) == "pkg-bbbbbbbbbb"
+
+
+def test_the_split_is_fixed_and_about_one_in_five_is_validation():
+    ids = [f"pkg-{i:010x}" for i in range(1000)]
+    splits = [split_of(i) for i in ids]
+
+    assert splits == [split_of(i) for i in ids]
+    assert set(splits) == {"training", "validation"}
+    assert 150 <= splits.count("validation") <= 250
+
+
+def test_a_written_chore_loads_back_the_same(tmp_path):
+    write_chore(chore(), tmp_path)
+
+    assert load_bank(tmp_path) == [chore()]
+    assert (tmp_path / "pkg" / "pkg-bbbbbbbbbb.yaml").is_file()
+
+
+def test_the_bank_refuses_the_fixture(tmp_path):
+    write_chore(chore(repo=FIXTURE), tmp_path)
+
+    with pytest.raises(ValueError, match="fixture"):
+        load_bank(tmp_path)
+
+
+def test_the_bank_refuses_a_split_that_is_not_the_hash(tmp_path):
+    wrong = "validation" if chore().split == "training" else "training"
+    write_chore(chore(split=wrong), tmp_path)
+
+    with pytest.raises(ValueError, match="split"):
+        load_bank(tmp_path)
+
+
+def test_the_bank_refuses_a_file_not_named_by_its_id(tmp_path):
+    path = write_chore(chore(), tmp_path)
+    path.rename(path.with_name("other.yaml"))
+
+    with pytest.raises(ValueError, match="other"):
+        load_bank(tmp_path)
+
+
+def test_libraries_load_with_their_test_command(tmp_path):
+    path = tmp_path / "libraries.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {"libraries": [
+                {"name": "pkg", "upstream": "up/pkg", "repo": "thomas-whitley/pkg"},
+                {"name": "lay", "upstream": "up/lay", "repo": "thomas-whitley/lay",
+                 "pythonpath": "src"},
+            ]}  # fmt: skip
+        )
+    )
+
+    libraries = load_libraries(path)
+
+    assert libraries["pkg"] == Library("pkg", "up/pkg", "thomas-whitley/pkg")
+    assert libraries["pkg"].test_command == "python -m pytest -q -p no:cacheprovider -o addopts="
+    assert libraries["lay"].test_command.startswith("PYTHONPATH=src python -m pytest")
+
+
+def test_a_library_must_be_a_fork_under_thomas_whitley(tmp_path):
+    path = tmp_path / "libraries.yaml"
+    path.write_text(
+        yaml.safe_dump({"libraries": [{"name": "pkg", "upstream": "up/pkg", "repo": "up/pkg"}]})
+    )
+
+    with pytest.raises(ValueError, match="thomas-whitley"):
+        load_libraries(path)
+```
+
+- [ ] **Step 2: Run them and see them fail.**
+
+- [ ] **Step 3: Implement** `bank/chores.py`:
+
+```python
+"""The bank (Phase 5 part 5b of docs/build-brief-evals.md): chores mined from
+real commits of small libraries, one YAML file each under
+bank/chores/<library>/<id>.yaml (decision 54). A chore's base is the commit's
+parent, its grade is the commit's tests (decision 55) and its reference is
+the commit. The split is a hash of the id (decision 34), so it never moves."""
+
+import hashlib
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+import yaml
+
+HERE = Path(__file__).parent
+CHORES = HERE / "chores"
+# The eval's own repo. Its chores never enter the bank (decision 34).
+FIXTURE = "thomas-whitley/mercury-fixture"
+OWNER = "thomas-whitley"
+TRAINING = "training"
+VALIDATION = "validation"
+# One chore in five is validation (decision 34).
+VALIDATION_SHARE = 5
+# The worker image's own virtualenv has pytest (decision 57). addopts is
+# cleared so a library's pytest config cannot ask for a plugin it lacks.
+PYTEST = "python -m pytest -q -p no:cacheprovider -o addopts="
+
+
+@dataclass(frozen=True)
+class Library:
+    name: str
+    upstream: str
+    repo: str
+    pythonpath: str = ""
+
+    @property
+    def test_command(self) -> str:
+        return f"PYTHONPATH={self.pythonpath} {PYTEST}" if self.pythonpath else PYTEST
+
+
+@dataclass(frozen=True)
+class BankChore:
+    id: str
+    library: str
+    repo: str
+    instruction: str
+    base: str
+    reference: str
+    grade: tuple[str, ...]  # pytest node ids: fail on the base, pass on the reference
+    test_files: tuple[str, ...]  # the commit's test files, copied over a branch to grade it
+    split: str
+
+
+def chore_id(library: str, sha: str) -> str:
+    return f"{library}-{sha[:10]}"
+
+
+def split_of(chore_id: str) -> str:
+    digest = int(hashlib.sha256(chore_id.encode()).hexdigest()[:8], 16)
+    return VALIDATION if digest % VALIDATION_SHARE == 0 else TRAINING
+
+
+def load_libraries(path: Path = HERE / "libraries.yaml") -> dict[str, Library]:
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    libraries = {}
+    for entry in data.get("libraries") or []:
+        library = Library(**entry)
+        if not library.repo.startswith(f"{OWNER}/"):
+            raise ValueError(f"{library.name}: the bank runs on forks under {OWNER} only")
+        libraries[library.name] = library
+    return libraries
+
+
+def load_bank(directory: Path = CHORES) -> list[BankChore]:
+    chores = []
+    for path in sorted(directory.glob("*/*.yaml")):
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        chore = BankChore(
+            **{**data, "grade": tuple(data["grade"]), "test_files": tuple(data["test_files"])}
+        )
+        if path.stem != chore.id:
+            raise ValueError(f"{path.name} holds chore {chore.id}; name the file by its id")
+        if chore.repo == FIXTURE:
+            raise ValueError(f"{chore.id}: the eval fixture never enters the bank")
+        if chore.split != split_of(chore.id):
+            raise ValueError(f"{chore.id}: its split is {chore.split}, its hash says otherwise")
+        chores.append(chore)
+    return chores
+
+
+def write_chore(chore: BankChore, directory: Path = CHORES) -> Path:
+    path = directory / chore.library / f"{chore.id}.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = asdict(chore) | {"grade": list(chore.grade), "test_files": list(chore.test_files)}
+    path.write_text(
+        yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=100), encoding="utf-8"
+    )
+    return path
+```
+
+`bank/libraries.yaml` starts as:
+
+```yaml
+# The libraries the bank is mined from (decisions 31, 32 and 57 of
+# docs/build-brief-evals.md). Each is a public fork under thomas-whitley,
+# listed in local/mercury.compose.yaml with the same test command and
+# auto_approve: true. Thomas picks them from the shortlist.
+libraries: []
+```
+
+A `yaml.safe_dump` of a multi line instruction may come out quoted rather than as a block; that is fine, since the round trip test is what counts.
+
+- [ ] **Step 4: Full suite, lint, commit** `Add the bank's chore files, its libraries and its fixed split`.
+
+### Task 40: The gate and the grader
+
+**Files:**
+- Create: `bank/grade.py`, `tests/bank_repo.py` (a builder of small library repos, shared by Tasks 40, 41 and 44), `tests/test_bank_grade.py`
+
+**Interfaces:**
+- Consumes: `Library`, `BankChore` (Task 39); `evals.runner._env` and `evals.runner.clone`.
+- Produces, in `bank/grade.py`: `MIRRORS = Path.home() / ".cache" / "mercury-bank"`, `SUITE_SECONDS = 60`, `ensure_mirror(library, clone_base: str = "https://github.com", token: str | None = None, root: Path = MIRRORS) -> Path`, `checkout(mirror: Path, sha: str, dest: Path) -> Path`, `Outcome(returncode: int, passed: frozenset[str], seconds: float, tail: str)`, `run_pytest(work: Path, library: Library, paths: tuple[str, ...] = ()) -> Outcome`, `collect(work: Path, library: Library) -> set[str]`, `overlay(work: Path, source: Path, paths: tuple[str, ...]) -> None`, `Gate(ok: bool, reason: str, grade: tuple[str, ...] = (), seconds: float = 0.0)`, `gate(mirror: Path, library: Library, base: str, reference: str, test_files: tuple[str, ...]) -> Gate`, `grade_branch(chore: BankChore, library: Library, mirror: Path, clone_base: str, token: str | None, branch: str) -> tuple[bool, str]`. Gate reasons are the module constants `BASE_RED = "base suite red"`, `SLOW = "suite over 60 s"`, `REFERENCE_RED = "reference suite red"`, `FLAKY = "grade flaky on the reference"`, `NOTHING = "grade passes on base"`, `NO_CHECKOUT = "checkout failed"`.
+- Produces, in `tests/bank_repo.py`: `library_repo(tmp_path) -> tuple[Path, dict[str, str]]`, which builds a bare repo at `tmp_path / "remote" / "thomas-whitley" / "pkg.git"` and returns it with the shas of its commits by name (`base`, `adds_sub`, `test_only`, `breaks_base`), and `push_branch(bare: Path, tmp_path: Path, branch: str, start: str, files: dict[str, str | None]) -> None`, which pushes a branch from `start` with those files written (`None` deletes one). `PKG = Library("pkg", "up/pkg", "thomas-whitley/pkg")`.
+
+- [ ] **Step 1: Write the repo builder** `tests/bank_repo.py`:
+
+```python
+"""A small library repo for the bank's tests: a package, its tests, and a
+few commits shaped like the ones the miner meets (Tasks 40, 41 and 44 of
+docs/build-brief-evals.md)."""
+
+import subprocess
+from pathlib import Path
+
+from bank.chores import Library
+
+PKG = Library("pkg", "up/pkg", "thomas-whitley/pkg")
+
+CORE = "def add(a, b):\n    return a + b\n"
+CORE_SUB = CORE + "\n\ndef sub(a, b):\n    return a - b\n"
+TEST_CORE = "from pkg.core import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n"
+TEST_SUB = (
+    TEST_CORE
+    + "\n\ndef test_sub():\n    from pkg.core import sub\n    assert sub(5, 3) == 2\n"
+    + "\n\nimport pytest\n\n\n@pytest.mark.parametrize('a', [1, 2])\n"
+    + "def test_sub_many(a):\n    from pkg.core import sub\n    assert sub(a, a) == 0\n"
+    + "\n\nclass TestSub:\n    def test_neg(self):\n        from pkg.core import sub\n"
+    + "        assert sub(1, 2) == -1\n"
+)
+EXTRA = "def twice(x):\n    return 2 * x\n"
+TEST_EXTRA = "from pkg.extra import twice\n\n\ndef test_twice():\n    assert twice(4) == 8\n"
+
+
+def git(*args: str, cwd: Path) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _commit(work: Path, message: str, files: dict[str, str | None]) -> str:
+    for path, body in files.items():
+        target = work / path
+        if body is None:
+            target.unlink()
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body)
+    git("add", "-A", cwd=work)
+    git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", message, cwd=work)
+    return git("rev-parse", "HEAD", cwd=work)
+
+
+def library_repo(tmp_path: Path) -> tuple[Path, dict[str, str]]:
+    work = tmp_path / "seed"
+    work.mkdir()
+    git("init", "-q", "-b", "main", cwd=work)
+    shas = {"base": _commit(work, "Start", {
+        "pkg/__init__.py": "", "pkg/core.py": CORE, "tests/test_core.py": TEST_CORE,
+    })}  # fmt: skip
+    shas["adds_sub"] = _commit(work, "Add sub and twice", {
+        "pkg/core.py": CORE_SUB, "pkg/extra.py": EXTRA,
+        "tests/test_core.py": TEST_SUB, "tests/test_extra.py": TEST_EXTRA,
+        "CHANGELOG.md": "Added sub.\n",
+    })  # fmt: skip
+    shas["test_only"] = _commit(work, "Test add with zero", {
+        "tests/test_core.py": TEST_SUB + "\n\ndef test_add_zero():\n    assert add(0, 0) == 0\n",
+    })  # fmt: skip
+    shas["breaks_base"] = _commit(work, "Break add", {
+        "pkg/core.py": CORE_SUB.replace("a + b", "a * b"),
+    })  # fmt: skip
+    bare = tmp_path / "remote" / "thomas-whitley" / "pkg.git"
+    bare.parent.mkdir(parents=True)
+    git("clone", "-q", "--bare", str(work), str(bare), cwd=tmp_path)
+    return bare, shas
+
+
+def push_branch(
+    bare: Path, tmp_path: Path, branch: str, start: str, files: dict[str, str | None]
+) -> None:
+    work = tmp_path / f"branch-{branch.replace('/', '-')}"
+    git("clone", "-q", str(bare), str(work), cwd=tmp_path)
+    git("checkout", "-q", "-b", branch, start, cwd=work)
+    _commit(work, "chore", files)
+    git("push", "-q", "origin", branch, cwd=work)
+```
+
+`breaks_base` exists so a commit whose parent is red can be gated: a commit on top of it has a red base.
+
+- [ ] **Step 2: Write the failing tests.** `tests/test_bank_grade.py`:
+
+```python
+from bank import grade
+from bank.chores import BankChore
+from tests.bank_repo import CORE, CORE_SUB, EXTRA, PKG, library_repo, push_branch
+
+SUB_IDS = {
+    "tests/test_core.py::test_sub",
+    "tests/test_core.py::test_sub_many[1]",
+    "tests/test_core.py::test_sub_many[2]",
+    "tests/test_core.py::TestSub::test_neg",
+}
+TEST_FILES = ("tests/test_core.py", "tests/test_extra.py")
+
+
+def mirror(tmp_path):
+    bare, shas = library_repo(tmp_path)
+    return grade.ensure_mirror(PKG, f"file://{tmp_path / 'remote'}", root=tmp_path / "m"), shas
+
+
+def test_the_grade_is_what_fails_on_the_base_and_passes_on_the_reference(tmp_path):
+    path, shas = mirror(tmp_path)
+
+    result = grade.gate(path, PKG, shas["base"], shas["adds_sub"], TEST_FILES)
+
+    assert result.ok, result.reason
+    # A new test file that cannot import on the base belongs to the grade;
+    # a test that already passed there does not.
+    assert set(result.grade) == SUB_IDS | {"tests/test_extra.py::test_twice"}
+    assert "tests/test_core.py::test_add" not in result.grade
+
+
+def test_a_commit_whose_tests_already_pass_on_its_base_is_dropped(tmp_path):
+    path, shas = mirror(tmp_path)
+
+    result = grade.gate(path, PKG, shas["adds_sub"], shas["test_only"], ("tests/test_core.py",))
+
+    assert (result.ok, result.reason) == (False, grade.NOTHING)
+
+
+def test_a_commit_on_a_red_base_is_dropped(tmp_path):
+    path, shas = mirror(tmp_path)
+
+    result = grade.gate(path, PKG, shas["breaks_base"], shas["breaks_base"], ())
+
+    assert (result.ok, result.reason) == (False, grade.BASE_RED)
+
+
+def test_a_commit_that_is_not_in_the_mirror_is_dropped(tmp_path):
+    path, shas = mirror(tmp_path)
+
+    result = grade.gate(path, PKG, shas["base"], "f" * 40, TEST_FILES)
+
+    assert (result.ok, result.reason) == (False, grade.NO_CHECKOUT)
+
+
+def bank_chore(shas) -> BankChore:
+    return BankChore(
+        "pkg-x", "pkg", "thomas-whitley/pkg", "Add sub.", shas["base"], shas["adds_sub"],
+        tuple(sorted(SUB_IDS | {"tests/test_extra.py::test_twice"})), TEST_FILES, "training",
+    )  # fmt: skip
+
+
+def graded(tmp_path, files):
+    path, shas = mirror(tmp_path)
+    push_branch(tmp_path / "remote" / "thomas-whitley" / "pkg.git", tmp_path,
+                "agent/1", shas["base"], files)  # fmt: skip
+    return grade.grade_branch(
+        bank_chore(shas), PKG, path, f"file://{tmp_path / 'remote'}", None, "agent/1"
+    )
+
+
+def test_a_branch_that_makes_the_change_passes(tmp_path):
+    ok, detail = graded(tmp_path, {"pkg/core.py": CORE_SUB, "pkg/extra.py": EXTRA})
+
+    assert ok, detail
+
+
+def test_a_branch_with_a_wrong_change_fails(tmp_path):
+    wrong = CORE_SUB.replace("a - b", "b - a")
+    ok, detail = graded(tmp_path, {"pkg/core.py": wrong, "pkg/extra.py": EXTRA})
+
+    assert not ok
+    assert "grade failed" in detail
+
+
+def test_a_branch_that_drops_a_test_the_base_has_fails(tmp_path):
+    ok, detail = graded(
+        tmp_path,
+        {"pkg/core.py": CORE_SUB, "pkg/extra.py": EXTRA, "tests/test_core.py": "x = 1\n"},
+    )
+
+    assert not ok
+    assert detail.startswith("tests removed: tests/test_core.py::test_add")
+
+
+def test_a_branch_that_breaks_its_own_suite_fails(tmp_path):
+    ok, detail = graded(tmp_path, {"pkg/core.py": CORE.replace("a + b", "a"), "pkg/extra.py": EXTRA})
+
+    assert not ok
+    assert detail.startswith("own tests failed")
+```
+
+- [ ] **Step 3: Run them and see them fail** (`ImportError: cannot import name 'grade' from 'bank'`).
+
+- [ ] **Step 4: Implement** `bank/grade.py`:
+
+```python
+"""The bank's gate and grader (decisions 33 and 55 of
+docs/build-brief-evals.md).
+
+The gate decides whether a commit is a chore. Its grade is every test id in
+the commit's test files that passes on the commit and fails on its parent
+once the commit's test files are copied over the parent. The grader checks a
+chore's branch the way the eval checks the fixture's: every test the base
+has is still there, its own suite passes, and with the commit's test files
+copied over it every grade id passes.
+
+Pytest runs every library, on test files rather than on ids, so a test file
+that cannot import makes its ids fail instead of stopping the run. Nothing
+here reaches the model: the grade output goes to a row's detail, which the
+rescue brief never shows for a pull request (evals/rescue.py)."""
+
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+from bank.chores import BankChore, Library
+from evals.runner import _env, clone
+
+MIRRORS = Path.home() / ".cache" / "mercury-bank"
+SUITE_SECONDS = 60
+TEST_TIMEOUT_SECONDS = 300
+GIT_TIMEOUT_SECONDS = 300
+NO_TESTS_RAN = 5
+_TEXT = {"capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace"}
+
+BASE_RED = "base suite red"
+SLOW = f"suite over {SUITE_SECONDS} s"
+REFERENCE_RED = "reference suite red"
+FLAKY = "grade flaky on the reference"
+NOTHING = "grade passes on base"
+NO_CHECKOUT = "checkout failed"
+
+
+def ensure_mirror(
+    library: Library,
+    clone_base: str = "https://github.com",
+    token: str | None = None,
+    root: Path = MIRRORS,
+) -> Path:
+    """A local mirror of the fork, fetched again when it exists."""
+    path = root / f"{library.name}.git"
+    env = _env(str(root), token)
+    root.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        command = ["git", "-C", str(path), "fetch", "-q", "--prune", "origin"]
+    else:
+        url = f"{clone_base.rstrip('/')}/{library.repo}.git"
+        command = ["git", "clone", "-q", "--mirror", url, str(path)]
+    subprocess.run(command, env=env, check=True, timeout=GIT_TIMEOUT_SECONDS, **_TEXT)
+    return path
+
+
+def checkout(mirror: Path, sha: str, dest: Path) -> Path:
+    """A working tree of one commit. Raises CalledProcessError for a sha the
+    mirror does not have."""
+    env = _env(str(dest.parent), None)
+    for command in (
+        ["git", "clone", "-q", "--shared", "--no-checkout", str(mirror), str(dest)],
+        ["git", "-C", str(dest), "checkout", "-q", "--detach", sha],
+    ):
+        subprocess.run(command, env=env, check=True, timeout=GIT_TIMEOUT_SECONDS, **_TEXT)
+    return dest
+
+
+def _pytest(work: Path, library: Library, *args: str) -> subprocess.CompletedProcess:
+    env = _env(str(work.parent), None)
+    # pytest cuts its summary lines to the terminal's width.
+    env["COLUMNS"] = "1000"
+    if library.pythonpath:
+        env["PYTHONPATH"] = str(work / library.pythonpath)
+    command = [
+        sys.executable, "-m", "pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider",
+        "-o", "addopts=", "--rootdir=.", "--continue-on-collection-errors", *args,
+    ]  # fmt: skip
+    return subprocess.run(command, cwd=work, env=env, timeout=TEST_TIMEOUT_SECONDS, **_TEXT)
+
+
+@dataclass(frozen=True)
+class Outcome:
+    returncode: int
+    passed: frozenset[str]
+    seconds: float
+    tail: str
+
+
+def run_pytest(work: Path, library: Library, paths: tuple[str, ...] = ()) -> Outcome:
+    """Run the suite, or only the given test files, and name what passed."""
+    start = time.monotonic()
+    result = _pytest(work, library, *paths)
+    passed = frozenset(
+        line.removeprefix("PASSED ").strip()
+        for line in result.stdout.splitlines()
+        if line.startswith("PASSED ")
+    )
+    output = result.stdout + result.stderr
+    return Outcome(result.returncode, passed, time.monotonic() - start, output[-3000:])
+
+
+def collect(work: Path, library: Library) -> set[str]:
+    result = _pytest(work, library, "--collect-only")
+    return {
+        line.strip()
+        for line in result.stdout.splitlines()
+        if "::" in line and not line.startswith(("ERROR", "FAILED", "PASSED"))
+    }
+
+
+def overlay(work: Path, source: Path, paths: tuple[str, ...]) -> None:
+    """Copy these files from the source tree over the work tree."""
+    for path in paths:
+        target = work / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / path, target)
+
+
+@dataclass(frozen=True)
+class Gate:
+    ok: bool
+    reason: str
+    grade: tuple[str, ...] = ()
+    seconds: float = 0.0
+
+
+def gate(
+    mirror: Path, library: Library, base: str, reference: str, test_files: tuple[str, ...]
+) -> Gate:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
+        try:
+            base_tree = checkout(mirror, base, Path(home) / "base")
+            reference_tree = checkout(mirror, reference, Path(home) / "reference")
+        except subprocess.CalledProcessError:
+            return Gate(False, NO_CHECKOUT)
+        on_base = run_pytest(base_tree, library)
+        if on_base.returncode not in (0, NO_TESTS_RAN):
+            return Gate(False, BASE_RED)
+        if on_base.seconds > SUITE_SECONDS:
+            return Gate(False, SLOW, seconds=on_base.seconds)
+        on_reference = run_pytest(reference_tree, library)
+        if on_reference.returncode != 0:
+            return Gate(False, REFERENCE_RED)
+        ids = {i for i in collect(reference_tree, library) if i.split("::")[0] in test_files}
+        again = run_pytest(reference_tree, library, test_files)
+        if (ids & on_reference.passed) != (ids & again.passed):
+            return Gate(False, FLAKY)
+        overlay(base_tree, reference_tree, test_files)
+        before = run_pytest(base_tree, library, test_files)
+        grade = tuple(sorted((ids & on_reference.passed) - before.passed))
+        if not grade:
+            return Gate(False, NOTHING)
+        return Gate(True, "", grade, on_base.seconds)
+
+
+def grade_branch(
+    chore: BankChore,
+    library: Library,
+    mirror: Path,
+    clone_base: str,
+    token: str | None,
+    branch: str,
+) -> tuple[bool, str]:
+    """Grade a chore's branch. Never raises for a bad branch; the answer is
+    the boolean, and the text is for the row's detail only."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
+        work = Path(home) / "work"
+        try:
+            error = clone(f"{clone_base.rstrip('/')}/{chore.repo}.git", branch, work, token, 120)
+            if error:
+                return False, error
+            base_tree = checkout(mirror, chore.base, Path(home) / "base")
+            reference_tree = checkout(mirror, chore.reference, Path(home) / "reference")
+            lost = collect(base_tree, library) - collect(work, library)
+            if lost:
+                return False, "tests removed: " + ", ".join(sorted(lost))
+            own = run_pytest(work, library)
+            if own.returncode not in (0, NO_TESTS_RAN):
+                return False, "own tests failed: " + own.tail
+            overlay(work, reference_tree, chore.test_files)
+            graded = run_pytest(work, library, chore.test_files)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as failure:
+            return False, f"grading could not run: {type(failure).__name__}"
+        missing = sorted(set(chore.grade) - graded.passed)
+        if missing:
+            return False, f"grade failed: {len(missing)} of {len(chore.grade)}\n{graded.tail}"
+        return True, graded.tail
+```
+
+The skipped test check of the eval grader is left out: Mercury's test guard (`app/test_guard.py`) already escalates a diff that adds a skip marker. If `--continue-on-collection-errors` makes pytest exit 1 rather than 2 on the base overlay, nothing depends on it, since only `passed` is read there.
+
+- [ ] **Step 5: Run the tests and see them pass.** `.superpowers/t.sh tests/test_bank_grade.py`. If an id is missed, print `run_pytest(...).tail` in the failing test first; a parametrized id must come back exactly as `tests/test_core.py::test_sub_many[1]`.
+
+- [ ] **Step 6: Full suite, lint, commit** `Add the bank's gate and grader: the grade is what the commit's tests pass that its parent fails`.
+
+### Task 41: The miner
+
+**Files:**
+- Create: `bank/mine.py`, `tests/test_bank_mine.py`
+
+**Interfaces:**
+- Consumes: `Library`, `BankChore`, `chore_id`, `split_of`, `write_chore`, `load_bank` (Task 39); `gate`, `ensure_mirror`, `Gate` (Task 40); `tests/bank_repo.py`.
+- Produces, in `bank/mine.py`: `SINCE = "2025-01-01"`, `MAX_SOURCE_FILES = 3`, `MAX_REPLY_CHARS = 12_000`, `MAX_INSTRUCTION_CHARS = 1500`, `WORK = HERE / "work"`, `kind(path: str) -> str` (`"test"`, `"source"`, `"doc"` or `"other"`), `Candidate(sha, parent, subject, source_files: tuple[str, ...], test_files: tuple[str, ...])`, `candidates(mirror: Path, since: str = SINCE) -> tuple[list[Candidate], Counter]`, `gate_library(library, mirror, limit: int, done: set[str], gate=gate) -> tuple[list[dict], Counter]` (each dict `{"id", "sha", "parent", "subject", "grade": [...], "test_files": [...], "source_files": [...]}`), `brief(library, mirror, gated: list[dict]) -> tuple[str, dict[str, str]]`, `leaks(instruction: str, grade: tuple[str, ...], test_files: tuple[str, ...]) -> list[str]`, `write_instructions(library, gated: list[dict], instructions: dict[str, str], directory: Path = CHORES) -> list[Path]`, and `main(argv)` with `gate <library> [--limit 50] [--since 2025-01-01]` and `write <library>`.
+
+- [ ] **Step 1: Write the failing tests.** `tests/test_bank_mine.py`:
+
+```python
+import pytest
+
+from bank import mine
+from bank.chores import load_bank, split_of
+from bank.grade import Gate, ensure_mirror
+from tests.bank_repo import PKG, library_repo
+
+
+@pytest.mark.parametrize(
+    ("path", "kind"),
+    [
+        ("pkg/core.py", "source"),
+        ("tests/test_core.py", "test"),
+        ("pkg/test_util.py", "test"),
+        ("pkg/core_test.py", "test"),
+        ("conftest.py", "test"),
+        ("README.md", "doc"),
+        ("docs/index.rst", "doc"),
+        ("CHANGELOG", "doc"),
+        ("pyproject.toml", "other"),
+    ],
+)
+def test_each_path_has_a_kind(path, kind):
+    assert mine.kind(path) == kind
+
+
+def mirror(tmp_path):
+    bare, shas = library_repo(tmp_path)
+    return ensure_mirror(PKG, f"file://{tmp_path / 'remote'}", root=tmp_path / "m"), shas
+
+
+def test_a_commit_with_source_and_tests_is_a_candidate_and_the_rest_are_counted(tmp_path):
+    path, shas = mirror(tmp_path)
+
+    found, dropped = mine.candidates(path, since="2000-01-01")
+
+    [candidate] = found
+    assert candidate.sha == shas["adds_sub"]
+    assert candidate.parent == shas["base"]
+    assert candidate.source_files == ("pkg/core.py", "pkg/extra.py")
+    assert candidate.test_files == ("tests/test_core.py", "tests/test_extra.py")
+    # The first commit has no parent, the next only tests, the last no tests.
+    assert dropped == {"no parent": 1, "not source and tests": 2}
+
+
+def test_a_commit_too_long_for_one_reply_is_not_a_candidate(tmp_path, monkeypatch):
+    path, _ = mirror(tmp_path)
+    monkeypatch.setattr(mine, "MAX_REPLY_CHARS", 20)
+
+    found, dropped = mine.candidates(path, since="2000-01-01")
+
+    assert found == []
+    assert dropped["too long for one reply"] == 1
+
+
+def test_gating_stops_at_the_limit_and_skips_chores_already_done(tmp_path):
+    path, shas = mirror(tmp_path)
+    passing = lambda *args: Gate(True, "", ("tests/test_core.py::test_sub",))  # noqa: E731
+
+    gated, _ = mine.gate_library(PKG, path, 5, set(), gate=passing)
+    again, dropped = mine.gate_library(PKG, path, 5, {gated[0]["id"]}, gate=passing)
+
+    assert [g["sha"] for g in gated] == [shas["adds_sub"]]
+    assert again == []
+    assert dropped["already mined"] == 1
+
+
+def test_an_instruction_that_names_a_test_is_refused_before_anything_is_written(tmp_path):
+    path, _ = mirror(tmp_path)
+    gated, _ = mine.gate_library(PKG, path, 5, set())
+    key = gated[0]["id"]
+
+    with pytest.raises(ValueError, match=f"{key}.*test_sub"):
+        mine.write_instructions(
+            PKG, gated, {key: "Add sub to pkg/core.py so test_sub passes."}, tmp_path / "b"
+        )
+    assert not (tmp_path / "b").exists()
+
+
+def test_written_instructions_become_chores_with_their_split(tmp_path):
+    path, shas = mirror(tmp_path)
+    gated, _ = mine.gate_library(PKG, path, 5, set())
+    key = gated[0]["id"]
+
+    mine.write_instructions(
+        PKG, gated, {key: "In pkg/core.py add sub(a, b) returning a - b, and add "
+                          "pkg/extra.py with twice(x) returning 2 * x."}, tmp_path / "b",
+    )  # fmt: skip
+
+    [chore] = load_bank(tmp_path / "b")
+    assert (chore.base, chore.reference) == (shas["base"], shas["adds_sub"])
+    assert chore.split == split_of(key)
+    assert "tests/test_extra.py::test_twice" in chore.grade
+
+
+def test_an_unknown_or_over_long_instruction_is_refused(tmp_path):
+    path, _ = mirror(tmp_path)
+    gated, _ = mine.gate_library(PKG, path, 5, set())
+
+    with pytest.raises(ValueError, match="pkg-nope"):
+        mine.write_instructions(PKG, gated, {"pkg-nope": "x"}, tmp_path / "b")
+    with pytest.raises(ValueError, match="1,500"):
+        mine.write_instructions(PKG, gated, {gated[0]["id"]: "x" * 1501}, tmp_path / "b")
+
+
+def test_the_brief_shows_the_writer_the_diff_and_the_grade(tmp_path):
+    path, _ = mirror(tmp_path)
+    gated, _ = mine.gate_library(PKG, path, 5, set())
+
+    text, blanks = mine.brief(PKG, path, gated)
+
+    assert blanks == {gated[0]["id"]: ""}
+    assert "+def sub(a, b):" in text
+    assert "tests/test_core.py::test_sub" in text
+    assert "never name or describe a test" in text
+```
+
+The real gate runs in the last four tests; it takes a few seconds on the small repo.
+
+- [ ] **Step 2: Run them and see them fail.**
+
+- [ ] **Step 3: Implement** `bank/mine.py`:
+
+```python
+"""Turns a library's commits into bank chores (decisions 30 to 33, 56 and 60
+of docs/build-brief-evals.md). Claude does not invent chores: each is a real
+commit, its parent the base, its tests the grade, the commit the reference.
+
+  python -m bank.mine gate <library> [--limit 50]
+fetches the fork's mirror, gates each candidate commit from 2025 on, oldest
+first, until <limit> pass, and writes bank/work/<library>/gated.json, a brief
+for the Claude session that writes the instructions (instructions.md) and a
+blank instructions file (instructions.yaml).
+
+  python -m bank.mine write <library>
+checks every instruction, then writes one chore file per non blank one.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+
+import yaml
+
+from bank.chores import (
+    CHORES,
+    HERE,
+    BankChore,
+    Library,
+    chore_id,
+    load_bank,
+    load_libraries,
+    split_of,
+    write_chore,
+)
+from bank.grade import ensure_mirror, gate
+
+SINCE = "2025-01-01"
+MAX_SOURCE_FILES = 3
+# The local rung writes about 3,500 tokens in its 120 s (decision 56).
+MAX_REPLY_CHARS = 12_000
+MAX_INSTRUCTION_CHARS = 1500
+WORK = HERE / "work"
+_TEST_DIRS = {"test", "tests", "testing"}
+_DOC_SUFFIXES = {".md", ".rst", ".txt"}
+_DOC_NAMES = ("CHANGELOG", "CHANGES", "NEWS", "HISTORY", "AUTHORS")
+FENCE = "````"
+
+RULES = """# Instructions to write
+
+One paragraph per chore, at most 1,500 characters, in the instructions file
+under the chore's id. Say what to change in which source files, and name every
+module, function, class, method, parameter and error message the tests rely on,
+exactly as the commit spells them. Write it as the owner asking for the change.
+Ask for the source change only: never name or describe a test, a test file or
+what is tested, and do not ask for tests. Do not paste the diff. Leave a chore
+blank to drop it.
+"""
+
+
+def kind(path: str) -> str:
+    p = PurePosixPath(path)
+    if p.suffix == ".py":
+        if (
+            p.name == "conftest.py"
+            or p.name.startswith("test_")
+            or p.name.endswith("_test.py")
+            or any(part in _TEST_DIRS for part in p.parts[:-1])
+        ):
+            return "test"
+        return "source"
+    if (
+        p.suffix in _DOC_SUFFIXES
+        or (len(p.parts) > 1 and p.parts[0] in {"doc", "docs"})
+        or p.name.upper().startswith(_DOC_NAMES)
+    ):
+        return "doc"
+    return "other"
+
+
+@dataclass(frozen=True)
+class Candidate:
+    sha: str
+    parent: str
+    subject: str
+    source_files: tuple[str, ...]
+    test_files: tuple[str, ...]
+
+
+def _git(mirror: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(mirror), *args],
+        check=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    ).stdout  # fmt: skip
+
+
+def _size(mirror: Path, sha: str, path: str) -> int | None:
+    try:
+        return int(_git(mirror, "cat-file", "-s", f"{sha}:{path}"))
+    except subprocess.CalledProcessError:
+        return None
+
+
+def candidates(mirror: Path, since: str = SINCE) -> tuple[list[Candidate], Counter]:
+    """Commits on the default branch from since on, oldest first, that change
+    1 to 3 source files and at least one test, nothing else but docs, and fit
+    one reply. The rest are counted by reason."""
+    log = _git(
+        mirror, "log", "--reverse", "--no-merges", f"--since={since}",
+        "--format=%x00%H %P%x09%s", "--name-only", "HEAD",
+    )  # fmt: skip
+    found, dropped = [], Counter()
+    for record in log.split("\x00")[1:]:
+        head, _, names = record.partition("\n")
+        shas, _, subject = head.partition("\t")
+        sha, *parents = shas.split()
+        files = [line for line in names.splitlines() if line.strip()]
+        kinds = {path: kind(path) for path in files}
+        sources = tuple(p for p in files if kinds[p] == "source")
+        tests = tuple(p for p in files if kinds[p] == "test")
+        if not parents:
+            dropped["no parent"] += 1
+        elif not sources or not tests:
+            dropped["not source and tests"] += 1
+        elif "other" in kinds.values():
+            dropped["other files"] += 1
+        elif len(sources) > MAX_SOURCE_FILES:
+            dropped["too many source files"] += 1
+        else:
+            after = [_size(mirror, sha, p) for p in sources]
+            before = [_size(mirror, parents[0], p) or 0 for p in sources]
+            if None in after:
+                dropped["deletes a source file"] += 1
+            elif sum(after) > MAX_REPLY_CHARS or max(before) > MAX_REPLY_CHARS:
+                dropped["too long for one reply"] += 1
+            else:
+                kept = tuple(p for p in tests if _size(mirror, sha, p) is not None)
+                found.append(Candidate(sha, parents[0], subject, sources, kept))
+    return found, dropped
+
+
+def gate_library(
+    library: Library, mirror: Path, limit: int, done: set[str], gate=gate
+) -> tuple[list[dict], Counter]:
+    found, dropped = candidates(mirror)
+    gated = []
+    for candidate in found:
+        if len(gated) == limit:
+            break
+        key = chore_id(library.name, candidate.sha)
+        if key in done:
+            dropped["already mined"] += 1
+            continue
+        result = gate(mirror, library, candidate.parent, candidate.sha, candidate.test_files)
+        if not result.ok:
+            dropped[result.reason] += 1
+            continue
+        gated.append({
+            "id": key, "sha": candidate.sha, "parent": candidate.parent,
+            "subject": candidate.subject, "grade": list(result.grade),
+            "test_files": list(candidate.test_files),
+            "source_files": list(candidate.source_files),
+        })  # fmt: skip
+    return gated, dropped
+
+
+def brief(library: Library, mirror: Path, gated: list[dict]) -> tuple[str, dict[str, str]]:
+    lines = [RULES]
+    for item in gated:
+        lines += [
+            f"## {item['id']}",
+            "",
+            FENCE,
+            _git(mirror, "log", "-1", "--format=%B", item["sha"]).strip(),
+            FENCE,
+            "",
+            "Source diff:",
+            "",
+            FENCE + "diff",
+            _git(mirror, "diff", item["parent"], item["sha"], "--", *item["source_files"]),
+            FENCE,
+            "",
+            "Test diff (for you only; the instruction must not name a test):",
+            "",
+            FENCE + "diff",
+            _git(mirror, "diff", item["parent"], item["sha"], "--", *item["test_files"]),
+            FENCE,
+            "",
+            "Grade: " + ", ".join(item["grade"]),
+            "",
+        ]
+    return "\n".join(lines), {item["id"]: "" for item in gated}
+
+
+def leaks(instruction: str, grade: tuple[str, ...], test_files: tuple[str, ...]) -> list[str]:
+    """Test names, test class names and test file names the instruction
+    contains, which would tell the model what is graded."""
+    names = {part.split("[")[0] for test in grade for part in test.split("::")[1:]}
+    names |= {PurePosixPath(f).name for f in test_files} | {PurePosixPath(f).stem for f in test_files}
+    return sorted(name for name in names if name in instruction)
+
+
+def write_instructions(
+    library: Library, gated: list[dict], instructions: dict[str, str], directory: Path = CHORES
+) -> list[Path]:
+    by_id = {item["id"]: item for item in gated}
+    unknown = sorted(set(instructions) - set(by_id))
+    if unknown:
+        raise ValueError(f"no gated chore is called {unknown[0]}")
+    chores = []
+    for key, text in instructions.items():
+        text = (text or "").strip()
+        if not text:
+            continue
+        item = by_id[key]
+        if len(text) > MAX_INSTRUCTION_CHARS:
+            raise ValueError(f"{key}: the instruction is over {MAX_INSTRUCTION_CHARS:,} characters")
+        named = leaks(text, tuple(item["grade"]), tuple(item["test_files"]))
+        if named:
+            raise ValueError(f"{key}: the instruction names {', '.join(named)}")
+        chores.append(BankChore(
+            key, library.name, library.repo, text, item["parent"], item["sha"],
+            tuple(item["grade"]), tuple(item["test_files"]), split_of(key),
+        ))  # fmt: skip
+    return [write_chore(chore, directory) for chore in chores]
+
+
+def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives the forks
+    parser = argparse.ArgumentParser(description="Mine a library's commits into bank chores.")
+    commands = parser.add_subparsers(dest="command", required=True)
+    gate_cmd = commands.add_parser("gate")
+    gate_cmd.add_argument("library")
+    gate_cmd.add_argument("--limit", type=int, default=50)
+    write_cmd = commands.add_parser("write")
+    write_cmd.add_argument("library")
+    args = parser.parse_args(argv)
+
+    library = load_libraries()[args.library]
+    work = WORK / library.name
+    work.mkdir(parents=True, exist_ok=True)
+    gated_path = work / "gated.json"
+    mirror = ensure_mirror(library, token=os.environ.get("MERCURY_GITHUB_TOKEN"))
+    if args.command == "gate":
+        done = {chore.id for chore in load_bank()}
+        earlier = json.loads(gated_path.read_text()) if gated_path.exists() else []
+        done |= {item["id"] for item in earlier}
+        gated, dropped = gate_library(library, mirror, args.limit, done)
+        gated = earlier + gated
+        gated_path.write_text(json.dumps(gated, indent=2) + "\n", encoding="utf-8")
+        text, blanks = brief(library, mirror, gated)
+        (work / "instructions.md").write_text(text, encoding="utf-8")
+        instructions = work / "instructions.yaml"
+        if not instructions.exists():
+            instructions.write_text(yaml.safe_dump(blanks, sort_keys=False), encoding="utf-8")
+        print(f"{len(gated)} gated; dropped {dict(dropped)}; brief in {work / 'instructions.md'}")
+        return 0
+    gated = json.loads(gated_path.read_text())
+    instructions = yaml.safe_load((work / "instructions.yaml").read_text(encoding="utf-8")) or {}
+    written = write_instructions(library, gated, instructions)
+    print(f"{len(written)} chores written to {CHORES / library.name}")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
+```
+
+A second `gate` run adds to `gated.json` but keeps an existing `instructions.yaml`; add the new blank keys to it by hand, or delete it first when nothing is written yet.
+
+- [ ] **Step 4: Full suite, lint, commit** `Add the miner: candidate commits that fit one reply, gated, briefed for a Claude session, and written as chores`.
+
+### Task 42: The bank runner and `queue-bank.ps1`
+
+**Files:**
+- Modify: `evals/runner.py` (`run_one`, `follow`)
+- Create: `bank/run.py`, `bank/results/.gitkeep`, `local/queue-bank.ps1`, `tests/test_bank_run.py`
+- Test: `tests/test_eval_runner.py`
+
+**Interfaces:**
+- Consumes: `load_bank`, `load_libraries`, `TRAINING` (Task 39); `grade_branch`, `ensure_mirror` (Task 40); `run_one`, `contained`, `write_results`, `load_rows`, `RESCUABLE`, `EvalAborted` (the runner).
+- Produces: `run_one(api, github, task, provider, clone_base, token, *, timeout_seconds, poll_seconds, sleep=..., clock=..., source: str = "eval", base: str | None = None, grade: Callable[[str], tuple[bool, str]] | None = None) -> EvalRow` and `follow(..., grade=None)`, where `grade(branch)` replaces `grade_branch(...)` when given. In `bank/run.py`: `RESULTS = HERE / "results"`, `tried(results: Path = RESULTS) -> set[str]`, `pending(chores, results: Path = RESULTS, library: str | None = None) -> list[BankChore]`, `run_batch(api, github, chores, grades: dict[str, Callable[[str], tuple[bool, str]]], count: int, clone_base: str, token: str | None, *, timeout_seconds: float, poll_seconds: float = 5.0, sleep=time.sleep, clock=time.monotonic, on_row=print_row, rows: list | None = None) -> list[EvalRow]`, and `main(argv)` with `--count`, `--library`, `--only <id>`, `--out <dir>` (default `RESULTS`) and `--timeout`.
+
+- [ ] **Step 1: Write the failing tests.** In `tests/test_eval_runner.py`, using its `_Api`, `_GitHub` and `_Response`:
+
+```python
+def test_a_bank_chore_is_posted_quiet_from_its_base_and_graded_its_own_way():
+    api = _Api(
+        _Response(201, {"id": "r1", "status": "pending"}),
+        [{"status": "succeeded", "provider": "local", "tokens": 50}],
+    )
+    seen = []
+
+    row = runner.run_one(
+        api, _GitHub(), TASK, "local", "https://github.com", None,
+        timeout_seconds=900, poll_seconds=0, sleep=lambda s: None,
+        source="bank", base="a" * 40, grade=lambda branch: (seen.append(branch), (True, "ok"))[1],
+    )  # fmt: skip
+
+    assert api.posted[0]["source"] == "bank"
+    assert api.posted[0]["inputs"]["base"] == "a" * 40
+    assert seen == ["agent/r1"]
+    assert row.graded
+```
+
+Adapt the names to the fakes as they are (`grep -n "class _Api" -A20 tests/test_eval_runner.py`: if `_Api` keeps its POST bodies under another name, use that, and if `TASK` is not defined there, build an `EvalTask` inline). Check that an eval chore's POST still has `"source": "eval"` and no `base`.
+
+`tests/test_bank_run.py`:
+
+```python
+import json
+
+from bank import run
+from bank.chores import BankChore, split_of
+from evals.runner import EvalRow, write_rows
+from tests.test_eval_runner import _Api, _GitHub, _Response
+
+
+def chore(n: int, split: str | None = None) -> BankChore:
+    key = f"pkg-{n:010d}"
+    return BankChore(
+        key, "pkg", "thomas-whitley/pkg", "Add sub.", "a" * 40, "b" * 40,
+        ("tests/test_core.py::test_sub",), ("tests/test_core.py",), split or split_of(key),
+    )  # fmt: skip
+
+
+def training(count: int) -> list[BankChore]:
+    found = [c for c in (chore(n) for n in range(100)) if c.split == "training"]
+    return found[:count]
+
+
+def row(task: str, status: str) -> EvalRow:
+    return EvalRow(task, "local", "local", "r", status, False, 1, 1.0, 0.0)
+
+
+def test_a_chore_with_the_model_s_answer_is_not_queued_again_and_an_outage_is(tmp_path):
+    answered, outage, fresh = training(3)
+    write_rows([row(answered.id, "escalated"), row(outage.id, "error")], tmp_path / "a.json")
+
+    assert [c.id for c in run.pending([answered, outage, fresh], tmp_path)] == [
+        outage.id,
+        fresh.id,
+    ]
+
+
+def test_a_validation_chore_is_never_queued(tmp_path):
+    validation = next(c for c in (chore(n) for n in range(100)) if c.split == "validation")
+
+    assert run.pending([validation], tmp_path) == []
+
+
+def test_a_batch_posts_each_chore_on_local_from_its_base_and_stops_at_the_count():
+    chores = training(3)
+    api = _Api(
+        _Response(201, {"id": "r1", "status": "pending"}),
+        [{"status": "succeeded", "provider": "local", "tokens": 50}] * 3,
+    )
+
+    rows = run.run_batch(
+        api, _GitHub(), chores, {c.id: (lambda branch: (True, "")) for c in chores}, 2,
+        "https://github.com", None, timeout_seconds=900, poll_seconds=0,
+        sleep=lambda s: None, on_row=lambda r: None,
+    )  # fmt: skip
+
+    assert [r.task for r in rows] == [c.id for c in chores[:2]]
+    assert {p["provider"] for p in api.posted} == {"local"}
+    assert {p["source"] for p in api.posted} == {"bank"}
+    assert {p["inputs"]["base"] for p in api.posted} == {"a" * 40}
+```
+
+As above, match the fakes' real attribute names; if `_Api` returns the same created response for every POST, the run ids repeat, which these tests do not mind.
+
+- [ ] **Step 2: Run them and see them fail.**
+
+- [ ] **Step 3: Implement the runner change.** In `evals/runner.py`, `run_one` gains the three keyword arguments; its POST body becomes:
+
+```python
+    inputs = {"task": task.instruction, "repo": task.repo}
+    if base:
+        inputs["base"] = base
+    created = api.post(
+        "/runs",
+        json={"type": "repo_chore", "inputs": inputs, "provider": provider, "source": source},
+    )
+```
+
+and it passes `grade=grade` to `follow`. `follow` gains `grade: Callable[[str], tuple[bool, str]] | None = None`, and its succeeded branch becomes:
+
+```python
+        if run["status"] == "succeeded":
+            # A bank chore is graded against its commit's tests (bank/grade.py).
+            graded, detail = (
+                grade(branch)
+                if grade
+                else grade_branch(f"{clone_base}/{task.repo}.git", branch, task.grade, token)
+            )
+```
+
+- [ ] **Step 4: Implement** `bank/run.py`:
+
+```python
+"""Runs a batch of bank chores on the home model through the compose
+Mercury (decisions 26, 35 and 36 of docs/build-brief-evals.md). Each chore is
+posted quiet (source bank) on local from its base, followed, graded against
+its commit's tests, and its pull request and branch closed and deleted. Only
+training chores run here; validation chores are run only to choose between
+adapters, in 5d.
+
+  python -m bank.run --count 10 [--library <name>]
+reads MERCURY_URL (the compose Mercury, http://localhost:8001),
+MERCURY_BEARER_TOKEN and MERCURY_GITHUB_TOKEN, and writes
+bank/results/<stamp>.json and its summary. local/queue-bank.ps1 wraps it.
+"""
+
+import argparse
+import os
+import sys
+import time
+from functools import partial
+from pathlib import Path
+
+import httpx2
+
+from bank.chores import HERE, TRAINING, BankChore, load_bank, load_libraries
+from bank.grade import ensure_mirror, grade_branch
+from evals.runner import (
+    RESCUABLE,
+    EvalAborted,
+    EvalRow,
+    contained,
+    load_rows,
+    run_one,
+    write_results,
+)
+
+RESULTS = HERE / "results"
+PROVIDER = "local"
+
+
+def tried(results: Path = RESULTS) -> set[str]:
+    """Chores with a row that holds the model's answer. A row that ended in
+    error, timeout or refused says nothing about the model, so it does not
+    count and the chore is queued again."""
+    return {
+        row.task
+        for path in sorted(results.glob("*.json"))
+        for row in load_rows(path)
+        if row.status in RESCUABLE
+    }
+
+
+def pending(
+    chores: list[BankChore], results: Path = RESULTS, library: str | None = None
+) -> list[BankChore]:
+    done = tried(results)
+    return sorted(
+        (
+            chore
+            for chore in chores
+            if chore.split == TRAINING
+            and chore.id not in done
+            and (library is None or chore.library == library)
+        ),
+        key=lambda chore: chore.id,
+    )
+
+
+def print_row(row: EvalRow) -> None:
+    print(
+        f"{row.task} {row.status} graded={'pass' if row.graded else 'fail'} "
+        f"tokens={row.tokens} unusable={row.unusable}",
+        flush=True,
+    )
+
+
+def run_batch(
+    api, github, chores, grades, count, clone_base, token, *, timeout_seconds,
+    poll_seconds=5.0, sleep=time.sleep, clock=time.monotonic, on_row=print_row, rows=None,
+) -> list[EvalRow]:  # fmt: skip
+    """Rows go into rows as they finish, so a caller that passes a list keeps
+    them when an EvalAborted (the daily cap) stops the batch part way."""
+    rows = [] if rows is None else rows
+    for chore in chores[:count]:
+        row = contained(
+            partial(
+                run_one, api, github, chore, PROVIDER, clone_base, token,
+                timeout_seconds=timeout_seconds, poll_seconds=poll_seconds, sleep=sleep,
+                clock=clock, source="bank", base=chore.base, grade=grades[chore.id],
+            ),
+            chore.id, PROVIDER, token,
+        )  # fmt: skip
+        rows.append(row)
+        on_row(row)
+    return rows
+
+
+def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives the compose Mercury
+    parser = argparse.ArgumentParser(description="Run a batch of bank chores on local.")
+    parser.add_argument("--count", type=int, required=True)
+    parser.add_argument("--library", default=None)
+    parser.add_argument("--only", default=None, help="one chore id, run even if it has a row")
+    parser.add_argument("--out", type=Path, default=RESULTS)
+    parser.add_argument("--timeout", type=float, default=900.0)
+    args = parser.parse_args(argv)
+
+    chores = load_bank()
+    if args.only:
+        chores = [chore for chore in chores if chore.id == args.only]
+    else:
+        chores = pending(chores, RESULTS, args.library)
+    libraries = load_libraries()
+    token = os.environ["MERCURY_GITHUB_TOKEN"]
+    clone_base = "https://github.com"
+    mirrors = {name: ensure_mirror(lib, clone_base, token) for name, lib in libraries.items()}
+    grades = {
+        chore.id: partial(
+            grade_branch, chore, libraries[chore.library], mirrors[chore.library],
+            clone_base, token,
+        )
+        for chore in chores
+    }  # fmt: skip
+    api = httpx2.Client(
+        base_url=os.environ["MERCURY_URL"].rstrip("/"),
+        headers={"Authorization": f"Bearer {os.environ['MERCURY_BEARER_TOKEN']}"},
+        timeout=60,
+    )
+    github = httpx2.Client(
+        base_url="https://api.github.com",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+        timeout=30,
+    )
+    rows: list[EvalRow] = []
+    try:
+        run_batch(
+            api, github, chores, grades, args.count, clone_base, token,
+            timeout_seconds=args.timeout, rows=rows,
+        )  # fmt: skip
+    except EvalAborted as stop:
+        print(stop, file=sys.stderr)
+    finally:
+        if rows:
+            report = write_results(rows, args.out)
+            print(report.read_text(encoding="utf-8"))
+            print(f"written to {report}")
+    return 0 if rows else 1
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
+```
+
+Add a test that a fake API whose second run comes back `refused` raises `EvalAborted` and leaves the first row in the list passed as `rows`.
+
+- [ ] **Step 5: Write** `local/queue-bank.ps1` (no test; it is checked in Task 48):
+
+```powershell
+# Queues a batch of bank chores on the home GPU (decisions 36 and 58 of
+# docs/build-brief-evals.md), runs them through the compose Mercury on port
+# 8001, exports the training examples, and unloads the model so the GPU is
+# free again. Start the compose stack first (local/README.md).
+#
+#   local\queue-bank.ps1 -Count 10 [-Library <name>]
+#
+# The tokens come from the repo's .env inside WSL and are never printed.
+param(
+    [Parameter(Mandatory)][int]$Count,
+    [string]$Library = "",
+    [string]$Model = "mercury-local:base"
+)
+$ErrorActionPreference = "Stop"
+
+try {
+    Invoke-WebRequest -UseBasicParsing http://localhost:8001/health | Out-Null
+} catch {
+    Write-Error "The compose Mercury is not up on port 8001. See local/README.md."
+}
+$pick = if ($Library) { "--library $Library" } else { "" }
+$inner = "cd /mnt/c/Projects/agent-runs && set -a && . <(tr -d '' < .env) && set +a && " +
+    "export MERCURY_URL=http://localhost:8001 UV_PROJECT_ENVIRONMENT=`$HOME/.venvs/agent-runs-win && " +
+    "uv run python -m bank.run --count $Count $pick; code=`$?; " +
+    "uv run python -m bank.export; exit `$code"
+wsl -d Ubuntu-24.04 -- bash -lc $inner
+$code = $LASTEXITCODE
+$body = @{ model = $Model; keep_alive = 0 } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://localhost:11434/api/generate -Body $body | Out-Null
+exit $code
+```
+
+`bank.export` arrives in Task 44; until then the script's export step fails after the batch, which is harmless.
+
+- [ ] **Step 6: Full suite, lint, commit** `Run a batch of bank chores on local from their bases, graded against their commits' tests`.
+
+### Task 43: The rescue pass takes bank rows
+
+**Files:**
+- Modify: `evals/rescue.py` (`brief`, `check_hints`, `apply_hints`, `_rescue_mercury`, `main`)
+- Test: `tests/test_eval_rescue.py`
+
+**Interfaces:**
+- Consumes: `load_bank`, `load_libraries`, `TRAINING` (Task 39); `grade_branch`, `ensure_mirror` (Task 40); `follow(..., grade=)` (Task 42).
+- Produces: `MAX_RESCUES = 25`; `brief(rows, tasks, *, bank: bool = False) -> tuple[str, dict[str, str]]`; `check_hints(rows, hints, tasks=None, *, bank=False)`; `apply_hints(..., bank: bool = False, grade_for: Callable[[EvalRow], Callable[[str], tuple[bool, str]]] | None = None)`. In bank mode a row is briefed only when it is rescuable, has no rescue yet, and its chore is in the training split, and at most `MAX_RESCUES` rows are briefed (decision 37); validation failures are listed under `## Not rescued` as `validation`, and the rest past 25 under `## Left for the next brief`. Eval mode is unchanged.
+
+- [ ] **Step 1: Write the failing tests** in `tests/test_eval_rescue.py`:
+
+```python
+from bank.chores import BankChore
+
+
+def bank_chore(key: str, split: str) -> BankChore:
+    return BankChore(key, "pkg", "thomas-whitley/pkg", f"Do {key}.", "a" * 40, "b" * 40,
+                     ("t::x",), ("t.py",), split)  # fmt: skip
+
+
+def bank_row(key: str, status: str = "escalated") -> EvalRow:
+    return EvalRow(key, "local", "local", f"run-{key}", status, False, 9, 1.0, 0.0,
+                   "tests still failing after 3 attempts", diff="+x\n")  # fmt: skip
+
+
+def test_a_bank_brief_skips_validation_and_stops_at_25():
+    keys = [f"pkg-{n:02d}" for n in range(27)]
+    tasks = {k: bank_chore(k, "training") for k in keys} | {"pkg-v": bank_chore("pkg-v", "validation")}
+    rows = [bank_row(k) for k in [*keys, "pkg-v"]]
+
+    text, hints = rescue.brief(rows, tasks, bank=True)
+
+    assert list(hints) == keys[:25]
+    assert "- pkg-v/local/1: validation" in text
+    assert "## Left for the next brief" in text
+    assert "- pkg-26/local/1" in text
+
+
+def test_a_bank_hint_for_a_validation_row_is_refused():
+    tasks = {"pkg-v": bank_chore("pkg-v", "validation")}
+
+    with pytest.raises(ValueError, match="pkg-v"):
+        rescue.check_hints([bank_row("pkg-v")], {"pkg-v/local/1": "x"}, tasks, bank=True)
+
+
+def test_a_bank_rescue_is_graded_by_the_grade_it_is_given():
+    task = bank_chore("pkg-1", "training")
+    row = bank_row("pkg-1", status="succeeded")
+    api = AdviseApi()  # the fake the existing apply tests use; see below
+    seen = []
+
+    rescue.apply_hints(
+        [row], {"pkg-1/local/1": "Keep add."}, {"pkg-1": task}, api, _GitHub(),
+        "https://github.com", None, timeout_seconds=900, poll_seconds=0, sleep=lambda s: None,
+        bank=True, grade_for=lambda r: (lambda branch: (seen.append(branch), (True, ""))[1]),
+    )  # fmt: skip
+
+    assert seen and seen[0].startswith("agent/")
+    assert row.rescue.graded
+```
+
+Use whichever fake API the existing `apply` tests in this file build (`grep -n "advise" tests/test_eval_rescue.py`), named as they name it, rather than `AdviseApi`. Also assert that 26 non blank bank hints are refused by `check_hints` with `25` in the message.
+
+- [ ] **Step 2: Run them and see them fail.**
+
+- [ ] **Step 3: Implement.** In `evals/rescue.py`:
+
+```python
+# One Claude session writes at most this many bank hints (decision 37).
+MAX_RESCUES = 25
+
+
+def _briefable(row: EvalRow, tasks: dict, bank: bool) -> bool:
+    if not rescuable(row) or row.rescue is not None:
+        return False
+    return not bank or tasks[row.task].split == TRAINING
+```
+
+`brief` gains `bank: bool = False`. It walks the rows; a row that is `_briefable` is briefed until `MAX_RESCUES` are, in bank mode, and is listed under `## Left for the next brief` after that. In bank mode a failed row whose chore is validation is listed under `## Not rescued` as `- <key>: validation`. The section text is otherwise unchanged. `check_hints(rows, hints, tasks=None, *, bank=False)` takes its known keys from `_briefable` (with `tasks`, in bank mode) and, in bank mode, refuses more than `MAX_RESCUES` non blank hints: `f"at most {MAX_RESCUES} bank hints per Claude session; this file has {n}"`. `apply_hints` gains `bank=False` and `grade_for=None`, passes `tasks` and `bank` to `check_hints`, and passes `grade=grade_for(row) if grade_for else None` through `_rescue_mercury` to `follow`. In `main`, `brief` and `apply` gain `--bank`: tasks are `{c.id: c for c in load_bank()}`; for `apply`, mirrors come from `ensure_mirror` for each library in `load_libraries()`, and `grade_for` returns `partial(grade_branch, task, library, mirror, "https://github.com", token)` for the row's chore. Update the module docstring with the bank mode in two sentences.
+
+- [ ] **Step 4: Full suite, lint, commit** `Rescue bank rows: training chores only, at most 25 per Claude session, graded against their commits' tests`.
+
+### Task 44: The training examples
+
+**Files:**
+- Create: `bank/export.py`, `tests/test_bank_export.py`
+
+**Interfaces:**
+- Consumes: `GET /runs/{id}/calls` (Task 37); `SYSTEM`, `tree_listing`, `read_prompt`, `edit_prompt`, `shown_files`, `MAX_FILES_READ` (Task 38); `BankChore`, `Library`, `TRAINING`, `FIXTURE`, `load_bank`, `load_libraries` (Task 39); `checkout`, `ensure_mirror` (Task 40); `kind` (Task 41); `RESULTS` (Task 42); `advice_block` (`app/advice_text.py`); `load_rows`, `RESCUABLE`.
+- Produces, in `bank/export.py`: `DATA = HERE / "data"`, `record(chore_id, origin, turn, system, prompt, reply) -> dict` (`{"chore", "origin", "turn", "messages": [{"role": "system", ...}, {"role": "user", ...}, {"role": "assistant", ...}]}`), `from_calls(chore_id: str, origin: str, calls: list[dict], strip: str = "") -> list[dict] | None`, `rescued(chore_id: str, hint: str, advice: str, calls: list[dict]) -> list[dict] | None`, `reference_reads(tree: list[str], sources: list[str], tests: dict[str, str], library: Library) -> list[str]`, `reference(chore: BankChore, library: Library, mirror: Path, workdir: Path) -> list[dict]`, `export(rows, chores, libraries, api, mirrors, workdir) -> tuple[list[dict], Counter]`, and `main()` writing `bank/data/examples.jsonl` and `bank/data/manifest.json`.
+
+- [ ] **Step 1: Write the failing tests.** `tests/test_bank_export.py`:
+
+```python
+import json
+
+from app.advice_text import advice_block
+from app.chore_prompts import SYSTEM
+from bank import export
+from bank.chores import BankChore, split_of
+from bank.grade import ensure_mirror
+from evals.runner import EvalRow
+from tests.bank_repo import CORE_SUB, EXTRA, PKG, library_repo
+
+READ = {"seq": 2, "system": SYSTEM, "prompt": "Instruction:\nAdd sub.ADVICE\n\nFiles",
+        "reply": '{"read": ["pkg/core.py"]}'}  # fmt: skip
+EDIT = {"seq": 9, "system": SYSTEM, "prompt": "Instruction:\nAdd sub.ADVICE\n\nContents",
+        "reply": '{"files": {"pkg/core.py": "x"}, "summary": "s"}'}  # fmt: skip
+
+
+def test_a_run_s_first_and_last_calls_are_its_two_turns():
+    records = export.from_calls("pkg-1", "self", [READ, {"seq": 5, "reply": "{}"}, EDIT])
+
+    assert [r["turn"] for r in records] == ["read", "edit"]
+    assert [m["role"] for m in records[1]["messages"]] == ["system", "user", "assistant"]
+    assert records[1]["messages"][2]["content"] == EDIT["reply"]
+
+
+def test_a_run_whose_last_reply_has_no_files_gives_no_example():
+    assert export.from_calls("pkg-1", "self", [READ, {**EDIT, "reply": '{"read": []}'}]) is None
+
+
+def test_a_rescued_example_has_neither_the_hint_nor_the_earlier_diff():
+    hint = "Keep add where it is."
+    advice = advice_block(hint, {"status": "escalated", "reason": "red", "diff": "+bad\n"})
+    calls = [{**c, "prompt": c["prompt"].replace("ADVICE", advice)} for c in (READ, EDIT)]
+
+    records = export.rescued("pkg-1", hint, advice, calls)
+
+    text = json.dumps(records)
+    assert hint not in text
+    assert "+bad" not in text
+    assert records[0]["messages"][1]["content"].startswith("Instruction:\nAdd sub.\n\nFiles")
+
+
+def test_a_rescued_example_whose_advice_is_not_in_its_prompt_is_dropped():
+    assert export.rescued("pkg-1", "a hint", "\n\nThe owner's hint: a hint", [READ, EDIT]) is None
+
+
+def test_a_rescued_example_whose_reply_repeats_the_hint_is_dropped():
+    advice = "\n\nThe owner's hint: use sub"
+    calls = [
+        {**READ, "prompt": READ["prompt"].replace("ADVICE", advice)},
+        {**EDIT, "prompt": EDIT["prompt"].replace("ADVICE", advice), "reply": '{"files": {"a": "use sub"}}'},
+    ]
+
+    assert export.rescued("pkg-1", "use sub", advice, calls) is None
+
+
+def test_the_reference_reads_the_changed_source_and_what_the_tests_import():
+    tree = ["pkg/__init__.py", "pkg/core.py", "pkg/util.py", "tests/test_core.py"]
+    tests = {"tests/test_core.py": "from pkg.util import x\nimport pkg.core\nimport os\n"}
+
+    assert export.reference_reads(tree, ["pkg/core.py"], tests, PKG) == [
+        "pkg/core.py",
+        "pkg/util.py",
+    ]
+
+
+def mined(tmp_path) -> tuple[BankChore, object]:
+    bare, shas = library_repo(tmp_path)
+    mirror = ensure_mirror(PKG, f"file://{tmp_path / 'remote'}", root=tmp_path / "m")
+    key = "pkg-" + shas["adds_sub"][:10]
+    chore = BankChore(
+        key, "pkg", "thomas-whitley/pkg", "In pkg/core.py add sub(a, b).", shas["base"],
+        shas["adds_sub"], ("tests/test_core.py::test_sub",),
+        ("tests/test_core.py", "tests/test_extra.py"), split_of(key),
+    )  # fmt: skip
+    return chore, mirror
+
+
+def test_a_reference_example_replies_with_the_commit_s_source_files_only(tmp_path):
+    chore, mirror = mined(tmp_path)
+
+    read, edit = export.reference(chore, PKG, mirror, tmp_path / "w")
+
+    assert json.loads(read["messages"][2]["content"]) == {"read": ["pkg/core.py"]}
+    reply = json.loads(edit["messages"][2]["content"])
+    assert reply["files"] == {"pkg/core.py": CORE_SUB, "pkg/extra.py": EXTRA}
+    assert reply["summary"] == "Add sub and twice"
+    assert "test_sub" not in json.dumps([read, edit])
+
+
+class _CallsApi:
+    def __init__(self, calls: dict[str, list[dict]], done: dict[str, dict]):
+        self.calls, self.done = calls, done
+
+    def get(self, path: str):
+        run_id = path.split("/")[2]
+        body = (
+            self.calls.get(run_id, [])
+            if path.endswith("/calls")
+            else [{"kind": "done", "output": self.done.get(run_id, {})}]
+        )
+        return type("R", (), {"status_code": 200, "json": lambda self: body})()
+
+
+def test_the_export_takes_self_then_rescued_then_reference_and_never_validation(tmp_path):
+    chore, mirror = mined(tmp_path)
+    if chore.split != "training":  # the hash decides; the test needs a training chore
+        chore = BankChore(**{**chore.__dict__, "split": "training"})
+    validation = BankChore(**{**chore.__dict__, "id": "pkg-v", "split": "validation"})
+    passed = EvalRow(chore.id, "local", "local", "run-1", "succeeded", True, 1, 1.0, 0.0)
+    shown = EvalRow("pkg-v", "local", "local", "run-2", "succeeded", True, 1, 1.0, 0.0)
+    api = _CallsApi({"run-1": [READ, EDIT], "run-2": [READ, EDIT]}, {})
+
+    records, counts = export.export(
+        [passed, shown], [chore, validation], {"pkg": PKG}, api, {"pkg": mirror}, tmp_path / "w"
+    )
+
+    assert {r["chore"] for r in records} == {chore.id}
+    assert {r["origin"] for r in records} == {"self"}
+    assert counts["validation, not exported"] == 1
+```
+
+`BankChore(**{**chore.__dict__, ...})` works on a frozen dataclass; if the chore is validation by its hash, the test sets it to training directly, since `export` reads the field and does not recheck the hash (`load_bank` does that). Add one more `export` case each for a failed row with a graded rescue (origin `rescued`, built from the rescue run's calls with the advice built from the first run's done output) and a failed row with none (origin `reference`).
+
+- [ ] **Step 2: Run them and see them fail.**
+
+- [ ] **Step 3: Implement** `bank/export.py`:
+
+```python
+"""Builds the bank's training examples (decisions 38 and 59 of
+docs/build-brief-evals.md). One example per training chore, in two turns,
+the read request and the edit, each a system, user and assistant message:
+
+- self: a run that passed unaided, its first and last recorded calls;
+- rescued: a rerun that passed after one hint, with the advice block taken
+  out of its prompts, so neither the hint nor the earlier diff remains;
+- reference: the commit, built with the prompt functions a chore serves
+  (app/chore_prompts.py) from its base, replying with its source files.
+
+No validation chore, eval chore or fixture chore is exported.
+
+  python -m bank.export
+reads every bank/results/*.json and the compose Mercury's GET
+/runs/{id}/calls, and writes bank/data/examples.jsonl and manifest.json.
+"""
+
+import ast
+import json
+import os
+import subprocess
+import tempfile
+from collections import Counter, defaultdict
+from datetime import UTC, datetime
+from pathlib import Path
+
+import httpx2
+
+from app.advice_text import advice_block
+from app.chore_prompts import (
+    MAX_FILES_READ,
+    SYSTEM,
+    edit_prompt,
+    read_prompt,
+    shown_files,
+    tree_listing,
+)
+from bank.chores import FIXTURE, HERE, TRAINING, BankChore, Library, load_bank, load_libraries
+from bank.grade import checkout, ensure_mirror
+from bank.mine import kind
+from bank.run import RESULTS
+from evals.runner import RESCUABLE, load_rows
+
+DATA = HERE / "data"
+
+
+def record(chore_id, origin, turn, system, prompt, reply) -> dict:
+    return {
+        "chore": chore_id,
+        "origin": origin,
+        "turn": turn,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": reply},
+        ],
+    }
+
+
+def _json(text: str):
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def from_calls(chore_id: str, origin: str, calls: list[dict], strip: str = "") -> list[dict] | None:
+    """The read turn is a run's first call and the edit turn its last, the
+    one that went green. None when either reply is not the shape asked for,
+    or strip is given and a prompt lacks it."""
+    if len(calls) < 2:
+        return None
+    first, last = calls[0], calls[-1]
+    read, edit = _json(first["reply"]), _json(last["reply"])
+    if not isinstance(read, dict) or "read" not in read:
+        return None
+    if not isinstance(edit, dict) or not isinstance(edit.get("files"), dict):
+        return None
+    records = []
+    for turn, call in (("read", first), ("edit", last)):
+        prompt = call["prompt"]
+        if strip:
+            if strip not in prompt:
+                return None
+            prompt = prompt.replace(strip, "")
+        records.append(record(chore_id, origin, turn, call["system"], prompt, call["reply"]))
+    return records
+
+
+def rescued(chore_id: str, hint: str, advice: str, calls: list[dict]) -> list[dict] | None:
+    """Trained without the hint (decision 38): the advice block comes out of
+    both prompts, and an example still carrying the hint anywhere is dropped."""
+    records = from_calls(chore_id, "rescued", calls, strip=advice)
+    if records is None:
+        return None
+    if any(hint in message["content"] for r in records for message in r["messages"]):
+        return None
+    return records
+
+
+def _module_paths(module: str, library: Library) -> list[str]:
+    root = f"{library.pythonpath}/" if library.pythonpath else ""
+    stem = root + module.replace(".", "/")
+    return [f"{stem}.py", f"{stem}/__init__.py"]
+
+
+def reference_reads(
+    tree: list[str], sources: list[str], tests: dict[str, str], library: Library
+) -> list[str]:
+    """The changed source files that exist on the base, then the source
+    modules the commit's tests import, at most MAX_FILES_READ."""
+    present = set(tree)
+    reads = [path for path in sources if path in present]
+    for text in tests.values():
+        try:
+            nodes = ast.walk(ast.parse(text))
+        except SyntaxError:
+            continue
+        for node in nodes:
+            modules = []
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                modules = [node.module] + [f"{node.module}.{a.name}" for a in node.names]
+            for module in modules:
+                for path in _module_paths(module, library):
+                    if path in present and kind(path) == "source" and path not in reads:
+                        reads.append(path)
+    return reads[:MAX_FILES_READ]
+
+
+def _git(tree: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(tree), *args], check=True, capture_output=True, text=True,
+        encoding="utf-8",
+    ).stdout  # fmt: skip
+
+
+def reference(chore: BankChore, library: Library, mirror: Path, workdir: Path) -> list[dict]:
+    workdir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=workdir, ignore_cleanup_errors=True) as home:
+        base = checkout(mirror, chore.base, Path(home) / "base")
+        ref = checkout(mirror, chore.reference, Path(home) / "reference")
+        tree = _git(base, "ls-files").splitlines()
+        changed = _git(ref, "diff", "--name-only", chore.base, chore.reference).splitlines()
+        sources = [path for path in changed if kind(path) == "source" and (ref / path).is_file()]
+        tests = {path: (ref / path).read_text() for path in chore.test_files}
+        reads = reference_reads(tree, sources, tests, library)
+        listing = tree_listing(tree)
+        files = {path: (ref / path).read_text() for path in sources}
+        summary = _git(ref, "log", "-1", "--format=%s").strip()
+        return [
+            record(chore.id, "reference", "read", SYSTEM,
+                   read_prompt(chore.instruction, "", listing), json.dumps({"read": reads})),
+            record(chore.id, "reference", "edit", SYSTEM,
+                   edit_prompt(chore.instruction, "", listing, shown_files(base, reads)),
+                   json.dumps({"files": files, "summary": summary})),
+        ]  # fmt: skip
+
+
+def _calls(api, run_id: str) -> list[dict]:
+    response = api.get(f"/runs/{run_id}/calls")
+    return response.json() if response.status_code == 200 else []
+
+
+def _done(api, run_id: str) -> dict:
+    """The done step's output, which an advised rerun's advice is built from."""
+    response = api.get(f"/runs/{run_id}/history")
+    events = response.json() if response.status_code == 200 else []
+    done = [e.get("output") or {} for e in events if e.get("kind") == "done"]
+    return done[-1] if done else {}
+
+
+def export(rows, chores, libraries, api, mirrors, workdir) -> tuple[list[dict], Counter]:
+    by_chore = defaultdict(list)
+    for row in rows:
+        if row.status in RESCUABLE:
+            by_chore[row.task].append(row)
+    records, counts = [], Counter()
+    for chore in sorted(chores, key=lambda c: c.id):
+        if chore.split != TRAINING or chore.repo == FIXTURE:
+            counts["validation, not exported"] += bool(by_chore[chore.id])
+            continue
+        mine = by_chore[chore.id]
+        if not mine:
+            counts["not run"] += 1
+            continue
+        found = None
+        for row in mine:
+            if row.graded:
+                found = from_calls(chore.id, "self", _calls(api, row.run_id))
+                if found:
+                    break
+        for row in mine if found is None else []:
+            if row.rescue and row.rescue.graded and row.rescue_hint:
+                advice = advice_block(row.rescue_hint, _done(api, row.run_id))
+                found = rescued(chore.id, row.rescue_hint, advice, _calls(api, row.rescue.run_id))
+                if found:
+                    break
+        if found is None:
+            found = reference(chore, libraries[chore.library], mirrors[chore.library], workdir)
+        counts[found[0]["origin"]] += 1
+        records.extend(found)
+    return records, counts
+
+
+def main() -> int:  # pragma: no cover - reads the compose Mercury
+    rows = [row for path in sorted(RESULTS.glob("*.json")) for row in load_rows(path)]
+    chores = load_bank()
+    libraries = load_libraries()
+    token = os.environ.get("MERCURY_GITHUB_TOKEN")
+    mirrors = {name: ensure_mirror(lib, token=token) for name, lib in libraries.items()}
+    api = httpx2.Client(
+        base_url=os.environ["MERCURY_URL"].rstrip("/"),
+        headers={"Authorization": f"Bearer {os.environ['MERCURY_BEARER_TOKEN']}"},
+        timeout=60,
+    )
+    records, counts = export(rows, chores, libraries, api, mirrors, DATA / "tmp")
+    DATA.mkdir(parents=True, exist_ok=True)
+    with (DATA / "examples.jsonl").open("w", encoding="utf-8") as out:
+        for item in records:
+            out.write(json.dumps(item, ensure_ascii=False) + "\n")
+    manifest = {"written_at": datetime.now(UTC).isoformat(), "counts": dict(counts)}
+    (DATA / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(f"{len(records)} records; {dict(counts)}")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
+```
+
+The read turn of a self or rescued example is the model's own read reply; a reference example's is built. The read turn's prompt in a reference example uses `chore.instruction` with no advice, which is what a first run is served.
+
+- [ ] **Step 4: Run the tests and see them pass,** then the full suite, lint, commit `Export the bank's training examples: self, then rescued without the hint, then the commit itself`.
+
+### Task 45: Deploy
+
+- [ ] **Step 1:** Push `main`, wait for CI and Publish (`gh run list -c <full sha>`), run the `mercury-config` script that bumps `PUBLIC_SHA` with `--yes` (memory `mercury-deploys`), and watch its Deploy. Check `/health` is 200. Live gains only Tasks 36 to 38; the bank never runs there.
+- [ ] **Step 2:** With Docker Desktop up, rebuild the compose stack so it has the same code: `docker compose -f docker-compose.yml -f local/compose.local.yml up -d --build db api proxy worker`, and check `GET http://localhost:8001/health`.
+
+### Task 46: The pilot library and its fork
+
+Needs Thomas for the pick, and possibly for the token.
+
+- [ ] **Step 1: The pick.** Show Thomas the shortlist (from the research subagent, decision 31 plus decision 57) and ask him to pick 3 to 5. The pilot uses one of them: the pick with the most qualifying commits, unless Thomas names another.
+- [ ] **Step 2: The fork.** `gh repo fork <upstream> --clone=false --default-branch-only` for the pilot library only (the rest are forked after the pilot). Check its Actions are off (`gh api repos/thomas-whitley/<repo>/actions/permissions`): GitHub turns workflows off on a new fork, and a chore branch must not spend Actions minutes. If they are on, hand Thomas the command to turn them off.
+- [ ] **Step 3: The token.** In WSL, with the `.env` sourced and nothing printed but the answer: `curl -s -H "Authorization: Bearer $MERCURY_GITHUB_TOKEN" https://api.github.com/repos/thomas-whitley/<repo> | python3 -c "import json,sys; print(json.load(sys.stdin)['permissions']['push'])"`. If it prints `False`, the token is fine grained and needs the fork added to its repositories: hand Thomas the settings page (github.com, Settings, Developer settings, Fine-grained tokens) and wait.
+- [ ] **Step 4: The config.** Add the library to `bank/libraries.yaml` (with `pythonpath: src` for a `src` layout) and the fork to `local/mercury.compose.yaml` under `portfolio.repos`:
+
+```yaml
+    # A bank fork (decision 32 of docs/build-brief-evals.md): its chores are
+    # graded, closed and deleted by bank/run.py, so nothing waits for Approve.
+    - name: thomas-whitley/<repo>
+      test_command: <Library.test_command, exactly>
+      auto_approve: true
+```
+
+- [ ] **Step 5: Check the suite in the image.** `docker compose -f docker-compose.yml -f local/compose.local.yml exec worker sh -c 'cd /tmp && rm -rf lib && git clone -q https://github.com/thomas-whitley/<repo> lib && cd lib && <test_command>'` must be green, and so must `uv run python -c "from bank.grade import *; ..."` style gate run on the newest qualifying commit in WSL (Task 47's first command does this). If the suite needs a dependency the image lacks, the library fails decision 57: tell Thomas and take the next pick.
+- [ ] **Step 6: Commit** `Add <library> as the bank pilot's library, forked under thomas-whitley`.
+
+### Task 47: Mine the pilot
+
+- [ ] **Step 1: Gate.** In WSL: `uv run python -m bank.mine gate <library> --limit 50`. Report the dropped counts by reason. If fewer than 50 commits gate, stop and tell Thomas with the counts: decision 35 asks for 50 from one library, and a second library or a wider `--since` is his call.
+- [ ] **Step 2: Instructions.** This session (Opus) reads `bank/work/<library>/instructions.md` and writes one instruction per chore into `instructions.yaml`, following its rules (decision 60). Leave blank, and so drop, any commit whose change cannot be asked for without describing its tests, or that is not a change an owner would ask for (a pure rename, a revert).
+- [ ] **Step 3: Write.** `uv run python -m bank.mine write <library>`; fix any instruction it refuses. Count training and validation chores.
+- [ ] **Step 4: Commit** the chore files: `Mine the bank pilot: <n> chores from <library>, <t> training and <v> validation`.
+
+### Task 48: The pilot batch, its rescue and its export
+
+On the desktop, with compose up and Ollama serving `mercury-local:base`. The 7B model only (handoff: `qwen3-coder:30b`, WSL and compose together trip the memory reaper).
+
+- [ ] **Step 1: Smoke.** `local\queue-bank.ps1 -Count 2`, run by this session in the background. Check both rows in `bank/results/`, that each chore's branch on the fork is gone, that `bank/data/examples.jsonl` was written, and that the model was unloaded (`ollama ps` lists nothing). Fix what breaks before the batch.
+- [ ] **Step 2: The batch.** Thomas runs `local\queue-bank.ps1 -Count <training count>` in his own PowerShell, since it takes hours and a session's background shells can be stopped under memory pressure. It writes one results file.
+- [ ] **Step 3: Rescue.** `uv run python -m evals.rescue brief --bank bank/results/<stamp>.json`. This session reads the brief and writes at most 25 hints, as in Phase 3 (decision 49): from the instruction, the diff and the test output only. Then `uv run python -m evals.rescue apply --bank bank/results/<stamp>.json bank/results/<stamp>.hints.yaml`. If more than 25 rows were briefable, the rest wait for another session.
+- [ ] **Step 4: Export.** `uv run python -m bank.export`. Record the counts by origin.
+- [ ] **Step 5: Commit** the results, brief and hints, after grepping them for the `.env` token values: `Run the bank pilot on local: <a> of <t> training chores first time, <b> after one hint; <s> self, <r> rescued and <f> reference examples`.
+
+### Task 49: The pilot's training run and its tag
+
+Decision 61. In WSL, with compose stopped and nothing else on the GPU (`ollama stop mercury-local:base`; `nvidia-smi` in WSL shows the 4060 with its 8 GB free).
+
+**Files:**
+- Create: `train/pyproject.toml`, `train/pilot.py`, `train/Modelfile.pilot`, `train/README.md`
+
+- [ ] **Step 1: The project.** `train/pyproject.toml` is its own uv project (`name = "mercury-train"`, Python 3.12, dependencies `unsloth`, `trl`, `datasets`), so CI never installs it. Lock it (`uv lock` in `train/`) and commit the lock.
+- [ ] **Step 2: The script.** `train/pilot.py`, checked against Unsloth's current Qwen2.5 Coder notebook for the exact argument names, since TRL renames them between releases:
+
+```python
+"""The bank pilot's training run (decision 61 of docs/build-brief-evals.md):
+one epoch of QLoRA on the pilot's examples, to prove the pipe from
+bank/data/examples.jsonl to an Ollama tag. Its tag is not measured.
+
+  cd train && uv run python pilot.py
+"""
+
+from datasets import load_dataset
+from trl import SFTConfig, SFTTrainer
+from unsloth import FastLanguageModel
+from unsloth.chat_templates import train_on_responses_only
+
+BASE = "unsloth/Qwen2.5-Coder-7B-Instruct-bnb-4bit"
+MAX_SEQ = 8192
+OUT = "out/pilot"
+
+model, tokenizer = FastLanguageModel.from_pretrained(BASE, max_seq_length=MAX_SEQ, load_in_4bit=True)
+model = FastLanguageModel.get_peft_model(
+    model, r=16, lora_alpha=16, lora_dropout=0, bias="none",
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    use_gradient_checkpointing="unsloth", random_state=3407,
+)  # fmt: skip
+data = load_dataset("json", data_files="../bank/data/examples.jsonl")["train"]
+data = data.map(lambda r: {"text": tokenizer.apply_chat_template(r["messages"], tokenize=False)})
+fits = data.filter(lambda r: len(tokenizer(r["text"]).input_ids) <= MAX_SEQ)
+print(f"{len(fits)} of {len(data)} records fit {MAX_SEQ} tokens; {len(data) - len(fits)} dropped")
+trainer = SFTTrainer(
+    model=model, tokenizer=tokenizer, train_dataset=fits,
+    args=SFTConfig(
+        dataset_text_field="text", max_seq_length=MAX_SEQ, per_device_train_batch_size=1,
+        gradient_accumulation_steps=8, num_train_epochs=1, learning_rate=2e-4,
+        optim="adamw_8bit", logging_steps=1, output_dir=OUT, report_to="none",
+    ),
+)  # fmt: skip
+# Train on the replies only, not on the prompts.
+trainer = train_on_responses_only(
+    trainer, instruction_part="<|im_start|>user\n", response_part="<|im_start|>assistant\n"
+)
+stats = trainer.train()
+print(stats)
+model.save_pretrained(f"{OUT}/adapter")
+tokenizer.save_pretrained(f"{OUT}/adapter")
+model.save_pretrained_gguf(f"{OUT}/gguf", tokenizer, quantization_method="q4_k_m")
+```
+
+- [ ] **Step 3: Run it** in the foreground if it finishes inside 10 minutes, else in the background with a long fallback check. Record the records kept and dropped, the final loss, the minutes, and the peak VRAM (`nvidia-smi` during the run).
+- [ ] **Step 4: If the GGUF export runs out of memory** (WSL has 16 GB, and a 7B merge in 16 bit needs about that), try decision 40's unconfirmed route instead: convert the adapter with llama.cpp's `convert_lora_to_gguf.py` and load it on `qwen2.5-coder:7b` with `ADAPTER`. Record which route worked; it settles decision 40's open question.
+- [ ] **Step 5: The tag.** `train/Modelfile.pilot` copies `local/Modelfile.base`'s `num_ctx 16384` and the `TEMPLATE` and stop parameters from `ollama show qwen2.5-coder:7b --modelfile`, with `FROM` the GGUF (or `FROM qwen2.5-coder:7b` plus `ADAPTER`). On Windows, `ollama create mercury-local:pilot -f train/Modelfile.pilot` (the GGUF under `train/out/`, which is on the Windows disk).
+- [ ] **Step 6: Check it answers.** Bring compose up with `LOCAL_MODEL=mercury-local:pilot`, then `uv run python -m bank.run --count 1 --only <a training chore id> --out <scratchpad dir>`, so the row stays out of `bank/results/`. The row must not end with unusable replies; whether it passes is not recorded anywhere (decision 61). Bring compose back up on `mercury-local:base`.
+- [ ] **Step 7: `train/README.md`** in the README's voice: what the pilot run is for, the command, the numbers from Step 3, the route Step 4 took, and that no figure from the pilot tag is measured. Commit `Train the bank pilot's adapter and load it into Ollama as mercury-local:pilot`.
+
+### Task 50: Hand over the pilot
+
+- [ ] **Step 1: Docs.** `docs/mercury.md` gains `GET /runs/{id}/calls` and decision 53. `local/README.md` gains `## The bank`: the forks, `local\queue-bank.ps1`, the rescue with `--bank`, the export, and where each file lives. Check every changed line against the writing rules.
+- [ ] **Step 2: Handoff.** A dated section at the top of `docs/handoff.md`: the live `PUBLIC_SHA`; the pilot's figures (commits gated and dropped by reason, chores written by split, training chores passed first time and after one hint, unusable replies, examples by origin, the training run's numbers and the route it took); what went off plan; deferred minors; and that the full bank is next, detailed in its own session on Opus once Thomas has seen the pilot. Mark part 5b's pilot done in this brief's header. Rewrite `NEXT.md`.
+- [ ] **Step 3: Commit** `Hand over the bank pilot: <n> chores from <library>, the loop run end to end`.
 
 ## What not to do
 

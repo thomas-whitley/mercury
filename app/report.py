@@ -34,7 +34,7 @@ WITH RECURSIVE chain(id, depth) AS (
     SELECT r.id, c.depth + 1 FROM runs r JOIN chain c ON r.source_run_id = c.id
 )
 SELECT r.id::text, r.provider, r.tokens_used, r.status, r.escalation_reason, r.hint,
-       r.needs_claude, r.task, r.repo, s.output
+       r.needs_claude, r.task, r.repo, s.output, r.source
 FROM chain JOIN runs r USING (id)
 LEFT JOIN steps s ON s.run_id = r.id AND s.kind = 'done'
 ORDER BY chain.depth, r.created_at
@@ -106,7 +106,14 @@ def _usd(provider: str | None, tokens: int) -> float:
 
 
 def _state(newest: tuple) -> str:
-    _, _, _, status, _, _, needs_claude, _, _, output = newest
+    run_id, _, _, status, _, _, needs_claude, _, _, output, source = newest
+    if needs_claude and source == "review_note":
+        # The note is marked done when a pull request from this branch merges.
+        return (
+            "Take it to a Claude session. It came from a review note, so push the fix to the "
+            f"branch agent/{run_id} and open the pull request from it, so the merge marks the "
+            "note done."
+        )
     if needs_claude:
         return "Take it to a Claude session."
     if status == "escalated":
@@ -126,7 +133,7 @@ def _chain_section(rows: list[tuple]) -> list[str]:
         "| Run | Provider | Tokens | USD | Status | Reason | Hint |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
-    for run_id, provider, tokens, status, reason, hint, _, _, _, _ in rows:
+    for run_id, provider, tokens, status, reason, hint, *_ in rows:
         hint_cell = (hint or "").replace("|", "/").replace("\n", " ")
         lines.append(
             f"| {run_id[:8]} | {provider or 'none'} | {tokens:,} | {_usd(provider, tokens):.4f} "

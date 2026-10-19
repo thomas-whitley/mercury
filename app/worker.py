@@ -10,7 +10,7 @@ import psycopg
 from opentelemetry import trace
 
 from app.advice import mark_if_needs_claude
-from app.budget import BudgetTrip, check_budget
+from app.budget import BudgetTrip, check_budget, home_runs_started_today, runs_started_today
 from app.chat import run_chat
 from app.config import (
     DEFAULT_CHECK_CLAIM_WINDOW_SECONDS,
@@ -80,31 +80,6 @@ WHERE finished_at IS NULL
 ORDER BY created_at
 LIMIT 5
 """
-
-# site_check makes no model call, and the checks worker claims it too, so it
-# is left out of the limit that protects the model key. A run on a home
-# provider costs no key either, and has its own limit.
-_STARTED_TODAY = """
-SELECT count(*) FROM runs
-WHERE claimed_by IS NOT NULL
-  AND type <> 'site_check'
-  AND created_at >= date_trunc('day', now())
-  AND (provider IS NULL OR NOT (provider = ANY(%s)))
-"""
-_HOME_STARTED_TODAY = """
-SELECT count(*) FROM runs
-WHERE claimed_by IS NOT NULL
-  AND created_at >= date_trunc('day', now())
-  AND provider = ANY(%s)
-"""
-
-
-def runs_started_today(conn: psycopg.Connection) -> int:
-    return conn.execute(_STARTED_TODAY, (HOME_PROVIDERS,)).fetchone()[0]
-
-
-def home_runs_started_today(conn: psycopg.Connection) -> int:
-    return conn.execute(_HOME_STARTED_TODAY, (HOME_PROVIDERS,)).fetchone()[0]
 
 
 def claim_next_run(

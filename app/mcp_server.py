@@ -69,7 +69,9 @@ def build_mcp(app: FastAPI) -> MCPServer:
             "unless the repo is marked auto_approve. Read report for escalated chores; "
             "for each, write a sharper hint through advise first, at most twice, and do "
             "the chore yourself on a local clone only when it is beyond free models, "
-            "saying why in the pull request."
+            "saying why in the pull request. For a chore from a review note, push that "
+            "fix to the branch the report names (agent/<newest run id>), so the merge "
+            "marks the note done."
         ),
     )
 

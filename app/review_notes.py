@@ -18,7 +18,9 @@ from urllib.parse import urlsplit
 import psycopg
 from psycopg.rows import dict_row
 
+from app.budget import check_budget, home_runs_started_today, runs_started_today
 from app.chores import start_chore
+from app.config import HOME_PROVIDERS, Settings
 from app.d1 import D1Client, D1Error
 from app.escalation import MESSAGE_LIMIT, _fit
 from app.github import FAILED_CONCLUSIONS, GitHubClient, GitHubError
@@ -43,9 +45,10 @@ _RECORD = """
 INSERT INTO review_notes (note_id, host, page, note_updated_at, state)
 VALUES (%s, %s, %s, %s, %s) ON CONFLICT (note_id) DO NOTHING RETURNING note_id
 """
-# A capped note already has its row. It becomes a chore only if it is still capped.
+# A capped note already has its row. It becomes a chore only if it is still capped,
+# and from the note as it reads now, so an edit made while it waited is no edit.
 _UNCAP = """
-UPDATE review_notes SET state = 'chore', updated_at = now()
+UPDATE review_notes SET state = 'chore', note_updated_at = %s, updated_at = now()
 WHERE note_id = %s AND state = 'capped' RETURNING note_id
 """
 # The note's words go on the row for the worker, which has no D1 token, to put at
@@ -207,14 +210,16 @@ def start_note_chores(
     notes: list[Note],
     config: ReviewNotesConfig,
     repo: RepoConfig,
+    settings: Settings | None = None,
 ) -> list[str]:
     """Record each new note and start a chore for those that may start one.
     Returns the ids of the runs started.
 
     A note waiting for its page gets no row and is looked at again next tick.
-    A note over the daily cap gets a capped row and starts when the 24 hours
-    have room. A note on a host that is not live is recorded as a preview and
-    never starts a chore. The row and the run are one transaction."""
+    A note over the daily cap, or on a day the worker would refuse or stop its
+    run (settings' run limits and token caps), gets a capped row and starts
+    when there is room. A note on a host that is not live is recorded as a
+    preview and never starts a chore. The row and the run are one transaction."""
     if not config.enabled:
         return []
     tracked = dict(conn.execute(_TRACKED).fetchall())
@@ -228,7 +233,7 @@ def start_note_chores(
         # only that note and the others still go on.
         try:
             with conn.transaction():
-                run_id = _advance_note(conn, note, tracked.get(note.id), config, repo)
+                run_id = _advance_note(conn, note, tracked.get(note.id), config, repo, settings)
         except psycopg.Error as error:
             # The class name only: the message can quote the note's text.
             logger.error("review note %s failed: %s", note.id, type(error).__name__)
@@ -246,6 +251,7 @@ def _advance_note(
     state: str | None,
     config: ReviewNotesConfig,
     repo: RepoConfig,
+    settings: Settings | None = None,
 ) -> str | None:
     """Returns the run id when this note started a chore."""
     if state is not None and state != "capped":
@@ -263,11 +269,16 @@ def _advance_note(
             _record(conn, note, "capped")
         logger.info("review note %s waits for the daily cap of %s", note.id, config.daily_cap)
         return None
+    if _day_is_full(conn, settings):
+        if state is None:
+            _record(conn, note, "capped")
+        logger.info("review note %s waits for the day's run limit or token cap", note.id)
+        return None
 
     if state is None:
         claimed = _record(conn, note, "chore")
     else:
-        claimed = conn.execute(_UNCAP, (note.id,)).fetchone() is not None
+        claimed = conn.execute(_UNCAP, (note.updated_at, note.id)).fetchone() is not None
     if not claimed:
         return None
     run_id = start_chore(
@@ -284,6 +295,26 @@ def _advance_note(
         ),
     )
     return run_id
+
+
+def _day_is_full(conn: psycopg.Connection, settings: Settings | None) -> bool:
+    """Whether the worker would refuse or stop a chore started now: the day's
+    run limit for the chore's provider is used up (the counts app/worker.py
+    refuses on, which there include the run just claimed, so here the day is
+    full one run sooner), or its token or spend cap has tripped. None is no
+    check. A queued run the worker has not claimed yet is not counted, so a
+    chore can still be refused; it then goes back to capped."""
+    if settings is None:
+        return False
+    provider = TASK_TYPES["repo_chore"].provider
+    if provider in HOME_PROVIDERS:
+        full = home_runs_started_today(conn) >= settings.max_local_runs_per_day
+    else:
+        full = runs_started_today(conn) >= settings.max_runs_per_day
+    tripped = check_budget(
+        conn, provider, settings.daily_tokens_per_provider, settings.monthly_budget_usd
+    )
+    return full or tripped is not None
 
 
 def _record(conn: psycopg.Connection, note: Note, state: str) -> bool:
@@ -325,6 +356,12 @@ _CHECK = "SELECT finished_at IS NOT NULL, executor FROM runs WHERE id = %s"
 _CHECK_RESULT = "SELECT output FROM steps WHERE run_id = %s AND seq = 1"
 _MOVE_RUN = "UPDATE review_notes SET run_id = %s, state = %s, updated_at = now() WHERE note_id = %s"
 _SET_STATE = "UPDATE review_notes SET state = %s, updated_at = now() WHERE note_id = %s"
+# A run the day's run limit refused, or a token or spend cap stopped. Its note
+# waits as capped and starts again, as a new chore, when there is room.
+_LIMITED = ("refused", "budget")
+_RECAP = """
+UPDATE review_notes SET state = 'capped', run_id = NULL, updated_at = now() WHERE note_id = %s
+"""
 _SET_PR = """
 UPDATE review_notes SET pr_url = %s, state = 'waiting', pr_opened_ticks = 0, updated_at = now()
 WHERE note_id = %s
@@ -560,32 +597,66 @@ def _advance_row(conn: psycopg.Connection, row: dict, tick: _Tick) -> None:
     status, finished = conn.execute(_RUN_STATUS, (run_id,)).fetchone()
     if not finished:
         return
-    pr_url = (_done(conn, run_id).get("pr_url") or "").strip() if status == "succeeded" else ""
+    done = _done(conn, run_id)
+    pr_url = (done.get("pr_url") or "").strip() if status == "succeeded" else ""
+    note_id = row["note_id"]
     if pr_url:
-        conn.execute(_SET_PR, (pr_url, row["note_id"]))
-        logger.info("review note %s is waiting on run %s", row["note_id"], run_id)
+        conn.execute(_SET_PR, (pr_url, note_id))
+        logger.info("review note %s is waiting on run %s", note_id, run_id)
         return
-    # Escalated, error, cancelled, failed, or succeeded with no pull request: the
-    # note stops holding its page and a rerun (advised, or an outage retry)
-    # brings it back to chore through the chain.
+    # How a chore that opened no pull request goes on depends on what can still
+    # happen to it. Each ending stops holding the page except an outage.
+    if status == "escalated":
+        # Thomas can answer with a hint, and the rerun brings the note back to
+        # chore through the chain. The worker, or the outage retry, announces
+        # the escalation itself.
+        conn.execute(_SET_STATE, ("question", note_id))
+        logger.info("review note %s is a question on run %s", note_id, run_id)
+        return
+    from app.repo_chore import OUTAGE  # repo_chore imports this module
+
+    if status == "error" and done.get("reason") == OUTAGE:
+        # retry_outages queues a retry, and the note follows it through the chain.
+        return
+    if status in _LIMITED:
+        # A limit of the day stopped it. It starts again, within the caps, like
+        # any capped note.
+        conn.execute(_RECAP, (note_id,))
+        logger.info("review note %s is capped again after run %s (%s)", note_id, run_id, status)
+        return
+    # Cancelled, an error that is not an outage, its own token budget spent, or
+    # anything else: no hint and no retry reaches it, so the note is closed and
+    # the line says what Thomas can do.
     _announce_ended(conn, row, run_id, status, tick)
-    conn.execute(_SET_STATE, ("question", row["note_id"]))
-    logger.info("review note %s is a question on run %s (%s)", row["note_id"], run_id, status)
+    conn.execute(_SET_STATE, ("closed", note_id))
+    logger.info("review note %s closed after run %s (%s)", note_id, run_id, status)
 
 
 def _announce_ended(
     conn: psycopg.Connection, row: dict, run_id: str, status: str, tick: _Tick
 ) -> None:
-    """One short line to Thomas when a chore ended without a pull request, unless
-    the worker already announced it. A send that fails for now raises, so the row
-    stays a chore and the next tick tries again."""
+    """One short line to Thomas when a chore ended without a pull request and
+    without a way back, unless the worker already announced it. A send that
+    fails for now raises, so the row stays a chore and the next tick tries
+    again."""
     announced = conn.execute(_ANNOUNCED, (run_id,)).fetchone()
     if (announced and announced[0] is not None) or tick.telegram is None or tick.chat_id is None:
         return
-    text = (
-        f"The chore for note {row['note_id']} on {row['page'][:PAGE_LIMIT]} ended {status} "
-        f"with no pull request.\n{tick.api_base_url.rstrip('/')}/#/runs/{run_id}"
-    )
+    page = row["page"][:PAGE_LIMIT]
+    link = f"{tick.api_base_url.rstrip('/')}/#/runs/{run_id}"
+    if status == "cancelled":
+        text = (
+            f"You cancelled the chore for note {row['note_id']} on {page}, so Mercury will not "
+            "run it again. The note stays open on the site: make the change by hand if it "
+            f"still needs one, then mark it done on the site.\n{link}"
+        )
+    else:
+        text = (
+            f"The chore for note {row['note_id']} on {page} ended {status} with no pull "
+            "request. It cannot take a hint and will not be retried, so Mercury has closed "
+            "it. Make the change by hand or in a Claude session, then mark the note done on "
+            f"the site.\n{link}"
+        )
     try:
         tick.telegram.send_message(tick.chat_id, text)
     except TelegramError as error:
@@ -753,6 +824,8 @@ _MARK_DONE_IN_D1 = (
     "WHERE id = ? AND status = 'open'"
 )
 _TRACKED_BY_PR = ("chore", "question", "waiting", "reported")
+# The rows whose pull request is looked up: a merge marks the note done.
+_SETTLED_BY_PR = ("question", "waiting", "reported")
 
 
 def settle_notes(
@@ -767,9 +840,10 @@ def settle_notes(
     failed, so an outage never marks every note gone.
 
     A row whose note left D1 becomes gone and its pull request is left alone.
-    A changed updated_at flags the row edited and never reruns it. A waiting or
-    reported row whose pull request merged is marked done in D1 and becomes
-    merged, and one whose pull request closed becomes closed. A D1 write that
+    A changed updated_at flags the row edited and never reruns it. A waiting,
+    reported or question row whose pull request merged is marked done in D1
+    and becomes merged, and one whose pull request closed becomes closed. A
+    question's pull request is the one on its newest run's branch. A D1 write that
     fails leaves its row as it was; the other rows still settle, and the last
     D1Error is raised at the end so the caller counts it."""
     open_by_id = {n.id: n for n in notes}
@@ -807,10 +881,15 @@ def _settle_row(
     if note.updated_at != row["note_updated_at"]:
         conn.execute(_MARK_EDITED, (note.updated_at, note_id))
         logger.info("review note %s was edited, not rerun", note_id)
-    if state not in ("waiting", "reported") or row["run_id"] is None or github is None:
+    if state not in _SETTLED_BY_PR or row["run_id"] is None or github is None:
         return
+    run_id = str(row["run_id"])
+    if state == "question":
+        # A question can end in a Claude session, which pushes its fix to the
+        # newest run's branch (the report tells it to), so that merge counts too.
+        run_id = str(conn.execute(_NEWEST_RUN, (run_id,)).fetchone()[0])
     try:
-        pull = github.pull_state(config.repo, f"agent/{row['run_id']}")
+        pull = github.pull_state(config.repo, f"agent/{run_id}")
     except GitHubError:
         logger.error("review note %s: pull request state not read, will retry", note_id)
         return
@@ -821,5 +900,6 @@ def _settle_row(
     elif pull == "closed":
         conn.execute(_SET_STATE, ("closed", note_id))
         logger.info("review note %s: pull request closed, note left open", note_id)
-    elif pull == "none":
+    elif pull == "none" and state != "question":
+        # A question has no pull request until someone opens one.
         logger.warning("review note %s: no pull request found for its branch", note_id)

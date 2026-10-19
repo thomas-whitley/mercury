@@ -514,7 +514,7 @@ def advance_review_notes(
             settle_notes(conn, d1, notes_config, github, notes)
         except D1Error as error:
             settle_error = error
-        started = start_note_chores(conn, notes, notes_config, repo)
+        started = start_note_chores(conn, notes, notes_config, repo, settings)
         if settle_error is not None:
             raise settle_error
     except Exception as error:  # noqa: BLE001 - nothing here may stop the rest of the tick

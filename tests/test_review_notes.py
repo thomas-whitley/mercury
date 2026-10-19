@@ -5,6 +5,7 @@ at a time for each page. The note text is data and never reaches a log line.
 """
 
 import dataclasses
+import datetime
 import logging
 
 import psycopg
@@ -14,6 +15,8 @@ from app.config import load_settings
 from app.d1 import D1Client, D1Error
 from app.github import GitHubClient
 from app.mercury_config import MercuryConfig, RepoConfig, ReviewNotesConfig
+from app.repo_chore import OUTAGE
+from app.report import build_report, notes_waiting
 from app.review_notes import (
     Note,
     advance_waiting,
@@ -1011,7 +1014,8 @@ def chore_run(conn, note_id=1, **changes) -> str:
     ("status", "output"),
     [
         ("error", {"reason": "GitHub POST /repos/owner/site/pulls: HTTP 422"}),
-        ("cancelled", {}),
+        ("error", {"reason": "git clone failed: fatal: unable to access"}),
+        ("budget_exhausted", {"reason": "token budget spent"}),
         ("failed", {}),
         ("succeeded", {"summary": "no pull request"}),
     ],
@@ -1019,14 +1023,18 @@ def chore_run(conn, note_id=1, **changes) -> str:
 def test_a_chore_that_ends_without_a_pull_request_frees_the_page_and_is_announced_once(
     migrated_db, tick, fake_telegram, status, output
 ):
+    """No hint and no retry reaches these endings, so the line says what Thomas
+    can do, and the note is closed rather than counted as waiting on him."""
     run_id = chore_run(migrated_db)
     finish_chore(migrated_db, run_id, status, **output)
 
     tick(3)
 
-    assert row(migrated_db)["state"] == "question"
+    assert row(migrated_db)["state"] == "closed"
     [text] = messages(fake_telegram)
     assert "note 1" in text and "/about/" in text and status in text and run_id in text
+    assert "Claude session" in text and "mark the note done on the site" in text
+    assert notes_waiting(migrated_db) == 0
     # The page is free for the next note.
     started = start_note_chores(migrated_db, [note(2)], make_config(), REPO)
     assert len(started) == 1
@@ -1047,9 +1055,11 @@ def test_an_escalation_the_worker_announced_is_not_announced_again(
 
 def test_an_outage_retry_still_advances_through_the_chain(migrated_db, tick, fake_telegram):
     first = chore_run(migrated_db)
-    finish_chore(migrated_db, first, "error", reason="the model provider was unreachable")
+    finish_chore(migrated_db, first, "error", reason=OUTAGE)
     tick()
-    assert row(migrated_db)["state"] == "question"
+    # retry_outages will retry it, so the note stays a chore and nothing is sent.
+    assert row(migrated_db)["state"] == "chore"
+    assert messages(fake_telegram) == []
     retry = str(
         migrated_db.execute(
             "INSERT INTO runs (task, type, provider, repo, status, source, source_run_id) "
@@ -1065,7 +1075,7 @@ def test_an_outage_retry_still_advances_through_the_chain(migrated_db, tick, fak
 
     state = row(migrated_db)
     assert (state["state"], str(state["run_id"])) == ("waiting", retry)
-    assert len(messages(fake_telegram)) == 1
+    assert messages(fake_telegram) == []
 
 
 def test_live_queued_and_preview_failing_queues_only_the_preview_next_tick(
@@ -1458,3 +1468,171 @@ def test_an_edit_after_the_message_is_flagged_and_the_row_stays_reported(
         "reported",
     )
     assert len(messages(fake_telegram)) == sent
+
+
+# ---- Final review: endings with no way back, and a question fixed by hand ----
+
+
+def claimed_runs_today(conn, count: int, provider: str = "gemini") -> None:
+    for _ in range(count):
+        conn.execute(
+            "INSERT INTO runs (task, type, provider, status, source, claimed_by) "
+            "VALUES ('t', 'pytest', %s, 'succeeded', 'api', 'w')",
+            (provider,),
+        )
+
+
+def limits(**changes):
+    return dataclasses.replace(load_settings(), **changes)
+
+
+def test_a_full_day_of_runs_leaves_a_new_note_capped(migrated_db):
+    claimed_runs_today(migrated_db, 3)
+
+    started = start_note_chores(
+        migrated_db, [note(1)], make_config(), REPO, settings=limits(max_runs_per_day=3)
+    )
+
+    assert started == []
+    assert rows(migrated_db) == [(1, "capped", None)]
+    assert run_count(migrated_db) == 3
+
+    started = start_note_chores(
+        migrated_db, [note(1)], make_config(), REPO, settings=limits(max_runs_per_day=4)
+    )
+
+    assert len(started) == 1
+    assert states(migrated_db) == {1: "chore"}
+
+
+def test_a_spent_token_cap_leaves_a_new_note_capped(migrated_db):
+    started = start_note_chores(
+        migrated_db, [note(1)], make_config(), REPO, settings=limits(daily_tokens_per_provider=0)
+    )
+
+    assert started == []
+    assert rows(migrated_db) == [(1, "capped", None)]
+
+
+@pytest.mark.parametrize(
+    ("status", "output"),
+    [
+        ("refused", {"reason": "daily limit of 40 runs reached"}),
+        ("budget", {"cap": "daily_tokens", "reason": "gemini has used 500,000 tokens"}),
+    ],
+)
+def test_a_chore_stopped_by_a_limit_goes_back_to_capped_and_starts_again(
+    migrated_db, tick, fake_telegram, status, output
+):
+    first = chore_run(migrated_db)
+    finish_chore(migrated_db, first, status, **output)
+
+    tick()
+
+    assert rows(migrated_db) == [(1, "capped", None)]
+    assert messages(fake_telegram) == []
+    assert notes_waiting(migrated_db) == 0
+    started = start_note_chores(migrated_db, [note(1)], make_config(), REPO)
+    assert len(started) == 1 and started[0] != first
+    assert rows(migrated_db)[0][:2] == (1, "chore")
+
+
+def test_a_chore_thomas_cancelled_is_closed_and_the_line_says_what_he_can_do(
+    migrated_db, tick, fake_telegram
+):
+    run_id = chore_run(migrated_db)
+    finish_chore(migrated_db, run_id, "cancelled")
+
+    tick(3)
+
+    assert row(migrated_db)["state"] == "closed"
+    [text] = messages(fake_telegram)
+    assert "You cancelled the chore for note 1" in text and run_id in text
+    assert "mark it done on the site" in text
+    assert notes_waiting(migrated_db) == 0
+    assert start_note_chores(migrated_db, [note(1)], make_config(), REPO) == []
+
+
+def test_an_escalation_is_left_to_the_worker_to_announce(migrated_db, tick, fake_telegram):
+    """Even before the worker has recorded its message id: no race, no second line."""
+    run_id = chore_run(migrated_db)
+    finish_chore(migrated_db, run_id, "escalated", reason="tests still failing after 3 attempts")
+
+    tick()
+
+    assert row(migrated_db)["state"] == "question"
+    assert messages(fake_telegram) == []
+
+
+def needs_claude_question(conn) -> str:
+    run_id = chore_run(conn)
+    finish_chore(conn, run_id, "escalated", reason="tests still failing after 3 attempts")
+    conn.execute(
+        "UPDATE runs SET escalation_reason = 'tests still failing after 3 attempts', "
+        "needs_claude = true WHERE id = %s",
+        (run_id,),
+    )
+    conn.execute("UPDATE review_notes SET state = 'question' WHERE note_id = 1")
+    return run_id
+
+
+def test_a_question_fixed_in_a_claude_session_is_marked_done_when_its_branch_merges(
+    migrated_db, github, cloudflare
+):
+    cloudflare.add_note(1)
+    needs_claude_question(migrated_db)
+    open_pull(github, migrated_db, merged=True, state="closed")
+
+    settle(migrated_db, cloudflare, github)
+
+    assert d1_writes(cloudflare) == [{"sql": DONE_SQL, "params": [1]}]
+    assert row(migrated_db)["state"] == "merged"
+
+
+def test_an_open_question_with_no_pull_request_is_left_alone(
+    migrated_db, github, cloudflare, caplog
+):
+    cloudflare.add_note(1)
+    needs_claude_question(migrated_db)
+
+    with caplog.at_level(logging.WARNING, logger="agent_runs.review_notes"):
+        settle(migrated_db, cloudflare, github)
+
+    assert row(migrated_db)["state"] == "question"
+    assert d1_writes(cloudflare) == []
+    assert "no pull request found" not in caplog.text
+
+
+def test_the_report_tells_a_claude_session_which_branch_a_note_chore_needs(migrated_db):
+    run_id = needs_claude_question(migrated_db)
+
+    text = build_report(
+        migrated_db,
+        datetime.date(2000, 1, 1),
+        daily_tokens=500_000,
+        monthly_usd=5.0,
+        max_runs_per_day=40,
+    )
+
+    assert "Take it to a Claude session." in text
+    assert f"push the fix to the branch agent/{run_id}" in text
+
+
+def test_a_note_edited_while_capped_is_not_flagged_edited_when_it_starts(
+    migrated_db, cloudflare, github
+):
+    cloudflare.add_note(1)
+    start_note_chores(migrated_db, open_notes(d1_for(cloudflare)), make_config(daily_cap=0), REPO)
+    assert states(migrated_db) == {1: "capped"}
+    cloudflare.notes[0]["updated_at"] = "2026-10-19 05:00:00"
+
+    start_note_chores(migrated_db, open_notes(d1_for(cloudflare)), make_config(), REPO)
+    settle(migrated_db, cloudflare, github)
+
+    assert migrated_db.execute(
+        "SELECT state, edited, note_updated_at FROM review_notes"
+    ).fetchone() == (
+        "chore",
+        False,
+        "2026-10-19 05:00:00",
+    )

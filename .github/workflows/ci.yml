@@ -7,7 +7,7 @@ on:
 
 jobs:
   lint-and-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     services:
       postgres:
@@ -52,7 +52,7 @@ jobs:
   # checks/ is its own npm project with no workspace. Lighthouse is stubbed in
   # these tests, so no Chrome is needed here.
   checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: checks
@@ -78,7 +78,7 @@ jobs:
   # it again in its Node stage; this job is where a type error or a failing
   # component test shows up.
   web:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: web
@@ -101,7 +101,7 @@ jobs:
         run: npm test
 
   compose:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     env:
       # A short window so the fallback test takes seconds, and a PageSpeed
       # endpoint where nothing listens, so it never calls Google.

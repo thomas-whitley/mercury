@@ -1,6 +1,6 @@
 # Review notes become chores
 
-Date: 2026-10-19. Status: design written, waiting for Thomas to read it.
+Date: 2026-10-19. Status: approved by Thomas on 2026-10-19.
 
 ## Why
 
@@ -93,6 +93,41 @@ Thomas named two ways this fails even when it technically works.
   ahead of all three. The reasons are a volume of a few notes a week, Thomas's merge gating every change, and gemini's
   33 of 33 in Phase 3. Phase 4's own findings and its Python first order are unchanged. The first note Mercury handles
   is a supervised trial, watched end to end before the feature is trusted.
+
+## Settled with Thomas in the second pass (2026-10-19)
+
+These replace anything below that says otherwise.
+
+- **Live hosts.** Notes on `ludoelectrical.com` and on the production `workers.dev` host become chores. Both answered
+  200 on 2026-10-19. The live side of the Lighthouse comparison is `ludoelectrical.com`.
+- **The preview pattern is proven.** Cloudflare names a branch preview `<branch>-<worker>.<subdomain>.workers.dev`, and
+  the `review-mode` branch's preview answered 200 on 2026-10-19. A branch `agent/<run id>` gives a 58 character label,
+  under DNS's 63.
+- **Open notes already in D1 at launch** are handled as new ones, within the daily cap.
+- **One note per page at a time.** A note waits while another note's pull request on the same page is open, then
+  starts from the updated `main`. Notes on different pages run side by side within the cap.
+- **Shared parts.** Components, layouts and styles stay inside the diff guard. A diff that touches one of them gets a
+  line in the message saying it changes something every page uses.
+- **Merging stays on GitHub.** The message links the pull request and carries no merge button.
+- **Generic in the public repo.** The code describes a `review_notes:` source in `mercury.yaml` (repo, live hosts,
+  preview pattern, Cloudflare account and database ids). Only the private `mercury-config` names Luke's site.
+- **An off switch.** `review_notes.enabled: false` stops new notes starting chores. Anything already started finishes.
+- **The tick** is set on the first tick after the merge. Mercury does not check the live page for the change.
+- **One worker size.** The 1 vCPU and 2 GiB worker runs every chore, Python ones included.
+- **A reverted change** does not reopen its note.
+- **Build order**, each step green before the next:
+  1. Node 24 and the larger worker, proven by one chore on the site repo queued by hand through MCP.
+  2. The CI workflow in the site repo.
+  3. Reading notes and starting chores, with the seen notes table, the cap and the one note per page wait.
+  4. The pull request layout, the diff guard and the flags.
+  5. The preview, Lighthouse and the CI result in the message.
+  6. Marking the note done after the merge, the report section and the digest line.
+  7. The supervised trial.
+- **The trial.** Thomas leaves the first note himself, through Luke's review link, asking for a harmless copy change.
+  It passes only if it opens a pull request that changes only what the note asked, the worker checks and CI are green,
+  one Telegram message arrives with both scores from the same executor, and after the merge the change is on
+  `ludoelectrical.com` and the note shows its tick. The README records each step's time, the worker's peak memory and
+  the tokens. Luke's link is used for real only after a passing trial.
 
 ## Decided by Claude (Thomas can overrule any of these)
 

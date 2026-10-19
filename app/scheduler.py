@@ -469,12 +469,15 @@ def advance_review_notes(
     )
     try:
         notes = open_notes(d1)
-    except D1Error as error:
-        logger.error("could not read the review notes: %s", error)
+        started = start_note_chores(conn, notes, notes_config, repo)
+    except Exception as error:  # noqa: BLE001 - nothing here may stop the rest of the tick
+        # D1Error carries a safe message. For anything else only the class
+        # name is logged, since a message can quote a note.
+        reason = str(error) if isinstance(error, D1Error) else type(error).__name__
+        logger.error("review notes step failed: %s", reason)
         _fail(conn, schedule_name, "Reading the review notes", telegram, config.telegram_chat_id)
         return []
     record_success(conn, schedule_name)
-    started = start_note_chores(conn, notes, notes_config, repo)
     logger.info("review notes: %s open, %s chore(s) started", len(notes), len(started))
     return started
 

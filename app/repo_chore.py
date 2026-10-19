@@ -41,6 +41,7 @@ import psycopg
 
 from app.advice_text import MAX_DIFF_CHARS, advice_block
 from app.chore_prompts import (
+    ASK,
     MAX_FILE_CHARS,
     MAX_FILES_READ,
     SYSTEM,
@@ -285,7 +286,13 @@ def _run(
     if state["tokens"] >= token_budget:
         return close("budget_exhausted", {"reason": "token budget spent"})
 
-    prompt = edit_prompt(instruction, advice, listing, shown, may_ask=from_note)
+    # What only a note chore is told. It rides on every prompt of the chore, the
+    # retries included, so a red attempt does not make the model forget it.
+    where = ""
+    if setup.allowed_paths is not None:
+        where = f" Change only files that equal or sit under: {', '.join(setup.allowed_paths)}."
+    note_text = (ASK if from_note else "") + where
+    prompt = edit_prompt(instruction, advice, listing, shown, may_ask=from_note) + where
     written: set[str] = set()
     test_output = ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -304,6 +311,14 @@ def _run(
             )
         refused = _refused_paths(files)
         outside = [p for p in _outside_paths(files, setup.allowed_paths) if p not in refused]
+        if setup.allowed_paths is not None and isinstance(files, dict) and not refused:
+            # A symlink already in the repo can lead a clean looking path out of the
+            # allowed folders, or out of the clone. Judge where the write would land.
+            outside += [
+                p
+                for p in files
+                if p not in outside and not _lands_inside(clone, p, setup.allowed_paths)
+            ]
         if not isinstance(files, dict) or not files or refused or outside:
             problem = "Your reply was not the JSON asked for."
             if refused:
@@ -314,8 +329,7 @@ def _run(
             if outside:
                 problem = (
                     f"{problem + ' ' if refused else ''}These paths are outside what this change "
-                    f"may touch: {', '.join(outside)}. Change only files that equal or sit under: "
-                    f"{', '.join(setup.allowed_paths)}."
+                    f"may touch: {', '.join(outside)}.{where}"
                 )
                 state["outside"] += 1
             state["unusable"] += 1
@@ -355,7 +369,7 @@ def _run(
                     f"`{setup.repo.test_command}` passed, but your change leaves the repository "
                     "as it was, so it does not carry out the instruction. "
                     'Reply {"files": {"path": "the full new contents"}, "summary": "one line"} '
-                    "with the files that make the change."
+                    "with the files that make the change." + note_text
                 )
                 continue
             problems = weakened_tests(staged)
@@ -377,7 +391,7 @@ def _run(
                 f"The repository's own version of those files:\n{originals}\n\n"
                 "Keep every existing test as it is, with the same name, and add new tests "
                 'beside them. Reply {"files": {"path": "the full new contents"}, '
-                '"summary": "one line"} with the corrected files.'
+                '"summary": "one line"} with the corrected files.' + note_text
             )
             continue
         prompt = (
@@ -385,7 +399,7 @@ def _run(
             f"Your change so far:\n{current}\n\n"
             f"`{setup.repo.test_command}` failed. Its output ended:\n{test_output}\n\n"
             'Reply {"files": {"path": "the full new contents"}, "summary": "one line"} '
-            "with the corrected files."
+            "with the corrected files." + note_text
         )
     else:
         git.run("add", "--", *sorted(written), cwd=clone) if written else None
@@ -557,17 +571,29 @@ def _outside_paths(files, allowed: tuple[str, ...] | None) -> list[str]:
     _refused_paths still applies to the same paths, so the escaping rules hold."""
     if allowed is None or not isinstance(files, dict):
         return []
-    return [
-        str(path)
-        for path in files
-        if not (
-            isinstance(path, str)
-            and any(
-                path == entry or (entry.endswith("/") and path.startswith(entry))
-                for entry in allowed
-            )
-        )
-    ]
+    return [str(path) for path in files if not _allowed(path, allowed)]
+
+
+def _allowed(path: object, allowed: tuple[str, ...]) -> bool:
+    """Stands alone, whatever _refused_paths did first: a plain relative path
+    with no empty, . or .. segment and no backslash, and then the prefix test."""
+    if not isinstance(path, str) or path.startswith("/") or "\\" in path:
+        return False
+    if any(segment in ("", ".", "..") for segment in path.split("/")):
+        return False
+    return any(
+        path == entry or (entry.endswith("/") and path.startswith(entry)) for entry in allowed
+    )
+
+
+def _lands_inside(clone: Path, path: str, allowed: tuple[str, ...]) -> bool:
+    """Where the write really lands, symlinks followed, is inside the clone and
+    is itself an allowed path."""
+    try:
+        landed = (clone / path).resolve().relative_to(clone.resolve())
+    except (ValueError, OSError, RuntimeError):
+        return False
+    return _allowed(landed.as_posix(), allowed)
 
 
 def _read_files(clone: Path, paths: list[str]) -> dict[str, str]:

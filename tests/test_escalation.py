@@ -199,3 +199,44 @@ def test_a_note_chain_that_fails_after_a_question_is_still_announced_once(
 
     assert announce_escalation(migrated_db, client(fake_telegram), CHAT, second, PAGE) is None
     assert len(fake_telegram.sent()) == 1
+
+
+def test_a_note_question_with_a_huge_note_still_fits_in_one_message(migrated_db, fake_telegram):
+    from app.review_notes import Note, instruction_for
+
+    ticks = "`" * 250 + "x" + "`" * 249
+    note = Note(
+        id=1,
+        host="h",
+        page="/p/",
+        anchor_text=ticks,
+        quote=ticks,
+        body="`" * 1000 + "x" + "`" * 999,
+        updated_at="t",
+    )
+    run_id = escalated_chore(
+        migrated_db, NEEDS_THOMAS, source="review_note", diff="", question="Q" * 1000
+    )
+    migrated_db.execute("UPDATE runs SET task = %s WHERE id = %s", (instruction_for(note), run_id))
+
+    message_id = announce_escalation(migrated_db, client(fake_telegram), CHAT, run_id, PAGE)
+
+    assert message_id is not None
+    [sent] = fake_telegram.sent()
+    text = sent["text"]
+    assert len(text) <= 4096
+    assert "Q" * 1000 in text
+    assert f"{PAGE}/#/runs/{run_id}" in text
+    assert "Reply to this message with a hint" in text
+    # Every fence the cut left open is closed again.
+    fences = [line for line in text.splitlines() if line and set(line) == {"`"}]
+    assert len(fences) % 2 == 0
+
+
+def test_a_short_task_is_sent_whole():
+    from app.escalation import escalation_text
+
+    text = escalation_text("a" * 36, "o/r", "Do it.", "why", "", PAGE)
+
+    assert "Do it." in text
+    assert "cut" not in text

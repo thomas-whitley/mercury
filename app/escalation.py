@@ -31,6 +31,10 @@ QUIET_SOURCES = ("eval", "bank")
 logger = logging.getLogger("agent_runs.escalation")
 
 OUTPUT_TAIL_CHARS = 1000
+# Telegram refuses a message over 4096 characters. The question, the link and
+# the reply line always fit, so the task section is what gives way.
+MESSAGE_LIMIT = 4000
+CUT = "\n(cut)"
 
 _CHAIN = """
 WITH RECURSIVE chain(id, source_run_id, depth) AS (
@@ -84,20 +88,44 @@ def escalation_text(
     page_base_url: str,
     question: str = "",
 ) -> str:
-    lines = [f"Chore on {repo} escalated ({run_id[:8]}): {reason}", "", task.strip()]
+    head = f"Chore on {repo} escalated ({run_id[:8]}): {reason}"
+    rest = []
     if question:
-        lines += ["", "The model asks:", question.strip()[:OUTPUT_TAIL_CHARS]]
+        rest += ["", "The model asks:", question.strip()[:OUTPUT_TAIL_CHARS]]
     tail = (test_output or "").strip()[-OUTPUT_TAIL_CHARS:]
     if tail:
-        lines += ["", "The tests ended:", tail]
-    lines += [
+        rest += ["", "The tests ended:", tail]
+    rest += [
         "",
         f"{page_base_url.rstrip('/')}/#/runs/{run_id}",
         "",
         "Reply to this message with a hint and I will rerun it from main with your hint. "
         "Or send /hint followed by the hint.",
     ]
-    return "\n".join(lines)
+    room = MESSAGE_LIMIT - len(head) - len("\n".join(rest)) - 4
+    return "\n".join([head, "", _fit(task.strip(), room), *rest])
+
+
+def _fit(task: str, room: int) -> str:
+    """The task cut to room characters, on a line boundary. A fenced block the
+    cut leaves open is closed again, so the cut falls in its content and never
+    in a fence."""
+    if len(task) <= room:
+        return task
+    lines = task[:room].split("\n")[:-1]
+    while lines:
+        open_fence = ""
+        for line in lines:
+            if len(line) >= 3 and set(line) == {"`"}:
+                if not open_fence:
+                    open_fence = line
+                elif len(line) >= len(open_fence):
+                    open_fence = ""
+        text = "\n".join(lines) + CUT + (f"\n{open_fence}" if open_fence else "")
+        if len(text) <= room:
+            return text
+        lines.pop()
+    return CUT.strip()
 
 
 def announce_escalation(

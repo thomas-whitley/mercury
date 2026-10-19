@@ -1313,3 +1313,94 @@ def test_an_ordinary_chore_is_not_given_the_note_paths(
     )
 
     assert result.status == "succeeded"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/pages/../../package.json",
+        "src/pages/./x.astro",
+        "/etc/passwd",
+        "src\\pages\\x.astro",
+        "src/pages//x.astro",
+    ],
+)
+def test_a_path_that_only_looks_like_it_is_under_an_allowed_folder_is_outside(path):
+    from app.repo_chore import _outside_paths
+
+    assert _outside_paths({path: "x"}, PAGES) == [path]
+
+
+def test_an_honest_path_under_an_allowed_folder_is_not_outside():
+    from app.repo_chore import _outside_paths
+
+    assert _outside_paths({"src/pages/a/b.astro": "x"}, PAGES) == []
+
+
+def link_into_remote(remote, tmp_path, name: str, target: str) -> None:
+    work = tmp_path / "linker"
+    git("clone", "-q", str(remote), str(work), cwd=tmp_path)
+    (work / "src" / "pages").mkdir(parents=True)
+    (work / "src" / "pages" / name).symlink_to(target)
+    git("add", ".", cwd=work)
+    git(
+        "-c", "user.name=seed", "-c", "user.email=seed@example.com",
+        "commit", "-qm", "link", cwd=work,
+    )  # fmt: skip
+    git("push", "-q", "origin", "main", cwd=work)
+
+
+@pytest.mark.parametrize(
+    "target, written",
+    [
+        ("../..", "src/pages/link/escape.txt"),
+        ("../../..", "src/pages/link/escape.txt"),
+        ("../../../escape.txt", "src/pages/link"),
+    ],
+)
+def test_a_write_through_a_symlink_out_of_the_allowed_folder_is_refused(
+    migrated_db, remote, github, tmp_path, monkeypatch, target, written
+):
+    import pathlib
+
+    link_into_remote(remote, tmp_path, "link", target)
+    run_id = note_chore(migrated_db)
+    reply = json.dumps({"files": {written: "pwned"}, "summary": "x"})
+    model = StubModel(replies=[pick("calc.py"), reply])
+    writes = []
+    real = pathlib.Path.write_text
+    monkeypatch.setattr(
+        pathlib.Path,
+        "write_text",
+        lambda self, *a, **k: (writes.append(str(self)), real(self, *a, **k))[1],
+    )
+
+    result = run_repo_chore(
+        migrated_db, run_id, model, setup(tmp_path, github, allowed_paths=PAGES), worker_id=WORKER
+    )
+
+    assert result.status == "escalated"
+    assert done(migrated_db, run_id)["reason"] == OUTSIDE_PATHS
+    assert remote_branches(remote) == ["main"]
+    assert not [w for w in writes if w.endswith(("escape.txt", "/link"))]
+
+
+def test_a_note_chore_retry_prompts_keep_the_question_option_and_the_paths(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = note_chore(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), change(BAD_CALC)])
+
+    allowed = ("calc.py", "test_subtract.py")
+
+    run_repo_chore(
+        migrated_db, run_id, model, setup(tmp_path, github, allowed_paths=allowed), worker_id=WORKER
+    )
+
+    edits = model.prompts[1:]
+    assert len(edits) == 3
+    assert "tests still failing" not in edits[0]
+    assert "failed" in edits[1] and "failed" in edits[2]
+    for prompt in edits:
+        assert '{"question"' in prompt
+        assert "test_subtract.py" in prompt

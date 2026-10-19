@@ -11,6 +11,10 @@ from urllib.parse import quote
 
 GITHUB_TIMEOUT_SECONDS = 20.0
 
+# A workflow whose newest completed run ended in one of these is failing.
+# cancelled and skipped are not failures.
+FAILED_CONCLUSIONS = ("failure", "timed_out", "startup_failure")
+
 
 class GitHubError(Exception):
     """GitHub refused or could not be reached. The message never carries the token."""

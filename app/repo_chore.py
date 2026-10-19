@@ -510,7 +510,8 @@ def _open_pull(
     write("pr", {"url": url})
     # The diff stays, so an eval chore whose pull request fails its grade can
     # be advised with it (decision 47 of docs/build-brief-evals.md).
-    return close("succeeded", {"pr_url": url, "diff": diff[:MAX_DIFF_CHARS]})
+    # The summary stays too: the note's Telegram message quotes it.
+    return close("succeeded", {"pr_url": url, "diff": diff[:MAX_DIFF_CHARS], "summary": summary})
 
 
 def _pull_for(conn: psycopg.Connection, run_id: str, instruction: str, setup: ChoreSetup) -> _Pull:

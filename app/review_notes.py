@@ -11,14 +11,19 @@ into a log line, an error message or the run list.
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import psycopg
+from psycopg.rows import dict_row
 
 from app.chores import start_chore
 from app.d1 import D1Client, D1Error
+from app.escalation import MESSAGE_LIMIT, _fit
+from app.github import FAILED_CONCLUSIONS, GitHubClient, GitHubError
 from app.mercury_config import RepoConfig, ReviewNotesConfig
 from app.tasks import TASK_TYPES
+from app.telegram import TelegramClient, TelegramError
 
 logger = logging.getLogger("agent_runs.review_notes")
 
@@ -283,3 +288,366 @@ def _advance_note(
 def _record(conn: psycopg.Connection, note: Note, state: str) -> bool:
     row = conn.execute(_RECORD, (note.id, note.host, note.page, note.updated_at, state)).fetchone()
     return row is not None
+
+
+# ---- The preview, Lighthouse, CI and the one message ----
+
+# A note's pull request is followed one step a tick (docs/superpowers/specs/
+# 2026-10-19-review-notes-chores-design.md, "The scheduler never waits").
+NO_PREVIEW_TICKS = 2  # failed preview checks, counted from the first one, before giving up
+LIGHTHOUSE_TICKS = 3  # ticks a queued check may take before the message goes without scores
+SIZE_FILES = 3
+SIZE_LINES = 60
+SCORE_WARNING_POINTS = 5
+ERROR_CHARS = 200
+SUMMARY_CHARS = 300
+
+_WAITING_ROWS = """
+SELECT note_id, state, run_id, host, page, note_updated_at, pr_url, pr_opened_ticks, preview_url,
+       live_check_id, preview_check_id, note_body, note_anchor, note_quote, edited
+FROM review_notes WHERE state IN ('chore', 'question', 'waiting') ORDER BY note_id
+"""
+# The run and every rerun advised from it (through source_run_id), newest first.
+_NEWEST_RUN = """
+WITH RECURSIVE later(id, created_at) AS (
+    SELECT id, created_at FROM runs WHERE id = %s
+    UNION
+    SELECT r.id, r.created_at FROM runs r JOIN later l ON r.source_run_id = l.id
+)
+SELECT id FROM later ORDER BY created_at DESC, id LIMIT 1
+"""
+_RUN_STATUS = "SELECT status, finished_at IS NOT NULL FROM runs WHERE id = %s"
+_STEP_OUTPUT = "SELECT output FROM steps WHERE run_id = %s AND kind = %s ORDER BY seq DESC LIMIT 1"
+_CHECK = "SELECT finished_at IS NOT NULL, executor FROM runs WHERE id = %s"
+_CHECK_RESULT = "SELECT output FROM steps WHERE run_id = %s AND seq = 1"
+_MOVE_RUN = "UPDATE review_notes SET run_id = %s, state = %s, updated_at = now() WHERE note_id = %s"
+_SET_STATE = "UPDATE review_notes SET state = %s, updated_at = now() WHERE note_id = %s"
+_SET_PR = """
+UPDATE review_notes SET pr_url = %s, state = 'waiting', pr_opened_ticks = 0, updated_at = now()
+WHERE note_id = %s
+"""
+_SET_TICKS = "UPDATE review_notes SET pr_opened_ticks = %s, updated_at = now() WHERE note_id = %s"
+_SET_PREVIEW = """
+UPDATE review_notes SET preview_url = %s, live_check_id = %s, preview_check_id = %s,
+                        pr_opened_ticks = 0, updated_at = now()
+WHERE note_id = %s
+"""
+_SET_REPORTED = """
+UPDATE review_notes SET state = 'reported', message_id = %s, updated_at = now()
+WHERE note_id = %s AND state = 'waiting'
+"""
+
+_DIFF_HEADER = re.compile(r"diff --git a/(.*) b/(.*)")
+_KEY = re.compile(r"[+-]\s*['\"]?([A-Za-z_$][\w$]*)['\"]?\s*:")
+
+
+def preview_alias(branch: str) -> str:
+    """The branch as the label Cloudflare gives its preview: lower case, every
+    run of characters outside a-z and 0-9 one hyphen, no hyphen at either end."""
+    return re.sub(r"[^a-z0-9]+", "-", branch.lower()).strip("-")
+
+
+def _under(path: str, entry: str) -> bool:
+    return path == entry or path.startswith(entry.rstrip("/") + "/")
+
+
+def diff_flags(diff: str, config: ReviewNotesConfig) -> list[str]:
+    """The lines that lead the message about a diff: larger than a note needs,
+    touching something every page uses, and changing the site's contact
+    details (which fields, never their values)."""
+    changed: dict[str, list[str]] = {}
+    current = None
+    in_hunk = False
+    for line in diff.splitlines():
+        # Inside a hunk every line starts with a space, + or -, so a line that
+        # starts with "diff --git" is always a new file's header.
+        header = _DIFF_HEADER.fullmatch(line) if line.startswith("diff --git ") else None
+        if header:
+            current = header.group(2)
+            changed[current] = []
+            in_hunk = False
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and current is not None and line[:1] in "+-":
+            changed[current].append(line)
+
+    lines = sum(len(body) for body in changed.values())
+    flags = []
+    if len(changed) > SIZE_FILES or lines > SIZE_LINES:
+        flags.append(
+            "This is larger than a note usually needs: "
+            f"{len(changed)} files, {lines} changed lines."
+        )
+    shared = [path for path in changed if any(_under(path, e) for e in config.shared_paths)]
+    if shared:
+        listed = ", ".join(path[:100] for path in shared[:3])
+        flags.append(f"It changes something every page uses ({listed}).")
+    for path in changed:
+        if path not in config.sensitive_files:
+            continue
+        keys = list(dict.fromkeys(m.group(1)[:40] for ln in changed[path] if (m := _KEY.match(ln))))
+        fields = ", ".join(keys[:10]) if keys else "could not tell which"
+        flags.append(f"It changes {path[:100]}, fields: {fields}. Check them before merging.")
+    return flags
+
+
+def _pct(score: float) -> int:
+    return round(score * 100)
+
+
+def _score_lines(scores: dict) -> list[str]:
+    if "unavailable" in scores:
+        return [scores["unavailable"]]
+    lines = []
+    for label, key in (("the live page", "live"), ("the preview", "preview")):
+        result = scores[key]
+        if result.get("performance") is not None:
+            lines.append(
+                f"Lighthouse performance on {label}: {_pct(result['performance'])} "
+                f"({result.get('executor') or 'unknown executor'})"
+            )
+        else:
+            error = str(result.get("error") or "no score")[:ERROR_CHARS]
+            lines.append(f"Lighthouse on {label} could not be scored: {error}")
+    live, preview = scores["live"], scores["preview"]
+    if live.get("performance") is None or preview.get("performance") is None:
+        return lines
+    if live.get("executor") is None or live.get("executor") != preview.get("executor"):
+        lines.append(
+            "The two checks ran on different machines "
+            f"({live.get('executor') or 'unknown'} and {preview.get('executor') or 'unknown'}), "
+            "so the scores are not compared."
+        )
+    else:
+        gap = _pct(live["performance"]) - _pct(preview["performance"])
+        if gap > SCORE_WARNING_POINTS:
+            lines.append(f"Warning: the preview scores {gap} points below the live page.")
+    return lines
+
+
+def note_message(note: Note, row: dict, flags: list[str], ci: str, scores: dict) -> str:
+    """The one Telegram message for a note, plain text: the flags first, then
+    the note's words in fences, the model's summary, the CI line, the scores
+    and the pull request link. The note gives way when it would not fit."""
+    head = list(flags)
+    if row.get("edited"):
+        head.append("The reviewer edited this note after the chore started.")
+    head.append(f"Pull request ready for the note on {note.page[:PAGE_LIMIT]} (note {note.id}).")
+    tail = [""]
+    summary = " ".join(str(row.get("summary") or "").split())[:SUMMARY_CHARS]
+    if summary:
+        tail.append(f"Summary: {summary}")
+    tail += [ci, *_score_lines(scores), "", row["pr_url"]]
+
+    block = _fenced("The note:", note.body[:BODY_LIMIT])
+    if note.anchor_text:
+        block += _fenced("The text of the element tapped:", note.anchor_text[:SNIPPET_LIMIT])
+    if note.quote:
+        block += _fenced("The text highlighted:", note.quote[:SNIPPET_LIMIT])
+    head_text, tail_text = "\n".join(head), "\n".join(tail)
+    room = MESSAGE_LIMIT - len(head_text) - len(tail_text) - 4
+    return "\n".join([head_text, "", _fit("\n".join(block), room), tail_text])
+
+
+def ci_line(github: GitHubClient | None, repo: str, branch: str) -> str:
+    """Green, red naming the failing workflows, or still running, read from the
+    newest completed run of each workflow on the pull request's branch."""
+    if github is None:
+        return "CI was not checked."
+    try:
+        runs = github.completed_workflow_runs(repo, branch)
+    except GitHubError:
+        return "CI could not be read."
+    if not runs:
+        return "CI is still running (no workflow has finished on the branch)."
+    newest: dict[str, dict] = {}
+    for run in runs:
+        newest.setdefault(str(run.get("name")), run)
+    failing = [
+        name[:60] for name, run in newest.items() if run.get("conclusion") in FAILED_CONCLUSIONS
+    ]
+    if failing:
+        return f"CI failed: {', '.join(failing[:5])}"
+    return "CI passed."
+
+
+def _check_result(conn: psycopg.Connection, check_id: object) -> dict | None:
+    """None while the check runs. Otherwise its performance score (0 to 1) and
+    executor, or an error saying why there is no score."""
+    row = conn.execute(_CHECK, (check_id,)).fetchone() if check_id else None
+    if row is None:
+        return {"performance": None, "executor": None, "error": "the check run is gone"}
+    finished, executor = row
+    if not finished:
+        return None
+    step = conn.execute(_CHECK_RESULT, (check_id,)).fetchone()
+    output = step[0] if step and isinstance(step[0], dict) else {}
+    scores = output.get("scores")
+    score = scores.get("performance") if isinstance(scores, dict) else None
+    if isinstance(score, bool) or not isinstance(score, int | float):
+        reason = output.get("error") or output.get("reason") or "the check returned no score"
+        return {"performance": None, "executor": executor, "error": str(reason)[:ERROR_CHARS]}
+    return {"performance": float(score), "executor": executor, "error": None}
+
+
+@dataclass(frozen=True)
+class _Tick:
+    config: ReviewNotesConfig
+    github: GitHubClient | None
+    telegram: TelegramClient | None
+    chat_id: int | None
+    api_base_url: str
+    bearer_token: str
+    http_get: Callable[[str], int]
+
+
+def advance_waiting(
+    conn: psycopg.Connection,
+    config: ReviewNotesConfig,
+    github: GitHubClient | None,
+    telegram: TelegramClient | None,
+    chat_id: int | None,
+    api_base_url: str,
+    bearer_token: str,
+    http_get: Callable[[str], int],
+) -> None:
+    """Move each note one step on: a finished chore to waiting (or a question),
+    a waiting note's preview found and its two Lighthouse checks queued, then
+    the one message once the scores are in or have been waited for long enough.
+    Each note is its own transaction, so one failing leaves the others going."""
+    tick = _Tick(config, github, telegram, chat_id, api_base_url, bearer_token, http_get)
+    with conn.cursor(row_factory=dict_row) as cursor:
+        rows = cursor.execute(_WAITING_ROWS).fetchall()
+    for row in rows:
+        if row["run_id"] is None:  # the retention cleanup removed the run
+            continue
+        try:
+            with conn.transaction():
+                _advance_row(conn, row, tick)
+        except Exception as error:  # noqa: BLE001 - one note must not stop the others
+            # The class name only: a message can quote the note or a URL.
+            logger.error("review note %s did not move on: %s", row["note_id"], type(error).__name__)
+
+
+def _advance_row(conn: psycopg.Connection, row: dict, tick: _Tick) -> None:
+    run_id = str(row["run_id"])
+    if row["state"] == "waiting":
+        _advance_waiting_note(conn, row, run_id, tick)
+        return
+    # An advised rerun is a later run in the chain: the note follows the newest.
+    newest = str(conn.execute(_NEWEST_RUN, (run_id,)).fetchone()[0])
+    if row["state"] == "question":
+        if newest != run_id:
+            conn.execute(_MOVE_RUN, (newest, "chore", row["note_id"]))
+            logger.info("review note %s follows rerun %s", row["note_id"], newest)
+        return
+    if newest != run_id:
+        conn.execute(_MOVE_RUN, (newest, "chore", row["note_id"]))
+        run_id = newest
+    status, finished = conn.execute(_RUN_STATUS, (run_id,)).fetchone()
+    if not finished:
+        return
+    if status == "escalated":
+        conn.execute(_SET_STATE, ("question", row["note_id"]))
+        logger.info("review note %s is a question on run %s", row["note_id"], run_id)
+    elif status == "succeeded":
+        pr_url = (_done(conn, run_id).get("pr_url") or "").strip()
+        if pr_url:
+            conn.execute(_SET_PR, (pr_url, row["note_id"]))
+            logger.info("review note %s is waiting on run %s", row["note_id"], run_id)
+
+
+def _done(conn: psycopg.Connection, run_id: str) -> dict:
+    found = conn.execute(_STEP_OUTPUT, (run_id, "done")).fetchone()
+    return found[0] if found and isinstance(found[0], dict) else {}
+
+
+def _advance_waiting_note(conn: psycopg.Connection, row: dict, run_id: str, tick: _Tick) -> None:
+    note_id = row["note_id"]
+    ticks = row["pr_opened_ticks"] + 1
+    if row["preview_url"] is None:
+        url = tick.config.preview_pattern.replace("{alias}", preview_alias(f"agent/{run_id}"))
+        url += row["page"]
+        try:
+            answered = tick.http_get(url) == 200
+        except Exception:  # noqa: BLE001 - any failure is "not answering"
+            answered = False
+        if answered:
+            ids = _queue_checks(conn, row, url, tick)
+            if ids is not None:
+                conn.execute(_SET_PREVIEW, (url, *ids, note_id))
+                logger.info("review note %s: preview answered, checks queued", note_id)
+                return
+        conn.execute(_SET_TICKS, (ticks, note_id))
+        if ticks >= NO_PREVIEW_TICKS:
+            scores = {"unavailable": "No preview answered, so there are no Lighthouse scores."}
+            _report(conn, row, run_id, scores, tick)
+        return
+
+    live = _check_result(conn, row["live_check_id"])
+    preview = _check_result(conn, row["preview_check_id"])
+    if live is not None and preview is not None:
+        _report(conn, row, run_id, {"live": live, "preview": preview}, tick)
+        return
+    conn.execute(_SET_TICKS, (ticks, note_id))
+    if ticks >= LIGHTHOUSE_TICKS:
+        scores = {
+            "unavailable": "The Lighthouse checks did not finish in time, so there are no scores."
+        }
+        _report(conn, row, run_id, scores, tick)
+
+
+def _queue_checks(
+    conn: psycopg.Connection, row: dict, preview_url: str, tick: _Tick
+) -> tuple[str, str] | None:
+    """Queue the live page's and the preview's Lighthouse checks. Their URLs go
+    only into the run inputs, which need the bearer token to read. None when
+    they could not be queued."""
+    from app.scheduler import _create_run  # the scheduler imports this module
+
+    live_url = f"https://{tick.config.live_hosts[0]}{row['page']}"
+    try:
+        if not tick.bearer_token:
+            raise OSError("no bearer token")
+        live_id = _create_run(tick.api_base_url, tick.bearer_token, live_url, kind="lighthouse")
+        preview_id = _create_run(
+            tick.api_base_url, tick.bearer_token, preview_url, kind="lighthouse"
+        )
+    except Exception as error:  # noqa: BLE001 - counted as a tick, the next one tries again
+        logger.error(
+            "review note %s: could not queue Lighthouse: %s", row["note_id"], type(error).__name__
+        )
+        return None
+    return live_id, preview_id
+
+
+def _report(conn: psycopg.Connection, row: dict, run_id: str, scores: dict, tick: _Tick) -> None:
+    """Send the note's one message and record it in the same transaction. A send
+    that fails leaves the note waiting for the next tick; a sent one is never
+    sent again, since the note is no longer waiting."""
+    if tick.telegram is None or tick.chat_id is None:
+        return
+    done = _done(conn, run_id)
+    note = Note(
+        id=row["note_id"],
+        host=row["host"],
+        page=row["page"],
+        anchor_text=row["note_anchor"],
+        quote=row["note_quote"],
+        body=row["note_body"] or "",
+        updated_at=row["note_updated_at"],
+    )
+    message = note_message(
+        note,
+        {"pr_url": row["pr_url"], "summary": done.get("summary"), "edited": row["edited"]},
+        diff_flags(str(done.get("diff") or ""), tick.config),
+        ci_line(tick.github, tick.config.repo, f"agent/{run_id}"),
+        scores,
+    )
+    try:
+        message_id = tick.telegram.send_message(tick.chat_id, message)
+    except TelegramError as error:
+        logger.error("review note %s: message not sent: %s", row["note_id"], type(error).__name__)
+        return
+    conn.execute(_SET_REPORTED, (message_id, row["note_id"]))
+    logger.info("review note %s reported as message %s", row["note_id"], message_id)

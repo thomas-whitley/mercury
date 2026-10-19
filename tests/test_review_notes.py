@@ -12,18 +12,25 @@ import pytest
 
 from app.config import load_settings
 from app.d1 import D1Client, D1Error
+from app.github import GitHubClient
 from app.mercury_config import MercuryConfig, RepoConfig, ReviewNotesConfig
 from app.review_notes import (
     Note,
+    advance_waiting,
+    diff_flags,
     instruction_for,
     note_pull_lead,
     note_title,
     open_notes,
+    preview_alias,
     start_note_chores,
 )
 from app.run_list import ONE_RUN, serialize_run_row
+from app.runs import finish_run, record_step
 from app.scheduler import advance_review_notes
+from app.telegram import TelegramClient
 from tests.cloudflare_fake import FakeCloudflare
+from tests.github_fake import FakeGitHub
 
 LIVE = "live.example.com"
 REPO = RepoConfig(name="owner/site", test_command="npm test")
@@ -532,3 +539,454 @@ def test_the_pull_lead_quotes_every_field_in_a_fence_that_the_note_cannot_close(
     assert "ten ``` backticks" in lines
     assert lead.index("# heading") < lead.index("Our story") < lead.index("a quote")
     assert lines.count("````") == 2
+
+
+# ---- Task 6: the preview, Lighthouse, CI and the one message ----
+
+CHAT_ID = 4242
+PR = "https://github.com/owner/site/pull/7"
+SENSITIVE = "src/site.config.ts"
+
+
+@pytest.fixture
+def github():
+    server = FakeGitHub()
+    server.repos["owner/site"] = "main"
+    yield server
+    server.close()
+
+
+@pytest.fixture
+def queued(migrated_db, monkeypatch):
+    """Stands in for the API call that creates a check: the run is inserted
+    here and the call is recorded as (url, kind)."""
+    calls: list[tuple[str, str | None]] = []
+
+    def create(api_base_url, bearer_token, url, timeout_seconds=1.0, kind=None, run_type="x"):
+        calls.append((url, kind))
+        return str(
+            migrated_db.execute(
+                "INSERT INTO runs (task, type, provider, check_kind, source) "
+                "VALUES (%s, 'site_check', 'none', %s, 'scheduler') RETURNING id",
+                (url, kind),
+            ).fetchone()[0]
+        )
+
+    monkeypatch.setattr("app.scheduler._create_run", create)
+    return calls
+
+
+class Tick:
+    """One scheduler tick of advance_waiting, with the preview answering as
+    `status` says and every message going to the fake Telegram."""
+
+    def __init__(self, conn, github, fake_telegram):
+        self.conn = conn
+        self.config = make_config(shared_paths=("src/layouts",), sensitive_files=(SENSITIVE,))
+        self.github = GitHubClient("gh-token", github.url)
+        self.telegram = TelegramClient("1:abc", fake_telegram.url)
+        self.status = 200
+        self.asked: list[str] = []
+
+    def http_get(self, url: str) -> int:
+        self.asked.append(url)
+        return self.status
+
+    def __call__(self, times: int = 1, telegram=True) -> None:
+        for _ in range(times):
+            advance_waiting(
+                self.conn,
+                self.config,
+                self.github,
+                self.telegram if telegram else None,
+                CHAT_ID,
+                "http://api.invalid",
+                "bearer",
+                self.http_get,
+            )
+
+
+@pytest.fixture
+def tick(migrated_db, github, fake_telegram, queued):
+    return Tick(migrated_db, github, fake_telegram)
+
+
+def finish_chore(conn, run_id, status="succeeded", **output):
+    record_step(conn, run_id, 1, "done", output={"status": status, **output})
+    finish_run(conn, run_id, status, 0)
+
+
+def succeeded_chore(conn, note_id=1, summary="Changed the heading", diff="", **changes) -> str:
+    start_note_chores(conn, [note(note_id, **changes)], make_config(), REPO)
+    run_id = str(
+        conn.execute("SELECT run_id FROM review_notes WHERE note_id = %s", (note_id,)).fetchone()[0]
+    )
+    finish_chore(conn, run_id, pr_url=PR, summary=summary, diff=diff)
+    return run_id
+
+
+def row(conn, note_id=1) -> dict:
+    cols = ["state", "run_id", "pr_url", "preview_url", "live_check_id", "preview_check_id"]
+    cols += ["message_id", "pr_opened_ticks"]
+    values = conn.execute(
+        f"SELECT {', '.join(cols)} FROM review_notes WHERE note_id = %s", (note_id,)
+    ).fetchone()
+    return dict(zip(cols, values, strict=True))
+
+
+def finish_check(conn, check_id, performance=None, executor="self_hosted", error=None):
+    output = {"error": error} if error else {"scores": {"performance": performance}}
+    record_step(conn, check_id, 1, "check", output=output)
+    finish_run(conn, check_id, "succeeded", 0)
+    conn.execute("UPDATE runs SET executor = %s WHERE id = %s", (executor, check_id))
+
+
+def finish_both(conn, live=0.9, preview=0.9, live_exec="self_hosted", preview_exec="self_hosted"):
+    state = row(conn)
+    finish_check(conn, state["live_check_id"], live, live_exec)
+    finish_check(conn, state["preview_check_id"], preview, preview_exec)
+
+
+def reported(conn, tick, github, live=0.92, preview=0.88, live_exec="self_hosted",
+             preview_exec="self_hosted", **chore):  # fmt: skip
+    """A note taken through every tick up to the message."""
+    run_id = succeeded_chore(conn, **chore)
+    tick(2)  # waiting, then the preview and the two checks
+    finish_both(conn, live, preview, live_exec, preview_exec)
+    github.workflow_runs.append(
+        {"repo": "owner/site", "name": "CI", "head_branch": f"agent/{run_id}",
+         "conclusion": "success"}
+    )  # fmt: skip
+    tick()
+
+
+def messages(fake_telegram) -> list[str]:
+    return [call["text"] for call in fake_telegram.sent()]
+
+
+def diff_of(*files: tuple[str, list[str]]) -> str:
+    out = []
+    for path, lines in files:
+        out += [
+            f"diff --git a/{path} b/{path}",
+            f"--- a/{path}",
+            f"+++ b/{path}",
+            "@@ -1,3 +1,3 @@",
+        ]
+        out += lines
+    return "\n".join(out) + "\n"
+
+
+def test_preview_alias_of_an_agent_branch():
+    assert (
+        preview_alias("agent/0bd71e3b-27f2-4926-9694-9db194075188")
+        == "agent-0bd71e3b-27f2-4926-9694-9db194075188"
+    )
+    assert preview_alias("--Agent/Some__Branch!--") == "agent-some-branch"
+
+
+def test_diff_flags():
+    config = make_config(shared_paths=("src/layouts",), sensitive_files=(SENSITIVE,))
+    page = ("src/pages/about.astro", ["-<h1>Old</h1>", "+<h1>New</h1>"])
+
+    assert diff_flags(diff_of(page), config) == []
+
+    four_files = diff_of(*[(f"src/pages/p{i}.astro", ["+x"]) for i in range(4)])
+    size = diff_flags(four_files, config)
+    assert len(size) == 1 and "larger than a note usually needs" in size[0]
+
+    three_files = diff_of(*[(f"src/pages/p{i}.astro", ["+x"]) for i in range(3)])
+    assert diff_flags(three_files, config) == []
+
+    sixty_one = diff_of(("src/pages/long.astro", ["+line"] * 61))
+    assert "larger than a note usually needs" in diff_flags(sixty_one, config)[0]
+    sixty = diff_of(("src/pages/long.astro", ["+line"] * 60))
+    assert diff_flags(sixty, config) == []
+
+    shared = diff_flags(diff_of(("src/layouts/Base.astro", ["+x"])), config)
+    assert len(shared) == 1 and "every page uses" in shared[0]
+    # A name that only starts with the entry is not under it.
+    assert diff_flags(diff_of(("src/layouts-old/Base.astro", ["+x"])), config) == []
+
+    contact = diff_of((SENSITIVE, ["-  phone: '0400 000 000',", "+  phone: '0419 000 000',"]))
+    flags = diff_flags(contact, config)
+    assert len(flags) == 1 and "phone" in flags[0] and SENSITIVE in flags[0]
+    assert "0419" not in flags[0] and "0400" not in flags[0]
+
+
+def test_a_chore_that_opened_a_pull_request_becomes_waiting(migrated_db, tick):
+    run_id = succeeded_chore(migrated_db)
+
+    tick()
+
+    state = row(migrated_db)
+    assert (state["state"], state["pr_url"], str(state["run_id"])) == ("waiting", PR, run_id)
+
+
+def test_a_chore_still_running_stays_a_chore(migrated_db, tick):
+    start_note_chores(migrated_db, [note(1)], make_config(), REPO)
+
+    tick(3)
+
+    assert row(migrated_db)["state"] == "chore"
+
+
+@pytest.mark.parametrize("reason", ["the note needs Thomas", "the tests failed three times"])
+def test_an_escalated_chore_becomes_a_question(migrated_db, tick, fake_telegram, reason):
+    start_note_chores(migrated_db, [note(1)], make_config(), REPO)
+    run_id = row(migrated_db)["run_id"]
+    finish_chore(migrated_db, str(run_id), "escalated", reason=reason, question="Which one?")
+
+    tick()
+
+    assert row(migrated_db)["state"] == "question"
+    assert messages(fake_telegram) == []  # the worker already sent the escalation
+
+
+def test_a_row_whose_run_was_cleaned_up_is_left_alone(migrated_db, tick):
+    succeeded_chore(migrated_db)
+    migrated_db.execute("DELETE FROM runs")
+
+    tick()
+
+    assert row(migrated_db)["state"] == "chore"
+
+
+def test_an_advised_rerun_moves_a_question_back_to_a_chore(migrated_db, tick):
+    start_note_chores(migrated_db, [note(1)], make_config(), REPO)
+    first = str(row(migrated_db)["run_id"])
+    finish_chore(migrated_db, first, "escalated", reason="the note needs Thomas", question="Which?")
+    tick()
+    assert row(migrated_db)["state"] == "question"
+    rerun = str(
+        migrated_db.execute(
+            "INSERT INTO runs (task, type, provider, repo, status, source, source_run_id, hint) "
+            "VALUES ('t', 'repo_chore', 'p', 'owner/site', 'pending', 'review_note', %s, 'h') "
+            "RETURNING id",
+            (first,),
+        ).fetchone()[0]
+    )
+
+    tick()
+
+    state = row(migrated_db)
+    assert (state["state"], str(state["run_id"])) == ("chore", rerun)
+    # The rerun gets the same path forward: its pull request makes the note waiting.
+    finish_chore(migrated_db, rerun, pr_url=PR, summary="s", diff="")
+    tick()
+    assert row(migrated_db)["state"] == "waiting"
+
+
+def test_a_preview_that_answers_queues_both_lighthouse_checks(migrated_db, tick, queued):
+    run_id = succeeded_chore(migrated_db)
+
+    tick()
+    assert queued == []
+    tick()
+
+    expected = f"https://agent-{run_id}-site.sub.workers.dev/about/"
+    assert tick.asked == [expected]
+    assert queued == [(f"https://{LIVE}/about/", "lighthouse"), (expected, "lighthouse")]
+    state = row(migrated_db)
+    assert state["preview_url"] == expected
+    assert state["live_check_id"] and state["preview_check_id"]
+
+
+def test_lighthouse_urls_never_reach_a_log_line(migrated_db, tick, caplog):
+    succeeded_chore(migrated_db)
+    caplog.set_level(logging.DEBUG)
+
+    tick(3)
+
+    assert "workers.dev" not in caplog.text
+    assert LIVE not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("live", "preview", "live_exec", "preview_exec", "warns", "different"),
+    [
+        (0.92, 0.85, "self_hosted", "self_hosted", True, False),
+        (0.92, 0.88, "self_hosted", "self_hosted", False, False),
+        (0.92, 0.85, "self_hosted", "cloud", False, True),
+    ],
+)
+def test_the_message_compares_scores_from_one_executor(
+    migrated_db, tick, github, fake_telegram, live, preview, live_exec, preview_exec, warns,
+    different,
+):  # fmt: skip
+    reported(migrated_db, tick, github, live, preview, live_exec, preview_exec)
+
+    [text] = messages(fake_telegram)
+
+    assert ("7 points below" in text) is warns
+    assert ("different machines" in text) is different
+    assert f"{round(live * 100)}" in text and f"{round(preview * 100)}" in text
+
+
+def test_the_message_without_a_preview(migrated_db, tick, fake_telegram, queued):
+    tick.status = 404
+    succeeded_chore(migrated_db)
+
+    tick(2)  # waiting, then the first 404
+    assert messages(fake_telegram) == []
+    tick()  # the second 404
+
+    [text] = messages(fake_telegram)
+    assert "No preview answered" in text
+    assert queued == []
+    assert row(migrated_db)["state"] == "reported"
+
+
+def test_a_lighthouse_error_is_said_not_scored(migrated_db, tick, fake_telegram):
+    succeeded_chore(migrated_db)
+    tick(2)
+    state = row(migrated_db)
+    finish_check(migrated_db, state["live_check_id"], 0.9)
+    finish_check(migrated_db, state["preview_check_id"], error="Chrome crashed on the page")
+
+    tick()
+
+    [text] = messages(fake_telegram)
+    assert "Chrome crashed on the page" in text
+    assert "could not be scored" in text
+    assert "points below" not in text
+
+
+@pytest.mark.parametrize(
+    ("runs", "expected"),
+    [
+        ([("CI", "success")], "CI passed"),
+        ([("Build", "success"), ("Lint", "failure")], "CI failed: Lint"),
+        ([], "CI is still running"),
+    ],
+)
+def test_ci_states_in_the_message(migrated_db, tick, github, fake_telegram, runs, expected):
+    run_id = succeeded_chore(migrated_db)
+    tick(2)
+    finish_both(migrated_db)
+    for name, conclusion in runs:
+        github.workflow_runs.append(
+            {"repo": "owner/site", "name": name, "head_branch": f"agent/{run_id}",
+             "conclusion": conclusion}
+        )  # fmt: skip
+
+    tick()
+
+    assert expected in messages(fake_telegram)[0]
+
+
+def test_one_message_per_note(migrated_db, tick, github, fake_telegram):
+    reported(migrated_db, tick, github)
+
+    tick(3)
+
+    assert len(messages(fake_telegram)) == 1
+    state = row(migrated_db)
+    assert state["state"] == "reported" and state["message_id"] == 1
+
+
+def test_a_message_that_could_not_be_sent_is_retried_once(migrated_db, tick, fake_telegram):
+    succeeded_chore(migrated_db)
+    tick(2)
+    finish_both(migrated_db)
+    fake_telegram.fail_next = {"error_code": 500, "description": "down"}
+
+    tick()
+    assert row(migrated_db)["state"] == "waiting"
+    assert row(migrated_db)["message_id"] is None
+
+    tick(3)
+    # The fake records the refused attempt too, so two calls make one message.
+    assert len(messages(fake_telegram)) == 2
+    state = row(migrated_db)
+    assert (state["state"], state["message_id"]) == ("reported", 1)
+
+
+def test_nothing_is_sent_without_a_telegram_client(migrated_db, tick, fake_telegram):
+    succeeded_chore(migrated_db)
+
+    tick(5, telegram=False)
+
+    assert row(migrated_db)["state"] == "waiting"
+    assert messages(fake_telegram) == []
+
+
+def test_the_message_holds_the_note_and_the_link(migrated_db, tick, github, fake_telegram):
+    diff = diff_of(("src/pages/about.astro", ["+x"]), (SENSITIVE, ["+  phone: '0419',"]))
+    reported(migrated_db, tick, github, body="Make the heading bigger", diff=diff,
+             summary="Raised the heading to h1")  # fmt: skip
+
+    [text] = messages(fake_telegram)
+
+    assert "Make the heading bigger" in text
+    assert "Raised the heading to h1" in text
+    assert PR in text
+    # Flags lead, then the note, the summary, the CI line, the scores, the link.
+    order = ("phone", "Make the heading", "Raised", "CI passed", "Lighthouse", PR)
+    positions = [text.index(s) for s in order]
+    assert positions == sorted(positions)
+
+
+def test_a_worst_case_note_fits_one_telegram_message(migrated_db, tick, github, fake_telegram):
+    runs = ("`" * 7 + "a``" + " ") * 300
+    reported(
+        migrated_db, tick, github, body=runs[:2000], anchor_text=runs[:500], quote=runs[:500],
+        summary="s" * 300,
+        diff=diff_of(*[(f"src/layouts/{'p' * 90}{i}.astro", ["+x"] * 20) for i in range(30)]),
+    )  # fmt: skip
+
+    [text] = messages(fake_telegram)
+
+    assert len(text) <= 4096
+    assert text.rstrip().endswith(PR)
+
+
+def test_scores_that_never_finish_are_given_up_after_three_ticks(migrated_db, tick, fake_telegram):
+    succeeded_chore(migrated_db)
+    tick(2)  # waiting, queued
+    tick(2)
+    assert messages(fake_telegram) == []
+
+    tick()
+
+    [text] = messages(fake_telegram)
+    assert "did not finish" in text
+
+
+def test_the_note_text_never_reaches_a_log_line_when_reported(
+    migrated_db, tick, github, fake_telegram, caplog
+):
+    caplog.set_level(logging.DEBUG)
+    reported(migrated_db, tick, github, body="a secret reviewer sentence")
+
+    assert "secret reviewer sentence" not in caplog.text
+
+
+def test_one_notes_failure_does_not_stop_the_next(migrated_db, tick):
+    succeeded_chore(migrated_db, 1, page="/a/")
+    succeeded_chore(migrated_db, 2, page="/b/")
+    real = tick.http_get
+
+    def flaky(url):
+        if "/a/" in url:
+            raise RuntimeError("boom")
+        return real(url)
+
+    tick.http_get = flaky
+    tick(2)
+
+    assert row(migrated_db, 2)["preview_url"] is not None
+    assert row(migrated_db, 1)["state"] == "waiting"
+
+
+def test_the_scheduler_step_moves_started_notes_on_before_reading_new_ones(
+    migrated_db, cloudflare, queued
+):
+    succeeded_chore(migrated_db)
+
+    advance_review_notes(
+        migrated_db, settings_for(cloudflare), mercury_config(make_config()), None, None,
+        lambda url: 200,
+    )  # fmt: skip
+
+    assert row(migrated_db)["state"] == "waiting"

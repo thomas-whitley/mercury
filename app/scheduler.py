@@ -19,7 +19,9 @@ within the window falls back to PageSpeed on the Python worker.
 
 import json
 import logging
+import urllib.error
 import urllib.request
+from collections.abc import Callable
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
@@ -32,12 +34,12 @@ from app.checks import check_site
 from app.cleanup import run_cleanup
 from app.config import Settings, load_settings
 from app.d1 import D1Client, D1Error
-from app.github import GitHubClient, GitHubError
+from app.github import FAILED_CONCLUSIONS, GitHubClient, GitHubError
 from app.logging_setup import configure_logging
 from app.mercury_config import MercuryConfig, load_mercury_config
 from app.migrations import apply_migrations
 from app.outage import retry_outages
-from app.review_notes import open_notes, start_note_chores
+from app.review_notes import advance_waiting, open_notes, start_note_chores
 from app.runs import finish_run, record_step
 from app.schedule_state import SUSPEND_AFTER, is_suspended, record_failure, record_success
 from app.tasks import SCHEDULER_CHECK_KINDS, SELF_HOSTED_CHECK_KINDS, configure_task_types
@@ -222,10 +224,6 @@ def schedule_weekly_checks(
 
     return created
 
-
-# A workflow whose newest completed run on the default branch ended in one of
-# these is failing. cancelled and skipped are not failures.
-FAILED_CONCLUSIONS = ("failure", "timed_out", "startup_failure")
 
 # A failure already announced, or any failure inside 24 hours of the last
 # message, goes in the digest instead of sending another message.
@@ -439,14 +437,31 @@ def schedule_digest(
     return run_id
 
 
+PREVIEW_TIMEOUT_SECONDS = 10.0
+
+
+def http_status(url: str) -> int:
+    """The status a GET of url answers, or 0 when nothing answers in time. Any
+    failure reads as not answering. The url stays out of every log line."""
+    try:
+        with urllib.request.urlopen(url, timeout=PREVIEW_TIMEOUT_SECONDS) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+    except Exception:  # noqa: BLE001 - a refused connection, a timeout or a bad name alike
+        return 0
+
+
 def advance_review_notes(
     conn: psycopg.Connection,
     settings: Settings,
     config: MercuryConfig,
     telegram: TelegramClient | None,
     github: GitHubClient | None,
+    http_get: Callable[[str], int] = http_status,
 ) -> list[str]:
-    """Read the open review notes and start a chore for each new one. Skipped
+    """Move the started review notes on, then read the open ones and start a
+    chore for each new one. Skipped
     when review_notes is not configured or there is no Cloudflare token. A D1
     call that fails counts towards suspending the step, and the tick goes on.
     Returns the ids of the runs started."""
@@ -468,6 +483,18 @@ def advance_review_notes(
         settings.cloudflare_api_url,
     )
     try:
+        # Notes already started move on first, so a finished chore's page is
+        # free before the new notes are looked at.
+        advance_waiting(
+            conn,
+            notes_config,
+            github,
+            telegram,
+            config.telegram_chat_id,
+            settings.api_base_url,
+            settings.mercury_bearer_token or "",
+            http_get,
+        )
         notes = open_notes(d1)
         started = start_note_chores(conn, notes, notes_config, repo)
     except Exception as error:  # noqa: BLE001 - nothing here may stop the rest of the tick

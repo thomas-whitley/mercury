@@ -47,12 +47,16 @@ class ReviewNotesConfig:
     """The review_notes: section. Notes left on a site are read from the
     Cloudflare D1 database account_id/database_id and become chores on repo.
     Only a note on one of live_hosts starts one. preview_pattern holds {alias},
-    a branch preview's hostname label. allowed_paths, shared_paths and
-    sensitive_files are the diff guard's lists (a later task reads them).
-    daily_cap is the most note chores started in any 24 hours."""
+    a branch preview's hostname label. reviewer_name is how a pull request
+    names the person who left the note. allowed_paths is the diff guard: a
+    note chore may write a file that equals an entry or starts with an entry
+    ending in "/". shared_paths and sensitive_files are the guard's flags (a
+    later task reads them). daily_cap is the most note chores started in any
+    24 hours."""
 
     enabled: bool
     repo: str
+    reviewer_name: str
     live_hosts: tuple[str, ...]
     preview_pattern: str
     account_id: str
@@ -147,6 +151,7 @@ def _review_notes(section: object, repos: tuple[RepoConfig, ...]) -> ReviewNotes
         # Only a YAML boolean true. A quoted "true" keeps notes off.
         enabled=section.get("enabled") is True,
         repo=repo,
+        reviewer_name=text("reviewer_name"),
         live_hosts=names("live_hosts", required=True),
         preview_pattern=preview_pattern,
         account_id=text("account_id"),

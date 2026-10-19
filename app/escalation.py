@@ -9,8 +9,11 @@ approval row the button always used.
 
 Nothing is sent for an eval chore, whose escalations belong in the report,
 or for a chore whose chain already announced an escalation: the second one
-goes in the report, not a new message. Unlike progress messages, this one
-carries test output, because the owner needs it to write a hint; it goes
+goes in the report, not a new message. A chore from a review note is the
+exception for a question: each question in its chain is announced, since each
+one is waiting on an answer. It never gets the Open it anyway button, which
+would open a diff the note guard refused or the checks never passed. Unlike
+progress messages, this one carries test output, because the owner needs it to write a hint; it goes
 only to the owner's own chat.
 """
 
@@ -73,9 +76,17 @@ def _already_announced(conn: psycopg.Connection, run_id: str) -> bool:
 
 
 def escalation_text(
-    run_id: str, repo: str, task: str, reason: str, test_output: str, page_base_url: str
+    run_id: str,
+    repo: str,
+    task: str,
+    reason: str,
+    test_output: str,
+    page_base_url: str,
+    question: str = "",
 ) -> str:
     lines = [f"Chore on {repo} escalated ({run_id[:8]}): {reason}", "", task.strip()]
+    if question:
+        lines += ["", "The model asks:", question.strip()[:OUTPUT_TAIL_CHARS]]
     tail = (test_output or "").strip()[-OUTPUT_TAIL_CHARS:]
     if tail:
         lines += ["", "The tests ended:", tail]
@@ -101,16 +112,19 @@ def announce_escalation(
     if telegram is None or chat_id is None:
         return None
     task, repo, source, reason = conn.execute(_RUN, (run_id,)).fetchone()
-    if source in QUIET_SOURCES or _already_announced(conn, run_id):
+    if source in QUIET_SOURCES:
         return None
     done = conn.execute(_DONE, (run_id,)).fetchone()
     output = (done[0] if done else None) or {}
+    question = output.get("question") if source == "review_note" else None
+    if not question and _already_announced(conn, run_id):
+        return None
     text = escalation_text(
         run_id, repo, task, reason or output.get("reason", ""), output.get("test_output", ""),
-        page_base_url,
+        page_base_url, question if isinstance(question, str) else "",
     )  # fmt: skip
     try:
-        if (output.get("diff") or "").strip():
+        if (output.get("diff") or "").strip() and source != "review_note":
             # One transaction, so a message that could not be sent leaves no approval row.
             with conn.transaction():
                 approval_id = ask(conn, telegram, chat_id, "open_anyway", text, run_id=run_id)

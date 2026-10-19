@@ -181,3 +181,29 @@ def test_a_rerun_of_a_succeeded_eval_chore_counts_as_advice(migrated_db):
     new_id = advise(migrated_db, run_id, "a hint", "api", REPOS)
 
     assert advised_count(migrated_db, new_id) == 1
+
+
+def test_advice_on_a_note_chore_keeps_its_source(migrated_db):
+    first = escalated_chore(migrated_db, "x", source="review_note")
+
+    second_id = advise(migrated_db, first, "the phone number", "mcp", REPOS)
+
+    assert run_row(migrated_db, second_id)["source"] == "review_note"
+    migrated_db.execute(
+        "UPDATE runs SET status = 'escalated', finished_at = now() WHERE id = %s", (second_id,)
+    )
+    third_id = advise(migrated_db, second_id, "the other number", "mcp", REPOS)
+    assert run_row(migrated_db, third_id)["source"] == "review_note"
+    migrated_db.execute(
+        "UPDATE runs SET status = 'escalated', finished_at = now() WHERE id = %s", (third_id,)
+    )
+    with pytest.raises(AdviceRefused, match="Claude session"):
+        advise(migrated_db, third_id, "a third hint", "mcp", REPOS)
+
+
+def test_a_note_chore_that_opened_a_pull_request_is_not_advised(migrated_db):
+    run_id = escalated_chore(migrated_db, "x", source="review_note")
+    migrated_db.execute("UPDATE runs SET status = 'succeeded' WHERE id = %s", (run_id,))
+
+    with pytest.raises(AdviceRefused, match="escalated"):
+        advise(migrated_db, run_id, "a hint", "mcp", REPOS)

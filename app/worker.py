@@ -26,7 +26,7 @@ from app.escalation import announce_escalation
 from app.github import GitHubClient
 from app.logging_setup import configure_logging
 from app.loop import LoopResult, run_agent_loop
-from app.mercury_config import MercuryConfig, RepoConfig, load_mercury_config
+from app.mercury_config import MercuryConfig, RepoConfig, ReviewNotesConfig, load_mercury_config
 from app.migrations import apply_migrations
 from app.model import FallbackModel, Model, StubModel
 from app.pagespeed import run_pagespeed
@@ -222,6 +222,7 @@ def process_run(
     check_runner: Callable[[str, str | None], dict[str, Any]] = run_pagespeed,
     owner_chat_id: int | None = None,
     repos: tuple[RepoConfig, ...] = (),
+    review_notes: ReviewNotesConfig | None = None,
 ) -> LoopResult | None:
     """Execute one claimed run. None means it was refused rather than run.
 
@@ -248,6 +249,7 @@ def process_run(
             telegram,
             owner_chat_id,
             repos,
+            review_notes,
         )
         if result is not None and result.status == "budget_exhausted":
             _tell_owner(
@@ -276,6 +278,7 @@ def _process_run(
     telegram: TelegramClient | None,
     owner_chat_id: int | None,
     repos: tuple[RepoConfig, ...],
+    review_notes: ReviewNotesConfig | None = None,
 ) -> LoopResult | None:
     # A check makes no model call, so the daily limit that protects the key
     # does not apply to it.
@@ -341,8 +344,9 @@ def _process_run(
 
     if task_type_name == "repo_chore":
         return _run_chore(
-            conn, run_id, model, settings, repos, telegram, task_type.budget_tokens, owner_chat_id
-        )
+            conn, run_id, model, settings, repos, telegram, task_type.budget_tokens, owner_chat_id,
+            review_notes,
+        )  # fmt: skip
 
     if task_type_name == "digest":
         tokens = run_digest(
@@ -377,8 +381,9 @@ def _run_chore(
     telegram: TelegramClient | None,
     token_budget: int,
     owner_chat_id: int | None = None,
+    review_notes: ReviewNotesConfig | None = None,
 ) -> LoopResult | None:
-    name = conn.execute("SELECT repo FROM runs WHERE id = %s", (run_id,)).fetchone()[0]
+    name, source = conn.execute("SELECT repo, source FROM runs WHERE id = %s", (run_id,)).fetchone()
     repo = next((r for r in repos if r.name == name and r.test_command), None)
     if repo is None:
         # Approved while it was listed, and taken out of mercury.yaml since.
@@ -395,6 +400,14 @@ def _run_chore(
             else settings.repo_test_timeout_seconds
         ),
         heartbeat_database_url=settings.database_url,
+        # A note chore may only write the paths the config allows. With no
+        # review_notes section it may write none, rather than anything.
+        allowed_paths=(
+            (review_notes.allowed_paths if review_notes else ())
+            if source == "review_note"
+            else None
+        ),
+        reviewer_name=review_notes.reviewer_name if review_notes else "",
     )
     result = run_repo_chore(
         conn,
@@ -551,6 +564,7 @@ def main() -> None:  # pragma: no cover - the process entry point
                     model_builder=cached_model_builder,
                     owner_chat_id=owner_chat_id,
                     repos=mercury.repos,
+                    review_notes=mercury.review_notes,
                 )
             except Exception:
                 # run_agent_loop already closes a run it could not finish. This

@@ -21,7 +21,9 @@ from app.github import GitHubClient
 from app.mercury_config import RepoConfig
 from app.model import StubModel
 from app.repo_chore import (
+    NEEDS_THOMAS,
     OUTAGE,
+    OUTSIDE_PATHS,
     RED,
     SYSTEM,
     UNCHANGED,
@@ -87,21 +89,23 @@ def github():
     server.close()
 
 
-def setup(tmp_path, github, test_command: str = TEST_COMMAND) -> ChoreSetup:
+def setup(tmp_path, github, test_command: str = TEST_COMMAND, **changes) -> ChoreSetup:
     return ChoreSetup(
         repo=RepoConfig(name=REPO, test_command=test_command),
         clone_base=f"file://{tmp_path / 'remotes'}",
         github=GitHubClient(TOKEN, github.url),
         token=TOKEN,
         test_timeout_seconds=60,
+        **changes,
     )
 
 
-def chore_run(conn, instruction: str = "Add subtract to calc.py") -> str:
+def chore_run(conn, instruction: str = "Add subtract to calc.py", source: str = "api") -> str:
     run_id = str(
         conn.execute(
-            "INSERT INTO runs (task, type, repo) VALUES (%s, 'repo_chore', %s) RETURNING id",
-            (instruction, REPO),
+            "INSERT INTO runs (task, type, repo, source) VALUES (%s, 'repo_chore', %s, %s) "
+            "RETURNING id",
+            (instruction, REPO, source),
         ).fetchone()[0]
     )
     assert claim_run(conn, run_id, WORKER)
@@ -944,3 +948,368 @@ def test_advice_after_a_wrong_pull_request_says_so_and_shows_its_diff():
     assert "opened a pull request" in block
     assert "+def div" in block
     assert "test output" not in block
+
+
+PAGES = ("src/pages/",)
+ABOUT = "<h1>About us</h1>\n"
+
+
+def write_to(path: str, body: str) -> str:
+    return json.dumps({"files": {path: body}, "summary": "x"})
+
+
+def note_chore(conn, instruction: str = "A reviewer left a note.") -> str:
+    return chore_run(conn, instruction, source="review_note")
+
+
+def test_a_note_chore_outside_its_paths_is_refused_and_escalates(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = note_chore(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), edit(package__json="{}")])
+
+    result = run_repo_chore(
+        migrated_db, run_id, model, setup(tmp_path, github, allowed_paths=PAGES), worker_id=WORKER
+    )
+
+    assert result.status == "escalated"
+    assert done(migrated_db, run_id)["reason"] == OUTSIDE_PATHS
+    assert OUTSIDE_PATHS == "changes outside the paths a note may touch"
+    assert remote_branches(remote) == ["main"]
+    assert github.pulls == []
+    # The first prompt is the read, the second the first edit. The retries name the path.
+    assert "package.json" not in model.prompts[1]
+    assert "package.json" in model.prompts[2]
+    assert "package.json" in model.prompts[3]
+    assert kinds(migrated_db, run_id).count("test") == 0
+    assert kinds(migrated_db, run_id).count("edit") == 3
+
+
+@pytest.mark.parametrize(
+    "path", ["src/pages", "src/pagesx/a.astro", "src/other/a.astro", "SRC/pages/a.astro"]
+)
+def test_a_path_needs_an_entry_that_ends_in_a_slash_or_an_exact_match(
+    migrated_db, remote, github, tmp_path, path
+):
+    run_id = note_chore(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), json.dumps({"files": {path: "x"}})])
+
+    run_repo_chore(
+        migrated_db, run_id, model, setup(tmp_path, github, allowed_paths=PAGES), worker_id=WORKER
+    )
+
+    assert done(migrated_db, run_id)["reason"] == OUTSIDE_PATHS
+    assert github.pulls == []
+
+
+def test_an_entry_without_a_slash_allows_just_that_file(migrated_db, remote, github, tmp_path):
+    run_id = note_chore(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), write_to("src/site.config.ts", "x = 1\n")])
+    config = setup(tmp_path, github, allowed_paths=("src/site.config.ts",))
+
+    result = run_repo_chore(migrated_db, run_id, model, config, worker_id=WORKER)
+
+    assert result.status == "succeeded"
+
+
+def test_one_refused_attempt_then_an_allowed_one_opens_the_pull_request(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = note_chore(migrated_db)
+    model = StubModel(
+        replies=[
+            pick("calc.py"),
+            edit(package__json="{}"),
+            write_to("src/pages/about.astro", ABOUT),
+        ]
+    )
+
+    result = run_repo_chore(
+        migrated_db, run_id, model, setup(tmp_path, github, allowed_paths=PAGES), worker_id=WORKER
+    )
+
+    assert result.status == "succeeded"
+    assert len(github.pulls) == 1
+
+
+def test_a_note_chore_inside_its_paths_opens_its_pull_request(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = note_chore(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), write_to("src/pages/about.astro", ABOUT)])
+
+    result = run_repo_chore(
+        migrated_db, run_id, model, setup(tmp_path, github, allowed_paths=PAGES), worker_id=WORKER
+    )
+
+    assert result.status == "succeeded"
+    pushed = git("ls-tree", "-r", "--name-only", f"agent/{run_id}", cwd=remote)
+    assert "src/pages/about.astro" in pushed.split()
+    assert len(github.pulls) == 1
+
+
+def test_a_chore_without_allowed_paths_keeps_todays_rules(migrated_db, remote, github, tmp_path):
+    run_id = chore_run(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), edit(package__json="{}")])
+
+    result = run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert result.status == "succeeded"
+
+
+def test_a_question_ends_the_chore_with_no_push(migrated_db, remote, github, tmp_path):
+    run_id = note_chore(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), json.dumps({"question": "Which number?"})])
+
+    result = run_repo_chore(
+        migrated_db, run_id, model, setup(tmp_path, github, allowed_paths=PAGES), worker_id=WORKER
+    )
+
+    assert result.status == "escalated"
+    output = done(migrated_db, run_id)
+    assert output["reason"] == NEEDS_THOMAS == "the note needs Thomas"
+    assert output["question"] == "Which number?"
+    assert remote_branches(remote) == ["main"]
+    assert github.pulls == []
+    row = migrated_db.execute("SELECT escalation_reason FROM runs WHERE id = %s", (run_id,))
+    assert row.fetchone() == (NEEDS_THOMAS,)
+
+
+def test_a_long_question_is_cut_to_1000_characters(migrated_db, remote, github, tmp_path):
+    run_id = note_chore(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), json.dumps({"question": "q" * 3000})])
+
+    run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert done(migrated_db, run_id)["question"] == "q" * 1000
+
+
+def test_a_question_from_an_ordinary_chore_is_an_unusable_reply(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = chore_run(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), json.dumps({"question": "Which number?"})])
+
+    run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert done(migrated_db, run_id)["reason"] == UNUSABLE
+
+
+def test_only_the_note_prompt_offers_a_question():
+    plain = edit_prompt("do it", "", "a.py", {})
+    asking = edit_prompt("do it", "", "a.py", {}, may_ask=True)
+
+    assert "question" not in plain
+    assert '{"question"' in asking
+    assert asking.startswith(plain)
+
+
+def add_note(conn, run_id: str, **changes) -> None:
+    values = dict(
+        note_id=7,
+        page="/about/",
+        note_body="Make the heading warmer.\n## Not a real heading\n```\nclose the fence",
+        note_anchor="Our story",
+        note_quote="the quote",
+    )
+    values.update(changes)
+    conn.execute(
+        "INSERT INTO review_notes (note_id, host, page, note_updated_at, state, run_id, "
+        "note_body, note_anchor, note_quote) VALUES (%s, 'live.example.com', %s, 'then', "
+        "'chore', %s, %s, %s, %s)",
+        (
+            values["note_id"], values["page"], run_id,
+            values["note_body"], values["note_anchor"], values["note_quote"],
+        ),
+    )  # fmt: skip
+
+
+def test_a_note_pull_request_puts_the_note_first(migrated_db, remote, github, tmp_path):
+    run_id = note_chore(migrated_db, "THE INSTRUCTION")
+    add_note(migrated_db, run_id)
+    reply = json.dumps(
+        {"files": {"src/pages/about.astro": ABOUT}, "summary": "Warmer heading on About"}
+    )
+    model = StubModel(replies=[pick("calc.py"), reply])
+    config = setup(tmp_path, github, allowed_paths=PAGES, reviewer_name="Reviewer")
+
+    run_repo_chore(migrated_db, run_id, model, config, worker_id=WORKER)
+
+    [pull] = github.pulls
+    words = "Make the heading warmer. ## Not a real heading ``` close the fence"
+    assert pull["title"] == f"Reviewer's note on /about/: {words}"[:72].rstrip()
+    assert pull["title"].startswith("Reviewer's note on /about/: Make the heading warmer. ##")
+    body = pull["body"]
+    assert body.startswith("Reviewer's note:\n````\nMake the heading warmer.")
+    order = [
+        body.index("Make the heading warmer."),
+        body.index("Our story"),
+        body.index("the quote"),
+        body.index("Warmer heading on About"),
+        body.index("THE INSTRUCTION"),
+    ]
+    assert order == sorted(order)
+    # The note's own fence stays inside its longer one.
+    assert "```\nclose the fence\n````" in body
+    assert git("log", "-1", "--format=%s", f"agent/{run_id}", cwd=remote) == pull["title"]
+
+
+def test_a_rerun_pull_request_finds_the_note_through_its_chain(
+    migrated_db, remote, github, tmp_path
+):
+    first = note_chore(migrated_db)
+    add_note(migrated_db, first)
+    migrated_db.execute("UPDATE runs SET status = 'escalated' WHERE id = %s", (first,))
+    second = note_chore(migrated_db, "THE INSTRUCTION")
+    migrated_db.execute(
+        "UPDATE runs SET source_run_id = %s, hint = 'use 5' WHERE id = %s", (first, second)
+    )
+    model = StubModel(replies=[pick("calc.py"), write_to("src/pages/about.astro", ABOUT)])
+    config = setup(tmp_path, github, allowed_paths=PAGES, reviewer_name="Reviewer")
+
+    run_repo_chore(migrated_db, second, model, config, worker_id=WORKER)
+
+    [pull] = github.pulls
+    assert pull["title"].startswith("Reviewer's note on /about/: ")
+    assert pull["body"].startswith("Reviewer's note:")
+
+
+def test_a_note_chore_with_no_note_row_keeps_the_ordinary_layout(
+    migrated_db, remote, github, tmp_path
+):
+    run_id = note_chore(migrated_db, "Add subtract to calc.py")
+    model = StubModel(replies=[pick("calc.py"), change(GOOD_CALC)])
+
+    run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    [pull] = github.pulls
+    assert pull["title"] == "Add subtract to calc.py"
+
+
+def test_an_ordinary_pull_request_keeps_its_layout(migrated_db, remote, github, tmp_path):
+    run_id = chore_run(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), change(GOOD_CALC)])
+
+    run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    [pull] = github.pulls
+    assert pull["title"] == "Add subtract to calc.py"
+    assert pull["body"].startswith("Add subtract to calc.py\n\nOpened by Mercury run")
+
+
+def test_the_note_never_reaches_a_log_line(migrated_db, remote, github, tmp_path, caplog):
+    run_id = note_chore(migrated_db)
+    add_note(migrated_db, run_id, note_body="SECRET WORDS")
+    reply = write_to("src/pages/about.astro", ABOUT)
+    model = StubModel(replies=[pick("calc.py"), reply])
+    config = setup(tmp_path, github, allowed_paths=PAGES, reviewer_name="Reviewer")
+
+    with caplog.at_level("DEBUG"):
+        run_repo_chore(migrated_db, run_id, model, config, worker_id=WORKER)
+
+    assert "SECRET WORDS" not in caplog.text
+
+
+def notes_config(**changes):
+    from app.mercury_config import ReviewNotesConfig
+
+    values = dict(
+        enabled=True,
+        repo=REPO,
+        reviewer_name="Reviewer",
+        live_hosts=("live.example.com",),
+        preview_pattern="https://{alias}.example.workers.dev",
+        account_id="a",
+        database_id="d",
+        allowed_paths=PAGES,
+        shared_paths=(),
+        sensitive_files=(),
+    )
+    values.update(changes)
+    return ReviewNotesConfig(**values)
+
+
+def process_note(migrated_db, clean_db, github, tmp_path, monkeypatch, model, **kwargs):
+    from app.worker import process_run
+
+    tmp_path.joinpath(".db-url").write_text(clean_db)
+    settings = worker_settings(tmp_path, github, monkeypatch)
+    run_id = note_chore(migrated_db)
+    result = process_run(
+        migrated_db,
+        run_id,
+        settings,
+        model_builder=lambda settings, provider: model,
+        repos=(RepoConfig(name=REPO, test_command=TEST_COMMAND),),
+        **kwargs,
+    )
+    return run_id, result
+
+
+def test_the_worker_gives_a_note_chore_the_configured_paths(
+    migrated_db, clean_db, remote, github, tmp_path, monkeypatch
+):
+    model = StubModel(replies=[pick("calc.py"), edit(package__json="{}")])
+
+    run_id, result = process_note(
+        migrated_db, clean_db, github, tmp_path, monkeypatch, model, review_notes=notes_config()
+    )
+
+    assert result.status == "escalated"
+    assert done(migrated_db, run_id)["reason"] == OUTSIDE_PATHS
+
+
+def test_the_worker_lets_a_note_chore_with_no_config_write_nothing(
+    migrated_db, clean_db, remote, github, tmp_path, monkeypatch
+):
+    model = StubModel(replies=[pick("calc.py"), write_to("src/pages/about.astro", ABOUT)])
+
+    run_id, result = process_note(migrated_db, clean_db, github, tmp_path, monkeypatch, model)
+
+    assert result.status == "escalated"
+    assert done(migrated_db, run_id)["reason"] == OUTSIDE_PATHS
+
+
+def test_the_worker_names_the_reviewer_in_the_pull_request(
+    migrated_db, clean_db, remote, github, tmp_path, monkeypatch
+):
+    from app.worker import process_run
+
+    tmp_path.joinpath(".db-url").write_text(clean_db)
+    settings = worker_settings(tmp_path, github, monkeypatch)
+    run_id = note_chore(migrated_db)
+    add_note(migrated_db, run_id)
+    model = StubModel(replies=[pick("calc.py"), write_to("src/pages/about.astro", ABOUT)])
+
+    process_run(
+        migrated_db,
+        run_id,
+        settings,
+        model_builder=lambda settings, provider: model,
+        repos=(RepoConfig(name=REPO, test_command=TEST_COMMAND),),
+        review_notes=notes_config(reviewer_name="Pat"),
+    )
+
+    assert github.pulls[0]["title"].startswith("Pat's note on /about/: ")
+
+
+def test_an_ordinary_chore_is_not_given_the_note_paths(
+    migrated_db, clean_db, remote, github, tmp_path, monkeypatch
+):
+    from app.worker import process_run
+
+    tmp_path.joinpath(".db-url").write_text(clean_db)
+    settings = worker_settings(tmp_path, github, monkeypatch)
+    run_id = chore_run(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), edit(package__json="{}")])
+
+    result = process_run(
+        migrated_db,
+        run_id,
+        settings,
+        model_builder=lambda settings, provider: model,
+        repos=(RepoConfig(name=REPO, test_command=TEST_COMMAND),),
+        review_notes=notes_config(),
+    )
+
+    assert result.status == "succeeded"

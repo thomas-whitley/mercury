@@ -13,7 +13,10 @@ An eval or bank chore that opened a pull request which then failed its
 hidden grade can be advised too (decisions 47 and 53 of
 docs/build-brief-evals.md). The rerun of a quiet chore (eval, bank) keeps its
 source, so it tells nobody either, and the caller may name the rerun's
-provider (decision 48).
+provider (decision 48). The rerun of a review note chore keeps its source too,
+so it keeps the note's path guard, its question option and its pull request
+layout. A note chore is not graded elsewhere: once it opens a pull request,
+Thomas reviews that, so it takes advice only while escalated.
 
 An advised rerun is a run with a hint whose source run ended escalated, or
 succeeded as such an eval or bank chore. An outage retry (app/outage.py)
@@ -96,7 +99,7 @@ def advise(
     # type's first rung.
     if provider is None:
         provider = ran_on if ran_on in HOME_PROVIDERS else TASK_TYPES["repo_chore"].provider
-    if run_source in QUIET_SOURCES:
+    if run_source in QUIET_SOURCES or run_source == "review_note":
         source = run_source
     new_id = conn.execute(
         _CREATE, (task, provider, repo.name, source, run_id, hint, base_sha)

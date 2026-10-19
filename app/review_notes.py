@@ -42,7 +42,13 @@ _UNCAP = """
 UPDATE review_notes SET state = 'chore', updated_at = now()
 WHERE note_id = %s AND state = 'capped' RETURNING note_id
 """
-_SET_RUN = "UPDATE review_notes SET run_id = %s, updated_at = now() WHERE note_id = %s"
+# The note's words go on the row for the worker, which has no D1 token, to put at
+# the top of the pull request. Capped as the instruction caps them.
+_SET_RUN = """
+UPDATE review_notes SET run_id = %s, note_body = %s, note_anchor = %s, note_quote = %s,
+                        updated_at = now()
+WHERE note_id = %s
+"""
 # Another note on the page is still being worked on, or its pull request is
 # open. A question, a merge, a close, a vanished note and a preview do not hold
 # the page.
@@ -132,6 +138,10 @@ def _fenced(label: str, text: str) -> list[str]:
     return [label, fence, text, fence]
 
 
+def fenced_text(label: str, text: str) -> str:
+    return "\n".join(_fenced(label, text))
+
+
 def instruction_for(note: Note) -> str:
     """The chore's instruction. Everything that came from the note (the page,
     the tapped text, the highlighted text and the body) sits inside a fence
@@ -159,6 +169,30 @@ def instruction_for(note: Note) -> str:
         "Use the tapped text and the highlighted text to find the place to change. "
         "Change as little as the note needs.",
     ]
+    return "\n".join(lines)
+
+
+TITLE_LIMIT = 72
+
+
+def note_title(page: str, body: str, reviewer_name: str) -> str:
+    """The pull request's title and commit subject: who, which page and the
+    note's first words, on one line and cut to TITLE_LIMIT characters."""
+    title = f"{reviewer_name}'s note on {page[:PAGE_LIMIT]}: {' '.join(body.split())}"
+    return title[:TITLE_LIMIT].rstrip()
+
+
+def note_pull_lead(
+    reviewer_name: str, body: str, anchor_text: str | None, quote: str | None
+) -> str:
+    """The top of a note chore's pull request body: the note, then the tapped
+    text and the highlighted text, each in a fence the note cannot close, since
+    anyone holding the review link can write a note."""
+    lines = _fenced(f"{reviewer_name}'s note:", body)
+    if anchor_text:
+        lines += _fenced("The text of the element tapped:", anchor_text)
+    if quote:
+        lines += _fenced("The text highlighted:", quote)
     return "\n".join(lines)
 
 
@@ -233,7 +267,16 @@ def _advance_note(
     run_id = start_chore(
         conn, repo, instruction_for(note), "review_note", TASK_TYPES["repo_chore"].provider
     )
-    conn.execute(_SET_RUN, (run_id, note.id))
+    conn.execute(
+        _SET_RUN,
+        (
+            run_id,
+            note.body[:BODY_LIMIT],
+            note.anchor_text[:SNIPPET_LIMIT] if note.anchor_text else None,
+            note.quote[:SNIPPET_LIMIT] if note.quote else None,
+            note.id,
+        ),
+    )
     return run_id
 
 

@@ -11,7 +11,7 @@ from psycopg.types.json import Jsonb
 from app.advice import advise
 from app.escalation import announce_escalation, chain_root
 from app.mercury_config import RepoConfig
-from app.repo_chore import RED, UNUSABLE
+from app.repo_chore import NEEDS_THOMAS, OUTSIDE_PATHS, RED, UNUSABLE
 from app.telegram import TelegramClient
 
 CHAT = 42
@@ -32,6 +32,7 @@ def escalated_chore(
     source: str = "api",
     source_run_id: str | None = None,
     hint: str | None = None,
+    question: str | None = None,
 ) -> str:
     run_id = str(
         conn.execute(
@@ -43,6 +44,8 @@ def escalated_chore(
         ).fetchone()[0]
     )
     output = {"status": "escalated", "reason": reason, "diff": diff, "test_output": test_output}
+    if question is not None:
+        output["question"] = question
     conn.execute(
         "INSERT INTO steps (run_id, seq, kind, output) VALUES (%s, 1, 'done', %s)",
         (run_id, Jsonb(output)),
@@ -149,3 +152,50 @@ def test_an_advised_rerun_of_an_eval_chore_is_never_announced(migrated_db, fake_
 
     assert announce_escalation(migrated_db, client(fake_telegram), CHAT, rerun, PAGE) is None
     assert fake_telegram.sent() == []
+
+
+def test_a_note_escalation_has_no_open_anyway_button(migrated_db, fake_telegram):
+    run_id = escalated_chore(migrated_db, OUTSIDE_PATHS, source="review_note", diff="+x\n")
+
+    message_id = announce_escalation(migrated_db, client(fake_telegram), CHAT, run_id, PAGE)
+
+    [sent] = fake_telegram.sent()
+    assert OUTSIDE_PATHS in sent["text"]
+    assert "reply_markup" not in sent
+    assert migrated_db.execute("SELECT count(*) FROM approvals").fetchone() == (0,)
+    stored = migrated_db.execute(
+        "SELECT escalation_message_id FROM runs WHERE id = %s", (run_id,)
+    ).fetchone()
+    assert stored == (message_id,)
+
+
+def test_each_question_in_a_note_chain_is_announced(migrated_db, fake_telegram):
+    first = escalated_chore(
+        migrated_db, NEEDS_THOMAS, source="review_note", diff="", question="Which number?"
+    )
+    announce_escalation(migrated_db, client(fake_telegram), CHAT, first, PAGE)
+    second = escalated_chore(
+        migrated_db, NEEDS_THOMAS, source="review_note", diff="", question="And which unit?",
+        source_run_id=first, hint="the phone number",
+    )  # fmt: skip
+
+    assert announce_escalation(migrated_db, client(fake_telegram), CHAT, second, PAGE) is not None
+    texts = [message["text"] for message in fake_telegram.sent()]
+    assert len(texts) == 2
+    assert "Which number?" in texts[0]
+    assert "And which unit?" in texts[1]
+
+
+def test_a_note_chain_that_fails_after_a_question_is_still_announced_once(
+    migrated_db, fake_telegram
+):
+    first = escalated_chore(
+        migrated_db, NEEDS_THOMAS, source="review_note", diff="", question="Which number?"
+    )
+    announce_escalation(migrated_db, client(fake_telegram), CHAT, first, PAGE)
+    second = escalated_chore(
+        migrated_db, RED, source="review_note", source_run_id=first, hint="the phone number"
+    )
+
+    assert announce_escalation(migrated_db, client(fake_telegram), CHAT, second, PAGE) is None
+    assert len(fake_telegram.sent()) == 1

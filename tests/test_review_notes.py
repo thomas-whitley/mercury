@@ -13,7 +13,14 @@ import pytest
 from app.config import load_settings
 from app.d1 import D1Client, D1Error
 from app.mercury_config import MercuryConfig, RepoConfig, ReviewNotesConfig
-from app.review_notes import Note, instruction_for, open_notes, start_note_chores
+from app.review_notes import (
+    Note,
+    instruction_for,
+    note_pull_lead,
+    note_title,
+    open_notes,
+    start_note_chores,
+)
 from app.run_list import ONE_RUN, serialize_run_row
 from app.scheduler import advance_review_notes
 from tests.cloudflare_fake import FakeCloudflare
@@ -27,6 +34,7 @@ def make_config(**changes) -> ReviewNotesConfig:
     values = dict(
         enabled=True,
         repo="owner/site",
+        reviewer_name="Reviewer",
         live_hosts=(LIVE,),
         preview_pattern="https://{alias}-site.sub.workers.dev",
         account_id="acct",
@@ -488,3 +496,39 @@ def test_the_run_list_does_not_show_the_note(migrated_db):
 
     assert "SECRET-WORDS" not in repr(shown)
     assert shown["source"] == "review_note"
+
+
+def test_the_started_row_keeps_the_notes_words_for_the_pull_request(migrated_db):
+    start_note_chores(
+        migrated_db, [note(1, quote="the quote", body="x" * 2500)], make_config(), REPO
+    )
+
+    row = migrated_db.execute(
+        "SELECT note_body, note_anchor, note_quote FROM review_notes WHERE note_id = 1"
+    ).fetchone()
+    assert row == ("x" * 2000, "Our story", "the quote")
+
+
+def test_the_title_names_the_reviewer_the_page_and_the_first_words():
+    title = note_title("/about/", "Change the heading to something warmer", "Reviewer")
+
+    assert title == "Reviewer's note on /about/: Change the heading to something warmer"
+
+
+def test_a_long_title_is_cut_to_72_characters_and_has_one_line():
+    title = note_title("/services/electrical-safety-checks/", "Line one\nline two " * 9, "Reviewer")
+
+    assert len(title) == 72
+    assert "\n" not in title
+    assert title.startswith("Reviewer's note on /services/electrical-safety-checks/: Line one line")
+
+
+def test_the_pull_lead_quotes_every_field_in_a_fence_that_the_note_cannot_close():
+    lead = note_pull_lead("Reviewer", "ten ``` backticks\n# heading", "Our story", "a quote")
+
+    lines = lead.splitlines()
+    assert lines[0] == "Reviewer's note:"
+    assert lines[1] == "````"
+    assert "ten ``` backticks" in lines
+    assert lead.index("# heading") < lead.index("Our story") < lead.index("a quote")
+    assert lines.count("````") == 2

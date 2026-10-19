@@ -41,11 +41,12 @@ portfolio:
 # review_notes:
 #   enabled: false                  # only a YAML true starts chores
 #   repo: owner/repo-two            # must be listed above with a test_command
+#   reviewer_name: Reviewer         # named in each pull request title and body
 #   live_hosts: [www.example.com]   # a note on any other host is recorded, never run
 #   preview_pattern: "https://{alias}-site.example.workers.dev"
 #   account_id: "00000000000000000000000000000000"
 #   database_id: "00000000-0000-0000-0000-000000000000"
-#   allowed_paths: [src/pages, src/content, public]
+#   allowed_paths: [src/pages/, src/content/, public/, src/site.config.ts]  # a / ends a folder
 #   shared_paths: [src/site.config.ts]
 #   sensitive_files: [src/site.config.ts]
 #   daily_cap: 10                   # note chores started in any 24 hours

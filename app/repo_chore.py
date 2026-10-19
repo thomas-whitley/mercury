@@ -49,6 +49,7 @@ from app.chore_prompts import (
     shown_files,
     tree_listing,
 )
+from app.escalation import chain_ids
 from app.github import GitHubClient, GitHubError
 from app.loop import (
     DEFAULT_MODEL_RETRY_ATTEMPTS,
@@ -58,10 +59,16 @@ from app.loop import (
 )
 from app.mercury_config import RepoConfig
 from app.model import Model
+from app.review_notes import fenced_text, note_pull_lead, note_title
 from app.runs import finish_run, heartbeat, record_step
 from app.test_guard import weakened_tests
 
 logger = logging.getLogger("agent_runs.repo_chore")
+
+_NOTE = (
+    "SELECT page, note_body, note_anchor, note_quote FROM review_notes "
+    "WHERE run_id = ANY(%s::uuid[]) AND note_body IS NOT NULL"
+)
 
 MAX_ATTEMPTS = 3
 MAX_OUTPUT_CHARS = 4_000
@@ -79,6 +86,12 @@ UNUSABLE = "three unusable replies"
 WEAKENED = "weakened tests"
 UNCHANGED = "no change to the repository"
 OUTAGE = "providers unavailable"
+# A chore from a review note (app/review_notes.py) may only write the paths its
+# ChoreSetup allows, and may answer with a question in place of files.
+OUTSIDE_PATHS = "changes outside the paths a note may touch"
+NEEDS_THOMAS = "the note needs Thomas"
+MAX_QUESTION_CHARS = 1_000
+MAX_SUMMARY_CHARS = 300
 
 # The rung that answered is the run's provider by now: a fallback rewrites it
 # before the retry that reaches the next rung (app/worker.py _with_fallback).
@@ -106,6 +119,21 @@ class ChoreSetup:
     # A second connection for the heartbeat while a slow test command runs.
     # None in tests that do not need it.
     heartbeat_database_url: str | None = None
+    # A chore from a review note may write a file only if its path equals an
+    # entry or starts with an entry that ends in "/". None is no guard.
+    allowed_paths: tuple[str, ...] | None = None
+    # Names the person whose note a note chore's pull request leads with.
+    reviewer_name: str = ""
+
+
+@dataclass(frozen=True)
+class _Pull:
+    """How a pull request reads. title is also the commit subject. lead goes
+    above everything else in the body. An ordinary chore has a title from its
+    instruction and no lead."""
+
+    title: str
+    lead: str = ""
 
 
 def run_repo_chore(
@@ -120,10 +148,11 @@ def run_repo_chore(
     retry_attempts: int = DEFAULT_MODEL_RETRY_ATTEMPTS,
     retry_backoff_seconds: float = DEFAULT_MODEL_RETRY_BACKOFF_SECONDS,
 ) -> LoopResult:
-    instruction, tokens_used, source_run_id, hint, base_sha = conn.execute(
-        "SELECT task, tokens_used, source_run_id, hint, base_sha FROM runs WHERE id = %s",
+    instruction, tokens_used, source_run_id, hint, base_sha, run_source = conn.execute(
+        "SELECT task, tokens_used, source_run_id, hint, base_sha, source FROM runs WHERE id = %s",
         (run_id,),
     ).fetchone()
+    from_note = run_source == "review_note"
     # A run made from an earlier one is one of three things. With a hint it is
     # an advised rerun (app/advice.py); from a run that ended in error it is an
     # outage retry (app/outage.py), which carries any hint on. Both run from
@@ -147,7 +176,7 @@ def run_repo_chore(
         "SELECT coalesce(max(seq), 0) FROM steps WHERE run_id = %s", (run_id,)
     ).fetchone()[0]
     fields = {"run_id": run_id, "worker_id": worker_id}
-    state = {"seq": seq, "tokens": tokens_used, "attempts": 0, "unusable": 0}
+    state = {"seq": seq, "tokens": tokens_used, "attempts": 0, "unusable": 0, "outside": 0}
 
     def write(kind: str, output: dict, tokens: int = 0) -> None:
         state["seq"] += 1
@@ -195,17 +224,18 @@ def run_repo_chore(
         row = conn.execute("SELECT status FROM runs WHERE id = %s", (run_id,)).fetchone()
         return row is not None and row[0] == "cancelled"
 
+    pull = _pull_for(conn, run_id, instruction, setup) if from_note else _Pull(_title(instruction))
     workdir = Path(tempfile.mkdtemp(prefix="chore-"))
     keepalive = _Keepalive(setup.heartbeat_database_url, run_id, worker_id)
     try:
         with keepalive:
             if source is not None:
                 return _open_anyway(
-                    setup, run_id, instruction, workdir, write, close, source, was_cancelled
+                    setup, run_id, instruction, workdir, write, close, source, was_cancelled, pull
                 )
             return _run(
                 setup, run_id, instruction, workdir, write, close, ask, state, token_budget,
-                advice, was_cancelled, base_sha,
+                advice, was_cancelled, base_sha, pull, from_note,
             )  # fmt: skip
     except LostLease:
         logger.warning("repo chore %s: lease lost, stopping", run_id, extra=fields)
@@ -223,8 +253,9 @@ def run_repo_chore(
 
 def _run(
     setup, run_id, instruction, workdir, write, close, ask, state, token_budget, advice,
-    was_cancelled, base_sha=None,
+    was_cancelled, base_sha=None, pull=None, from_note=False,
 ):  # fmt: skip
+    pull = pull or _Pull(_title(instruction))
     git = _Git(workdir, setup)
     branch = f"agent/{run_id}"
     url = f"{setup.clone_base.rstrip('/')}/{setup.repo.name}.git"
@@ -234,7 +265,7 @@ def _run(
     if git.remote_has_branch(url, branch):
         git.run("clone", "-q", "--branch", branch, url, str(clone), cwd=workdir)
         write("clone", {"resumed": True, "base": base})
-        return _open_pull(setup, run_id, instruction, branch, base, write, close)
+        return _open_pull(setup, run_id, instruction, branch, base, write, close, pull=pull)
 
     git.run("clone", "-q", url, str(clone), cwd=workdir)
     if base_sha:
@@ -254,7 +285,7 @@ def _run(
     if state["tokens"] >= token_budget:
         return close("budget_exhausted", {"reason": "token budget spent"})
 
-    prompt = edit_prompt(instruction, advice, listing, shown)
+    prompt = edit_prompt(instruction, advice, listing, shown, may_ask=from_note)
     written: set[str] = set()
     test_output = ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -264,14 +295,29 @@ def _run(
         state["unchanged"] = False
         reply = ask(prompt)
         files = (reply or {}).get("files")
-        refused = _refused_paths(files)
-        if not isinstance(files, dict) or not files or refused:
-            problem = (
-                f"These paths are not allowed: {', '.join(refused)}. Stay inside the repository "
-                "and out of .git."
-                if refused
-                else "Your reply was not the JSON asked for."
+        question = (reply or {}).get("question")
+        if from_note and not files and isinstance(question, str) and question.strip():
+            # The note is a question or too vague. Nothing is written or pushed.
+            return close(
+                "escalated",
+                {"reason": NEEDS_THOMAS, "question": question.strip()[:MAX_QUESTION_CHARS]},
             )
+        refused = _refused_paths(files)
+        outside = [p for p in _outside_paths(files, setup.allowed_paths) if p not in refused]
+        if not isinstance(files, dict) or not files or refused or outside:
+            problem = "Your reply was not the JSON asked for."
+            if refused:
+                problem = (
+                    f"These paths are not allowed: {', '.join(refused)}. Stay inside the "
+                    "repository and out of .git."
+                )
+            if outside:
+                problem = (
+                    f"{problem + ' ' if refused else ''}These paths are outside what this change "
+                    f"may touch: {', '.join(outside)}. Change only files that equal or sit under: "
+                    f"{', '.join(setup.allowed_paths)}."
+                )
+                state["outside"] += 1
             state["unusable"] += 1
             write(
                 "edit", {"attempt": attempt, "files": [], "problem": problem}, state["last_tokens"]
@@ -349,7 +395,7 @@ def _run(
         elif state["unchanged"]:
             output = {"reason": UNCHANGED}
         elif state["unusable"] == MAX_ATTEMPTS:
-            output = {"reason": UNUSABLE}
+            output = {"reason": OUTSIDE_PATHS if state["outside"] else UNUSABLE}
         else:
             output = {"reason": RED}
         return close(
@@ -361,18 +407,22 @@ def _run(
     diff = git.run("diff", "--cached", cwd=clone)
     git.run(
         "-c", f"user.name={AUTHOR[0]}", "-c", f"user.email={AUTHOR[1]}",
-        "commit", "-q", "-m", _title(instruction), cwd=clone,
+        "commit", "-q", "-m", pull.title, cwd=clone,
     )  # fmt: skip
     _push(git, clone, branch, write, was_cancelled)
-    return _open_pull(setup, run_id, instruction, branch, base, write, close, diff=diff)
+    return _open_pull(
+        setup, run_id, instruction, branch, base, write, close, diff=diff, pull=pull,
+        summary=_one_line((reply or {}).get("summary"), MAX_SUMMARY_CHARS),
+    )  # fmt: skip
 
 
 def _open_anyway(
-    setup, run_id, instruction, workdir, write, close, source, was_cancelled
+    setup, run_id, instruction, workdir, write, close, source, was_cancelled, pull=None
 ) -> LoopResult:
     """Reapply the failed run's diff on this run's own branch and open the
     pull request, saying plainly that the tests failed. No model call."""
     source_run_id, diff = source
+    pull = pull or _Pull(_title(instruction))
     git = _Git(workdir, setup)
     branch = f"agent/{run_id}"
     url = f"{setup.clone_base.rstrip('/')}/{setup.repo.name}.git"
@@ -386,7 +436,7 @@ def _open_anyway(
     if git.remote_has_branch(url, branch):
         git.run("clone", "-q", "--branch", branch, url, str(clone), cwd=workdir)
         write("clone", {"resumed": True, "base": base})
-        return _open_pull(setup, run_id, instruction, branch, base, write, close, note)
+        return _open_pull(setup, run_id, instruction, branch, base, write, close, note, pull=pull)
 
     if not diff.strip():
         raise ChoreError(f"run {source_run_id} left no diff to open")
@@ -403,10 +453,10 @@ def _open_anyway(
     write("apply", {"source_run": source_run_id, "files": files})
     git.run(
         "-c", f"user.name={AUTHOR[0]}", "-c", f"user.email={AUTHOR[1]}",
-        "commit", "-q", "-m", _title(instruction), cwd=clone,
+        "commit", "-q", "-m", pull.title, cwd=clone,
     )  # fmt: skip
     _push(git, clone, branch, write, was_cancelled)
-    return _open_pull(setup, run_id, instruction, branch, base, write, close, note)
+    return _open_pull(setup, run_id, instruction, branch, base, write, close, note, pull=pull)
 
 
 def _push(git, clone, branch, write, was_cancelled) -> None:
@@ -424,20 +474,45 @@ def _push(git, clone, branch, write, was_cancelled) -> None:
 
 
 def _open_pull(
-    setup, run_id, instruction, branch, base, write, close, note=None, diff=""
-) -> LoopResult:
+    setup, run_id, instruction, branch, base, write, close, note=None, diff="", pull=None,
+    summary="",
+) -> LoopResult:  # fmt: skip
+    pull = pull or _Pull(_title(instruction))
     url = setup.github.find_pull(setup.repo.name, branch)
     if url is None:
         note = note or f"`{setup.repo.test_command}` passed."
-        body = (
-            f"{instruction}\n\nOpened by Mercury run `{run_id}`. {note} "
-            "It is never merged by the runner."
-        )
-        url = setup.github.open_pull(setup.repo.name, branch, base, _title(instruction), body)
+        closing = f"Opened by Mercury run `{run_id}`. {note} It is never merged by the runner."
+        if pull.lead:
+            # The reviewer's words first, then what the model says it did, then
+            # the instruction Mercury sent.
+            parts = [pull.lead]
+            if summary:
+                parts.append(fenced_text("The model's summary:", summary))
+            parts += [f"The instruction Mercury sent:\n\n{instruction}", closing]
+            body = "\n\n".join(parts)
+        else:
+            body = f"{instruction}\n\n{closing}"
+        url = setup.github.open_pull(setup.repo.name, branch, base, pull.title, body)
     write("pr", {"url": url})
     # The diff stays, so an eval chore whose pull request fails its grade can
     # be advised with it (decision 47 of docs/build-brief-evals.md).
     return close("succeeded", {"pr_url": url, "diff": diff[:MAX_DIFF_CHARS]})
+
+
+def _pull_for(conn: psycopg.Connection, run_id: str, instruction: str, setup: ChoreSetup) -> _Pull:
+    """A note chore's pull request leads with the note, found by the run id on
+    its review_notes row. A rerun is found through the chain of runs behind it.
+    A note chore with no row, or a row without words, reads as any chore."""
+    row = conn.execute(_NOTE, (chain_ids(conn, run_id),)).fetchone()
+    if row is None:
+        return _Pull(_title(instruction))
+    page, body, anchor_text, quote = row
+    name = setup.reviewer_name or "The reviewer"
+    return _Pull(note_title(page, body, name), note_pull_lead(name, body, anchor_text, quote))
+
+
+def _one_line(text: object, limit: int) -> str:
+    return " ".join(text.split())[:limit] if isinstance(text, str) else ""
 
 
 def _title(instruction: str) -> str:
@@ -474,6 +549,25 @@ def _refused_paths(files) -> list[str]:
         ):
             refused.append(str(path))
     return refused
+
+
+def _outside_paths(files, allowed: tuple[str, ...] | None) -> list[str]:
+    """The paths in a reply that a note chore may not write. A path is allowed
+    when it equals an entry or starts with an entry that ends in a slash.
+    _refused_paths still applies to the same paths, so the escaping rules hold."""
+    if allowed is None or not isinstance(files, dict):
+        return []
+    return [
+        str(path)
+        for path in files
+        if not (
+            isinstance(path, str)
+            and any(
+                path == entry or (entry.endswith("/") and path.startswith(entry))
+                for entry in allowed
+            )
+        )
+    ]
 
 
 def _read_files(clone: Path, paths: list[str]) -> dict[str, str]:

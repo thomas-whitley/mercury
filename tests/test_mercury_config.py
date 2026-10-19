@@ -162,6 +162,7 @@ REVIEW_NOTES_YAML = """portfolio:
 review_notes:
   enabled: true
   repo: owner/site
+  reviewer_name: Reviewer
   live_hosts: [live.example.com]
   preview_pattern: "https://{alias}-site.sub.workers.dev"
   account_id: "0000"
@@ -178,6 +179,7 @@ def test_review_notes_loads(tmp_path):
     assert config.review_notes == ReviewNotesConfig(
         enabled=True,
         repo="owner/site",
+        reviewer_name="Reviewer",
         live_hosts=("live.example.com",),
         preview_pattern="https://{alias}-site.sub.workers.dev",
         account_id="0000",

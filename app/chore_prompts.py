@@ -28,14 +28,30 @@ def read_prompt(instruction: str, advice: str, listing: str) -> str:
     )
 
 
-def edit_prompt(instruction: str, advice: str, listing: str, shown: dict[str, str]) -> str:
+ASK = (
+    " If the note is a question, or too vague to act on, change no files and reply "
+    '{"question": "what you need to know"} instead.'
+)
+
+
+def edit_prompt(
+    instruction: str,
+    advice: str,
+    listing: str,
+    shown: dict[str, str],
+    *,
+    may_ask: bool = False,
+) -> str:
+    """may_ask is for a chore from a review note, which may answer with a
+    question for its owner in place of files."""
     files_block = "\n\n".join(f"=== {path} ===\n{body}" for path, body in shown.items())
-    return (
+    prompt = (
         f"Instruction:\n{instruction}{advice}\n\nFiles in the repository:\n{listing}\n\n"
         f"Contents:\n{files_block or '(none)'}\n\n"
         'Reply {"files": {"path": "the full new contents"}, "summary": "one line"}, '
         "including only files you change or create."
     )
+    return prompt + ASK if may_ask else prompt
 
 
 def shown_files(root: Path, paths: list[str]) -> dict[str, str]:

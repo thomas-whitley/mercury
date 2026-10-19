@@ -19,6 +19,7 @@ from app.review_notes import (
     advance_waiting,
     diff_flags,
     instruction_for,
+    note_message,
     note_pull_lead,
     note_title,
     open_notes,
@@ -586,6 +587,7 @@ class Tick:
         self.github = GitHubClient("gh-token", github.url)
         self.telegram = TelegramClient("1:abc", fake_telegram.url)
         self.status = 200
+        self.bearer = "bearer"
         self.asked: list[str] = []
 
     def http_get(self, url: str) -> int:
@@ -601,7 +603,7 @@ class Tick:
                 self.telegram if telegram else None,
                 CHAT_ID,
                 "http://api.invalid",
-                "bearer",
+                self.bearer,
                 self.http_get,
             )
 
@@ -736,6 +738,7 @@ def test_an_escalated_chore_becomes_a_question(migrated_db, tick, fake_telegram,
     start_note_chores(migrated_db, [note(1)], make_config(), REPO)
     run_id = row(migrated_db)["run_id"]
     finish_chore(migrated_db, str(run_id), "escalated", reason=reason, question="Which one?")
+    migrated_db.execute("UPDATE runs SET escalation_message_id = 7 WHERE id = %s", (run_id,))
 
     tick()
 
@@ -990,3 +993,205 @@ def test_the_scheduler_step_moves_started_notes_on_before_reading_new_ones(
     )  # fmt: skip
 
     assert row(migrated_db)["state"] == "waiting"
+
+
+# ---- Fix round 1 ----
+
+
+def chore_run(conn, note_id=1, **changes) -> str:
+    start_note_chores(conn, [note(note_id, **changes)], make_config(), REPO)
+    return str(
+        conn.execute("SELECT run_id FROM review_notes WHERE note_id = %s", (note_id,)).fetchone()[0]
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "output"),
+    [
+        ("error", {"reason": "GitHub POST /repos/owner/site/pulls: HTTP 422"}),
+        ("cancelled", {}),
+        ("failed", {}),
+        ("succeeded", {"summary": "no pull request"}),
+    ],
+)
+def test_a_chore_that_ends_without_a_pull_request_frees_the_page_and_is_announced_once(
+    migrated_db, tick, fake_telegram, status, output
+):
+    run_id = chore_run(migrated_db)
+    finish_chore(migrated_db, run_id, status, **output)
+
+    tick(3)
+
+    assert row(migrated_db)["state"] == "question"
+    [text] = messages(fake_telegram)
+    assert "note 1" in text and "/about/" in text and status in text and run_id in text
+    # The page is free for the next note.
+    started = start_note_chores(migrated_db, [note(2)], make_config(), REPO)
+    assert len(started) == 1
+
+
+def test_an_escalation_the_worker_announced_is_not_announced_again(
+    migrated_db, tick, fake_telegram
+):
+    run_id = chore_run(migrated_db)
+    finish_chore(migrated_db, run_id, "escalated", reason="the note needs Thomas")
+    migrated_db.execute("UPDATE runs SET escalation_message_id = 7 WHERE id = %s", (run_id,))
+
+    tick()
+
+    assert row(migrated_db)["state"] == "question"
+    assert messages(fake_telegram) == []
+
+
+def test_an_outage_retry_still_advances_through_the_chain(migrated_db, tick, fake_telegram):
+    first = chore_run(migrated_db)
+    finish_chore(migrated_db, first, "error", reason="the model provider was unreachable")
+    tick()
+    assert row(migrated_db)["state"] == "question"
+    retry = str(
+        migrated_db.execute(
+            "INSERT INTO runs (task, type, provider, repo, status, source, source_run_id) "
+            "VALUES ('t', 'repo_chore', 'p', 'owner/site', 'pending', 'review_note', %s) "
+            "RETURNING id",
+            (first,),
+        ).fetchone()[0]
+    )
+
+    tick()
+    finish_chore(migrated_db, retry, pr_url=PR, summary="s", diff="")
+    tick()
+
+    state = row(migrated_db)
+    assert (state["state"], str(state["run_id"])) == ("waiting", retry)
+    assert len(messages(fake_telegram)) == 1
+
+
+def test_live_queued_and_preview_failing_queues_only_the_preview_next_tick(
+    migrated_db, tick, queued, monkeypatch
+):
+    import app.scheduler as scheduler
+
+    real = scheduler._create_run
+    refuse = {"on": True}
+
+    def create(api_base_url, bearer_token, url, **kwargs):
+        if refuse["on"] and "workers.dev" in url:
+            raise OSError("api down")
+        return real(api_base_url, bearer_token, url, **kwargs)
+
+    monkeypatch.setattr("app.scheduler._create_run", create)
+    succeeded_chore(migrated_db)
+
+    tick(2)
+    state = row(migrated_db)
+    assert state["preview_url"] and state["live_check_id"] and state["preview_check_id"] is None
+
+    refuse["on"] = False
+    tick()
+
+    state = row(migrated_db)
+    assert state["preview_check_id"] is not None
+    assert [url for url, _ in queued].count(f"https://{LIVE}/about/") == 1
+
+
+def test_an_empty_bearer_token_reaches_the_message_after_the_give_up(
+    migrated_db, tick, fake_telegram, queued
+):
+    tick.bearer = ""
+    succeeded_chore(migrated_db)
+
+    tick(4)
+    assert messages(fake_telegram) == []
+    tick()
+
+    [text] = messages(fake_telegram)
+    assert "could not be queued" in text
+    assert "No preview answered" not in text
+    assert queued == []
+
+
+def test_a_diff_touching_200_sensitive_keys_still_fits_one_message(
+    migrated_db, tick, github, fake_telegram
+):
+    diff = diff_of((SENSITIVE, [f"+  key{i}: 1" for i in range(200)]))
+    reported(migrated_db, tick, github, diff=diff)
+
+    [text] = messages(fake_telegram)
+
+    assert len(text) < 4096
+    assert "and 190 more" in text
+    assert "key199" not in text
+
+
+def test_the_message_is_cut_to_the_limit_whatever_its_parts():
+    big = [f"flag {i} " + "x" * 3000 for i in range(3)]
+    row_ = {"pr_url": PR, "summary": "s" * 5000, "edited": True}
+
+    text = note_message(note(1), row_, big, "CI passed.", {"unavailable": "u" * 5000})
+
+    assert len(text) <= 4000
+
+
+def test_a_permanent_telegram_refusal_is_not_retried_forever(migrated_db, tick, fake_telegram):
+    succeeded_chore(migrated_db)
+    tick(2)
+    finish_both(migrated_db)
+    fake_telegram.fail_next = {"error_code": 400, "description": "Bad Request: message is too long"}
+
+    tick(4)
+
+    state = row(migrated_db)
+    assert (state["state"], state["message_id"]) == ("reported", None)
+    assert len(fake_telegram.sent()) == 1  # the one refused attempt, then nothing
+
+
+def test_a_row_with_a_bad_page_queues_no_checks(migrated_db, tick, queued):
+    succeeded_chore(migrated_db)
+    migrated_db.execute("UPDATE review_notes SET page = '/a/../b'")
+
+    tick(3)
+
+    assert queued == [] and tick.asked == []
+    assert row(migrated_db)["preview_url"] is None
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"preview_pattern": "https://user:pw@{alias}-site.sub.workers.dev"},
+        {"live_hosts": ("user@live.example.com",)},
+    ],
+)
+def test_a_url_with_credentials_or_another_host_queues_no_checks(
+    migrated_db, tick, queued, changes
+):
+    tick.config = make_config(**changes)
+    succeeded_chore(migrated_db)
+
+    tick(3)
+
+    assert queued == []
+
+
+def test_the_real_http_get_does_not_follow_a_redirect():
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from app.scheduler import http_status
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:9/elsewhere")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        assert http_status(f"http://127.0.0.1:{server.server_address[1]}/") == 302
+    finally:
+        server.shutdown()
+        server.server_close()

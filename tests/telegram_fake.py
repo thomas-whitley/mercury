@@ -27,7 +27,7 @@ class FakeTelegram:
                 _, bot, method = self.path.split("/", 2)
                 body = fake._answer(bot.removeprefix("bot"), method, payload)
                 data = json.dumps(body).encode()
-                self.send_response(200 if body["ok"] else 400)
+                self.send_response(200 if body["ok"] else body.get("error_code", 400))
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()

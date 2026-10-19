@@ -13,6 +13,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import psycopg
 from psycopg.rows import dict_row
@@ -301,6 +302,7 @@ SIZE_LINES = 60
 SCORE_WARNING_POINTS = 5
 ERROR_CHARS = 200
 SUMMARY_CHARS = 300
+MAX_KEYS = 10
 
 _WAITING_ROWS = """
 SELECT note_id, state, run_id, host, page, note_updated_at, pr_url, pr_opened_ticks, preview_url,
@@ -318,6 +320,7 @@ SELECT id FROM later ORDER BY created_at DESC, id LIMIT 1
 """
 _RUN_STATUS = "SELECT status, finished_at IS NOT NULL FROM runs WHERE id = %s"
 _STEP_OUTPUT = "SELECT output FROM steps WHERE run_id = %s AND kind = %s ORDER BY seq DESC LIMIT 1"
+_ANNOUNCED = "SELECT escalation_message_id FROM runs WHERE id = %s"
 _CHECK = "SELECT finished_at IS NOT NULL, executor FROM runs WHERE id = %s"
 _CHECK_RESULT = "SELECT output FROM steps WHERE run_id = %s AND seq = 1"
 _MOVE_RUN = "UPDATE review_notes SET run_id = %s, state = %s, updated_at = now() WHERE note_id = %s"
@@ -327,10 +330,15 @@ UPDATE review_notes SET pr_url = %s, state = 'waiting', pr_opened_ticks = 0, upd
 WHERE note_id = %s
 """
 _SET_TICKS = "UPDATE review_notes SET pr_opened_ticks = %s, updated_at = now() WHERE note_id = %s"
-_SET_PREVIEW = """
-UPDATE review_notes SET preview_url = %s, live_check_id = %s, preview_check_id = %s,
-                        pr_opened_ticks = 0, updated_at = now()
+_SET_PREVIEW_URL = """
+UPDATE review_notes SET preview_url = %s, pr_opened_ticks = 0, updated_at = now()
 WHERE note_id = %s
+"""
+_SET_LIVE_CHECK = (
+    "UPDATE review_notes SET live_check_id = %s, updated_at = now() WHERE note_id = %s"
+)
+_SET_PREVIEW_CHECK = """
+UPDATE review_notes SET preview_check_id = %s, updated_at = now() WHERE note_id = %s
 """
 _SET_REPORTED = """
 UPDATE review_notes SET state = 'reported', message_id = %s, updated_at = now()
@@ -386,7 +394,9 @@ def diff_flags(diff: str, config: ReviewNotesConfig) -> list[str]:
         if path not in config.sensitive_files:
             continue
         keys = list(dict.fromkeys(m.group(1)[:40] for ln in changed[path] if (m := _KEY.match(ln))))
-        fields = ", ".join(keys[:10]) if keys else "could not tell which"
+        fields = ", ".join(keys[:MAX_KEYS]) if keys else "could not tell which"
+        if len(keys) > MAX_KEYS:
+            fields += f" and {len(keys) - MAX_KEYS} more"
         flags.append(f"It changes {path[:100]}, fields: {fields}. Check them before merging.")
     return flags
 
@@ -445,8 +455,11 @@ def note_message(note: Note, row: dict, flags: list[str], ci: str, scores: dict)
     if note.quote:
         block += _fenced("The text highlighted:", note.quote[:SNIPPET_LIMIT])
     head_text, tail_text = "\n".join(head), "\n".join(tail)
-    room = MESSAGE_LIMIT - len(head_text) - len(tail_text) - 4
-    return "\n".join([head_text, "", _fit("\n".join(block), room), tail_text])
+    room = max(MESSAGE_LIMIT - len(head_text) - len(tail_text) - 4, 0)
+    text = "\n".join([head_text, "", _fit("\n".join(block), room), tail_text])
+    # Telegram refuses a message over 4096 characters for good, so whatever the
+    # parts add up to, the text is cut. The parts are capped well below this.
+    return text[:MESSAGE_LIMIT]
 
 
 def ci_line(github: GitHubClient | None, repo: str, branch: str) -> str:
@@ -547,14 +560,45 @@ def _advance_row(conn: psycopg.Connection, row: dict, tick: _Tick) -> None:
     status, finished = conn.execute(_RUN_STATUS, (run_id,)).fetchone()
     if not finished:
         return
-    if status == "escalated":
-        conn.execute(_SET_STATE, ("question", row["note_id"]))
-        logger.info("review note %s is a question on run %s", row["note_id"], run_id)
-    elif status == "succeeded":
-        pr_url = (_done(conn, run_id).get("pr_url") or "").strip()
-        if pr_url:
-            conn.execute(_SET_PR, (pr_url, row["note_id"]))
-            logger.info("review note %s is waiting on run %s", row["note_id"], run_id)
+    pr_url = (_done(conn, run_id).get("pr_url") or "").strip() if status == "succeeded" else ""
+    if pr_url:
+        conn.execute(_SET_PR, (pr_url, row["note_id"]))
+        logger.info("review note %s is waiting on run %s", row["note_id"], run_id)
+        return
+    # Escalated, error, cancelled, failed, or succeeded with no pull request: the
+    # note stops holding its page and a rerun (advised, or an outage retry)
+    # brings it back to chore through the chain.
+    _announce_ended(conn, row, run_id, status, tick)
+    conn.execute(_SET_STATE, ("question", row["note_id"]))
+    logger.info("review note %s is a question on run %s (%s)", row["note_id"], run_id, status)
+
+
+def _announce_ended(
+    conn: psycopg.Connection, row: dict, run_id: str, status: str, tick: _Tick
+) -> None:
+    """One short line to Thomas when a chore ended without a pull request, unless
+    the worker already announced it. A send that fails for now raises, so the row
+    stays a chore and the next tick tries again."""
+    announced = conn.execute(_ANNOUNCED, (run_id,)).fetchone()
+    if (announced and announced[0] is not None) or tick.telegram is None or tick.chat_id is None:
+        return
+    text = (
+        f"The chore for note {row['note_id']} on {row['page'][:PAGE_LIMIT]} ended {status} "
+        f"with no pull request.\n{tick.api_base_url.rstrip('/')}/#/runs/{run_id}"
+    )
+    try:
+        tick.telegram.send_message(tick.chat_id, text)
+    except TelegramError as error:
+        if _permanent(error):
+            logger.error("review note %s: ended line refused for good", row["note_id"])
+            return
+        raise
+
+
+def _permanent(error: TelegramError) -> bool:
+    """A 4xx other than 429 (and 408) will be refused again, so it is not retried."""
+    status = error.status
+    return status is not None and 400 <= status < 500 and status not in (408, 429)
 
 
 def _done(conn: psycopg.Connection, run_id: str) -> dict:
@@ -562,63 +606,99 @@ def _done(conn: psycopg.Connection, run_id: str) -> dict:
     return found[0] if found and isinstance(found[0], dict) else {}
 
 
+def _urls(row: dict, run_id: str, tick: _Tick) -> tuple[str, str] | None:
+    """The live page's and the preview's URLs, or None unless the page is still a
+    site path and each URL has exactly the host it should, with no credentials.
+    Defence in depth: the page passed valid_page when the note was recorded."""
+    page = row["page"]
+    if not valid_page(page):
+        return None
+    base = tick.config.preview_pattern.replace("{alias}", preview_alias(f"agent/{run_id}"))
+    live_host = tick.config.live_hosts[0]
+    try:
+        expected_preview_host = urlsplit(base).hostname
+        pairs = (
+            (f"https://{live_host}{page}", live_host.lower()),
+            (base + page, expected_preview_host),
+        )
+        for url, host in pairs:
+            parts = urlsplit(url)
+            if parts.hostname != host or parts.username is not None or parts.password is not None:
+                return None
+    except ValueError:
+        return None
+    return pairs[0][0], pairs[1][0]
+
+
 def _advance_waiting_note(conn: psycopg.Connection, row: dict, run_id: str, tick: _Tick) -> None:
     note_id = row["note_id"]
     ticks = row["pr_opened_ticks"] + 1
+    urls = _urls(row, run_id, tick)
+    if urls is None:
+        logger.warning("review note %s: no safe Lighthouse URLs, checks skipped", note_id)
+        _report(conn, row, run_id, {"unavailable": "Lighthouse was not run for this page."}, tick)
+        return
+    live_url, preview_url = urls
+
     if row["preview_url"] is None:
-        url = tick.config.preview_pattern.replace("{alias}", preview_alias(f"agent/{run_id}"))
-        url += row["page"]
         try:
-            answered = tick.http_get(url) == 200
+            answered = tick.http_get(preview_url) == 200
         except Exception:  # noqa: BLE001 - any failure is "not answering"
             answered = False
-        if answered:
-            ids = _queue_checks(conn, row, url, tick)
-            if ids is not None:
-                conn.execute(_SET_PREVIEW, (url, *ids, note_id))
-                logger.info("review note %s: preview answered, checks queued", note_id)
-                return
-        conn.execute(_SET_TICKS, (ticks, note_id))
-        if ticks >= NO_PREVIEW_TICKS:
-            scores = {"unavailable": "No preview answered, so there are no Lighthouse scores."}
-            _report(conn, row, run_id, scores, tick)
+        if not answered:
+            conn.execute(_SET_TICKS, (ticks, note_id))
+            if ticks >= NO_PREVIEW_TICKS:
+                scores = {"unavailable": "No preview answered, so there are no Lighthouse scores."}
+                _report(conn, row, run_id, scores, tick)
+            return
+        conn.execute(_SET_PREVIEW_URL, (preview_url, note_id))
+        row["preview_url"] = preview_url
+        _queue_missing(conn, row, live_url, preview_url, tick)
         return
 
-    live = _check_result(conn, row["live_check_id"])
-    preview = _check_result(conn, row["preview_check_id"])
+    _queue_missing(conn, row, live_url, preview_url, tick)
+    queued = row["live_check_id"] is not None and row["preview_check_id"] is not None
+    live = _check_result(conn, row["live_check_id"]) if queued else None
+    preview = _check_result(conn, row["preview_check_id"]) if queued else None
     if live is not None and preview is not None:
         _report(conn, row, run_id, {"live": live, "preview": preview}, tick)
         return
     conn.execute(_SET_TICKS, (ticks, note_id))
     if ticks >= LIGHTHOUSE_TICKS:
-        scores = {
-            "unavailable": "The Lighthouse checks did not finish in time, so there are no scores."
-        }
+        why = "did not finish in time" if queued else "could not be queued"
+        scores = {"unavailable": f"The Lighthouse checks {why}, so there are no scores."}
         _report(conn, row, run_id, scores, tick)
 
 
-def _queue_checks(
-    conn: psycopg.Connection, row: dict, preview_url: str, tick: _Tick
-) -> tuple[str, str] | None:
-    """Queue the live page's and the preview's Lighthouse checks. Their URLs go
-    only into the run inputs, which need the bearer token to read. None when
-    they could not be queued."""
+def _queue_missing(
+    conn: psycopg.Connection, row: dict, live_url: str, preview_url: str, tick: _Tick
+) -> None:
+    """Queue whichever of the two Lighthouse checks the note does not have yet,
+    recording each id the moment it exists so a later tick never queues it twice.
+    The URLs go only into the run inputs, which need the bearer token to read. A
+    failure is logged and left for the next tick, which the give-up count bounds."""
     from app.scheduler import _create_run  # the scheduler imports this module
 
-    live_url = f"https://{tick.config.live_hosts[0]}{row['page']}"
-    try:
-        if not tick.bearer_token:
-            raise OSError("no bearer token")
-        live_id = _create_run(tick.api_base_url, tick.bearer_token, live_url, kind="lighthouse")
-        preview_id = _create_run(
-            tick.api_base_url, tick.bearer_token, preview_url, kind="lighthouse"
-        )
-    except Exception as error:  # noqa: BLE001 - counted as a tick, the next one tries again
-        logger.error(
-            "review note %s: could not queue Lighthouse: %s", row["note_id"], type(error).__name__
-        )
-        return None
-    return live_id, preview_id
+    for url, key, update in (
+        (live_url, "live_check_id", _SET_LIVE_CHECK),
+        (preview_url, "preview_check_id", _SET_PREVIEW_CHECK),
+    ):
+        if row[key] is not None:
+            continue
+        try:
+            if not tick.bearer_token:
+                raise OSError("no bearer token")
+            check_id = _create_run(tick.api_base_url, tick.bearer_token, url, kind="lighthouse")
+        except Exception as error:  # noqa: BLE001 - the next tick tries again
+            logger.error(
+                "review note %s: could not queue Lighthouse: %s",
+                row["note_id"],
+                type(error).__name__,
+            )
+            return
+        conn.execute(update, (check_id, row["note_id"]))
+        row[key] = check_id
+        logger.info("review note %s: Lighthouse check %s queued", row["note_id"], check_id)
 
 
 def _report(conn: psycopg.Connection, row: dict, run_id: str, scores: dict, tick: _Tick) -> None:
@@ -647,7 +727,12 @@ def _report(conn: psycopg.Connection, row: dict, run_id: str, scores: dict, tick
     try:
         message_id = tick.telegram.send_message(tick.chat_id, message)
     except TelegramError as error:
-        logger.error("review note %s: message not sent: %s", row["note_id"], type(error).__name__)
-        return
+        if not _permanent(error):
+            logger.error("review note %s: message not sent, will retry", row["note_id"])
+            return
+        # Refused for good (such as a 400): retrying every tick would hold the
+        # page forever. The note moves on with no message id.
+        logger.error("review note %s: message refused for good, not retried", row["note_id"])
+        message_id = None
     conn.execute(_SET_REPORTED, (message_id, row["note_id"]))
     logger.info("review note %s reported as message %s", row["note_id"], message_id)

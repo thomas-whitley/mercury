@@ -440,11 +440,21 @@ def schedule_digest(
 PREVIEW_TIMEOUT_SECONDS = 10.0
 
 
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """A 3xx is the answer, not a reason to go to another host."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_NO_REDIRECTS = urllib.request.build_opener(_NoRedirects)
+
+
 def http_status(url: str) -> int:
     """The status a GET of url answers, or 0 when nothing answers in time. Any
     failure reads as not answering. The url stays out of every log line."""
     try:
-        with urllib.request.urlopen(url, timeout=PREVIEW_TIMEOUT_SECONDS) as response:
+        with _NO_REDIRECTS.open(url, timeout=PREVIEW_TIMEOUT_SECONDS) as response:
             return response.status
     except urllib.error.HTTPError as error:
         return error.code

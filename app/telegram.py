@@ -17,7 +17,11 @@ TIMEOUT_SECONDS = 10.0
 
 
 class TelegramError(Exception):
-    pass
+    """status is the HTTP status Telegram answered with, None when it did not answer."""
+
+    def __init__(self, message: str = "", status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class TelegramClient:
@@ -68,7 +72,7 @@ class TelegramClient:
         except urllib.error.HTTPError as error:
             body = _json_or_empty(error.read())
             description = body.get("description", f"HTTP {error.code}")
-            raise TelegramError(f"{method} refused: {description}") from None
+            raise TelegramError(f"{method} refused: {description}", error.code) from None
         except (OSError, ValueError) as error:
             # str(URLError) can carry the URL, and the URL carries the token.
             raise TelegramError(f"{method} failed: {type(error).__name__}") from None

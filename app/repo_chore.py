@@ -20,6 +20,14 @@ which cannot read the worker's environment through /proc. It has network,
 because a repo's tests need their dependencies, so it is not isolation. The
 GitHub token reaches git only as an HTTP header in git's own environment, so
 it is never written to .git/config, never in a URL and never in a step.
+
+The test command runs code the model wrote, so nothing it can touch is read
+again by git running as root. The worker's own git dir and work tree sit in a
+directory only root can open, and every git command names both outright with
+hooks turned off. Each attempt's tests run in a fresh copy of the repo, which
+the chore user owns and git as root never reads; when the command ends every
+process the chore user has is killed and the copy is deleted. What is
+committed is the model's files as the worker wrote them into its own tree.
 """
 
 import base64
@@ -62,6 +70,7 @@ from app.mercury_config import RepoConfig
 from app.model import Model
 from app.review_notes import fenced_text, note_pull_lead, note_title
 from app.runs import finish_run, heartbeat, record_step
+from app.sandbox import SandboxError, kill_user_processes
 from app.test_guard import weakened_tests
 
 logger = logging.getLogger("agent_runs.repo_chore")
@@ -261,23 +270,24 @@ def _run(
     branch = f"agent/{run_id}"
     url = f"{setup.clone_base.rstrip('/')}/{setup.repo.name}.git"
     base = git.default_branch(url)
-    clone = workdir / "repo"
+    # The worker's own work tree. The chore user never owns or writes it.
+    clone = git.tree
 
     if git.remote_has_branch(url, branch):
-        git.run("clone", "-q", "--branch", branch, url, str(clone), cwd=workdir)
+        git.clone(url, branch)
         write("clone", {"resumed": True, "base": base})
         return _open_pull(setup, run_id, instruction, branch, base, write, close, pull=pull)
 
-    git.run("clone", "-q", url, str(clone), cwd=workdir)
+    git.clone(url)
     if base_sha:
         # A bank chore starts from the parent of the commit it was mined from
         # (decision 29). The pull request still targets the default branch, and
         # shows only this chore's change, since base_sha is its merge base.
-        git.run("checkout", "-q", base_sha, cwd=clone)
-    git.run("checkout", "-q", "-b", branch, cwd=clone)
+        git.run("checkout", "-q", base_sha)
+    git.run("checkout", "-q", "-b", branch)
     write("clone", {"resumed": False, "base": base})
 
-    tree = git.run("ls-files", cwd=clone).splitlines()
+    tree = git.run("ls-files").splitlines()
     listing = tree_listing(tree)
     wanted = ask(read_prompt(instruction, advice, listing))
     paths = [p for p in (wanted or {}).get("read") or [] if isinstance(p, str)]
@@ -293,7 +303,9 @@ def _run(
         where = f" Change only files that equal or sit under: {', '.join(setup.allowed_paths)}."
     note_text = (ASK if from_note else "") + where
     prompt = edit_prompt(instruction, advice, listing, shown, may_ask=from_note) + where
-    written: set[str] = set()
+    # Every file the model has written so far, as it wrote it. The tests and
+    # the commit both start from this, never from a tree the tests could touch.
+    written: dict[str, str] = {}
     test_output = ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         state["attempts"] = attempt
@@ -342,23 +354,19 @@ def _run(
             continue
 
         for path, body in files.items():
-            target = clone / path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(body if isinstance(body, str) else "")
-            written.add(path)
+            written[path] = body if isinstance(body, str) else ""
+        _write_files(clone, written)
         write("edit", {"attempt": attempt, "files": sorted(files)}, state["last_tokens"])
         if state["tokens"] >= token_budget:
             return close("budget_exhausted", {"reason": "token budget spent"})
 
-        passed, exit_code, test_output = _run_tests(clone, setup, workdir)
+        passed, exit_code, test_output = _test_in_a_copy(git, written, setup, workdir, attempt)
         write("test", {"attempt": attempt, "passed": passed, "exit_code": exit_code})
-        current = "\n\n".join(
-            f"=== {path} ===\n{(clone / path).read_text()}" for path in sorted(written)
-        )
+        current = "\n\n".join(f"=== {path} ===\n{written[path]}" for path in sorted(written))
         if passed:
             # Green is not enough: the change may not drop or skip main's tests.
-            git.run("add", "--", *sorted(written), cwd=clone)
-            staged = git.run("diff", "--cached", cwd=clone)
+            git.run("add", "--", *sorted(written))
+            staged = git.run("diff", "--cached")
             if not staged.strip():
                 # Green because nothing changed: there is nothing to commit.
                 state["unchanged"] = True
@@ -379,7 +387,7 @@ def _run(
             write("guard", {"attempt": attempt, "problems": problems})
             # The model has overwritten these files, so show it the repository's own.
             originals = "\n\n".join(
-                f"=== {path} ===\n{git.run('show', f'HEAD:{path}', cwd=clone)[:MAX_FILE_CHARS]}"
+                f"=== {path} ===\n{git.run('show', f'HEAD:{path}')[:MAX_FILE_CHARS]}"
                 for path in sorted({problem.split(": ", 1)[0] for problem in problems})
                 if path in written
             )
@@ -402,8 +410,8 @@ def _run(
             "with the corrected files." + note_text
         )
     else:
-        git.run("add", "--", *sorted(written), cwd=clone) if written else None
-        diff = git.run("diff", "--cached", cwd=clone) if written else ""
+        git.run("add", "--", *sorted(written)) if written else None
+        diff = git.run("diff", "--cached") if written else ""
         if state["weakened"]:
             output = {"reason": WEAKENED, "problems": state["weakened"]}
         elif state["unchanged"]:
@@ -417,13 +425,18 @@ def _run(
             {**output, "diff": diff[:MAX_DIFF_CHARS], "test_output": test_output},
         )
 
-    git.run("add", "--", *sorted(written), cwd=clone)
-    diff = git.run("diff", "--cached", cwd=clone)
-    git.run(
-        "-c", f"user.name={AUTHOR[0]}", "-c", f"user.email={AUTHOR[1]}",
-        "commit", "-q", "-m", pull.title, cwd=clone,
-    )  # fmt: skip
-    _push(git, clone, branch, write, was_cancelled)
+    # What is committed is exactly the model's files as the worker wrote them:
+    # its own tree back at the base, those files written again, and only their
+    # paths added.
+    git.run("reset", "-q", "--hard")
+    _write_files(clone, written)
+    git.run("add", "--", *sorted(written))
+    staged = [path for path in git.run("diff", "--cached", "--name-only", "-z").split("\0") if path]
+    if set(staged) - set(written) or _outside_paths(dict.fromkeys(staged), setup.allowed_paths):
+        raise ChoreError("the staged change holds paths the model did not write or may not touch")
+    diff = git.run("diff", "--cached")
+    _commit(git, pull.title)
+    _push(git, branch, write, was_cancelled)
     return _open_pull(
         setup, run_id, instruction, branch, base, write, close, diff=diff, pull=pull,
         summary=_one_line((reply or {}).get("summary"), MAX_SUMMARY_CHARS),
@@ -441,49 +454,52 @@ def _open_anyway(
     branch = f"agent/{run_id}"
     url = f"{setup.clone_base.rstrip('/')}/{setup.repo.name}.git"
     base = git.default_branch(url)
-    clone = workdir / "repo"
     note = (
         f"`{setup.repo.test_command}` failed on this change in Mercury run `{source_run_id}`. "
         "It was opened anyway on request, from that run's diff."
     )
 
     if git.remote_has_branch(url, branch):
-        git.run("clone", "-q", "--branch", branch, url, str(clone), cwd=workdir)
+        git.clone(url, branch)
         write("clone", {"resumed": True, "base": base})
         return _open_pull(setup, run_id, instruction, branch, base, write, close, note, pull=pull)
 
     if not diff.strip():
         raise ChoreError(f"run {source_run_id} left no diff to open")
-    git.run("clone", "-q", url, str(clone), cwd=workdir)
-    git.run("checkout", "-q", "-b", branch, cwd=clone)
+    git.clone(url)
+    git.run("checkout", "-q", "-b", branch)
     write("clone", {"resumed": False, "base": base})
     patch = workdir / "change.diff"
     patch.write_text(diff if diff.endswith("\n") else diff + "\n")
     try:
-        git.run("apply", "--index", str(patch), cwd=clone)
+        git.run("apply", "--index", str(patch))
     except ChoreError:
         raise ChoreError(f"the diff from run {source_run_id} no longer applies") from None
-    files = git.run("diff", "--cached", "--name-only", cwd=clone).splitlines()
+    files = git.run("diff", "--cached", "--name-only").splitlines()
     write("apply", {"source_run": source_run_id, "files": files})
-    git.run(
-        "-c", f"user.name={AUTHOR[0]}", "-c", f"user.email={AUTHOR[1]}",
-        "commit", "-q", "-m", pull.title, cwd=clone,
-    )  # fmt: skip
-    _push(git, clone, branch, write, was_cancelled)
+    _commit(git, pull.title)
+    _push(git, branch, write, was_cancelled)
     return _open_pull(setup, run_id, instruction, branch, base, write, close, note, pull=pull)
 
 
-def _push(git, clone, branch, write, was_cancelled) -> None:
+def _commit(git, title: str) -> None:
+    git.run(
+        "-c", f"user.name={AUTHOR[0]}", "-c", f"user.email={AUTHOR[1]}",
+        "commit", "-q", "--no-verify", "-m", title,
+    )  # fmt: skip
+
+
+def _push(git, branch, write, was_cancelled) -> None:
     """Push the branch and record it. A cancel that lands after the push
     and before the step would leave a branch no pull request ever opens, so
     the branch is deleted again. A takeover keeps it: the next worker picks
     the chore up from that branch."""
-    git.run("push", "-q", "origin", branch, cwd=clone, remote=True)
+    git.run("push", "-q", "--no-verify", "origin", branch, remote=True)
     try:
         write("push", {"branch": branch})
     except LostLease:
         if was_cancelled():
-            git.run("push", "-q", "origin", "--delete", branch, cwd=clone, remote=True)
+            git.run("push", "-q", "--no-verify", "origin", "--delete", branch, remote=True)
         raise
 
 
@@ -597,6 +613,13 @@ def _lands_inside(clone: Path, path: str, allowed: tuple[str, ...]) -> bool:
     return _allowed(landed.as_posix(), allowed)
 
 
+def _write_files(tree: Path, files: dict[str, str]) -> None:
+    for path, body in files.items():
+        target = tree / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body)
+
+
 def _read_files(clone: Path, paths: list[str]) -> dict[str, str]:
     return shown_files(clone, [path for path in paths if not _refused_paths({path: ""})])
 
@@ -637,6 +660,22 @@ def _give_to(path: Path, uid: int, gid: int) -> None:
             os.chown(os.path.join(root, name), uid, gid, follow_symlinks=False)
 
 
+def _test_in_a_copy(
+    git: "_Git", written: dict[str, str], setup: ChoreSetup, workdir: Path, attempt: int
+) -> tuple[bool, int | None, str]:
+    """Run the test command in a fresh copy of the repo with the model's files
+    written in. The chore user owns the copy, its .git included, and may do
+    what it likes to it: the copy is deleted once every process the command
+    left has been killed, and git as root never reads it."""
+    copy = workdir / f"test-{attempt}"
+    git.copy_to(copy)
+    _write_files(copy, written)
+    try:
+        return _run_tests(copy, setup, workdir)
+    finally:
+        shutil.rmtree(copy, ignore_errors=True)
+
+
 def _run_tests(clone: Path, setup: ChoreSetup, workdir: Path) -> tuple[bool, int | None, str]:
     home = workdir / "home"
     home.mkdir(exist_ok=True)
@@ -662,44 +701,92 @@ def _run_tests(clone: Path, setup: ChoreSetup, workdir: Path) -> tuple[bool, int
     try:
         output, _ = process.communicate(timeout=setup.test_timeout_seconds)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
+        _stop_leftovers(process, ids)
         output, _ = process.communicate()
+        _stop_leftovers(process, ids)
         tail = (output or "")[-MAX_OUTPUT_CHARS:]
         return False, None, f"{tail}\n(timed out after {setup.test_timeout_seconds:.0f} s)"
+    _stop_leftovers(process, ids)
     return process.returncode == 0, process.returncode, (output or "")[-MAX_OUTPUT_CHARS:]
 
 
+def _stop_leftovers(process: subprocess.Popen, ids: tuple[int, int] | None) -> None:
+    """Kill whatever the test command left running before git runs again. As
+    root that is every process of the chore user, in any session. Not as
+    root, as in the tests, it is the command's own process group, since
+    killing every process of the worker's own user would kill the worker."""
+    if ids is not None:
+        try:
+            kill_user_processes(*ids)
+        except SandboxError as error:
+            raise ChoreError(str(error)) from None
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 class _Git:
+    """git as the worker runs it, as root in the image.
+
+    The worker's git dir and work tree live in a directory only root can open,
+    and every command on them names both outright, so no .git entry, config or
+    hook that the chore user could have written is ever read. Hooks are off on
+    every command as well."""
+
     def __init__(self, workdir: Path, setup: ChoreSetup) -> None:
+        self._workdir = workdir
         home = workdir / "git-home"
         home.mkdir(exist_ok=True)
-        # The clone belongs to the chore user once the tests have run, and git
-        # running as root refuses a repo another user owns unless told not to.
-        self._env = {
-            **_scrubbed_env(home),
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_CONFIG_COUNT": "1",
-            "GIT_CONFIG_KEY_0": "safe.directory",
-            "GIT_CONFIG_VALUE_0": "*",
-        }
+        own = workdir / "root"
+        own.mkdir(exist_ok=True)
+        own.chmod(0o700)
+        self.git_dir = own / "git"
+        self.tree = own / "repo"
+        self._env = {**_scrubbed_env(home), "GIT_TERMINAL_PROMPT": "0"}
         self._remote_env = dict(self._env)
         if setup.token and setup.clone_base.startswith("https://"):
             basic = base64.b64encode(f"x-access-token:{setup.token}".encode()).decode()
             self._remote_env.update(
                 {
-                    "GIT_CONFIG_COUNT": "2",
-                    "GIT_CONFIG_KEY_1": "http.extraheader",
-                    "GIT_CONFIG_VALUE_1": f"AUTHORIZATION: basic {basic}",
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "http.extraheader",
+                    "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {basic}",
                 }
             )
 
-    def run(self, *args: str, cwd: Path, remote: bool = False) -> str:
+    def run(self, *args: str, remote: bool = False) -> str:
+        """A command on the worker's own repo."""
+        where = ("--git-dir", str(self.git_dir), "--work-tree", str(self.tree))
+        return self._call(args[0], (*where, *args), cwd=self.tree, remote=remote)
+
+    def clone(self, url: str, branch: str | None = None) -> None:
+        """Clone into the worker's own tree, with the git dir kept apart from it."""
+        pick = ("--branch", branch) if branch else ()
+        self._call(
+            "clone",
+            ("clone", "-q", *pick, f"--separate-git-dir={self.git_dir}", url, str(self.tree)),
+            cwd=self._workdir,
+            remote=True,
+        )
+
+    def copy_to(self, target: Path) -> None:
+        """A fresh repo at target, from the worker's own, for the tests to run
+        in. Copied, not hard linked: a hard linked object would be handed to
+        the chore user along with the copy, and is the same file as root's."""
+        self._call(
+            "clone", ("clone", "-q", "--no-hardlinks", str(self.git_dir), str(target)),
+            cwd=self._workdir,
+        )  # fmt: skip
+
+    def _call(self, name: str, args: tuple[str, ...], cwd: Path, remote: bool = False) -> str:
         # Every command gets the header env when it may reach the remote. It
         # lives only in this process's environment, never in a file.
-        env = self._remote_env if remote or args[0] in ("clone", "ls-remote") else self._env
+        env = self._remote_env if remote else self._env
         try:
             result = subprocess.run(
-                ["git", *args],
+                ["git", "-c", "core.hooksPath=/dev/null", *args],
                 cwd=cwd,
                 env=env,
                 capture_output=True,
@@ -707,16 +794,21 @@ class _Git:
                 timeout=GIT_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired:
-            raise ChoreError(f"git {args[0]} timed out") from None
+            raise ChoreError(f"git {name} timed out") from None
         if result.returncode != 0:
-            raise ChoreError(f"git {args[0]} failed: {result.stderr.strip()[-300:]}")
+            raise ChoreError(f"git {name} failed: {result.stderr.strip()[-300:]}")
         return result.stdout.strip()
 
     def remote_has_branch(self, url: str, branch: str) -> bool:
-        return bool(self.run("ls-remote", "--heads", url, branch, cwd=Path(".")))
+        out = self._call(
+            "ls-remote", ("ls-remote", "--heads", url, branch), cwd=self._workdir, remote=True
+        )
+        return bool(out)
 
     def default_branch(self, url: str) -> str:
-        out = self.run("ls-remote", "--symref", url, "HEAD", cwd=Path("."))
+        out = self._call(
+            "ls-remote", ("ls-remote", "--symref", url, "HEAD"), cwd=self._workdir, remote=True
+        )
         match = re.search(r"ref: refs/heads/(\S+)\s+HEAD", out)
         return match[1] if match else "main"
 

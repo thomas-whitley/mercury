@@ -59,7 +59,8 @@ socket.getaddrinfo = _blocked
 
 
 class SandboxError(Exception):
-    """The worker is root and has no sandbox user to run the test file as."""
+    """The worker is root and has no sandbox user to run the test file as, or
+    could not stop what that user left running."""
 
 
 @dataclass(frozen=True)
@@ -121,6 +122,9 @@ def verify(
                 + f"\nKilled after {timeout_seconds} seconds.",
                 timed_out=True,
             )
+        finally:
+            if ids is not None:
+                kill_user_processes(*ids)
 
         return VerifyResult(
             passed=completed.returncode == 0,
@@ -140,6 +144,49 @@ def _sandbox_ids() -> tuple[int, int] | None:
     except KeyError:
         raise SandboxError(f"the worker is root and there is no {SANDBOX_USER} user") from None
     return entry.pw_uid, entry.pw_gid
+
+
+# Run as the user whose processes are to go. On Linux kill(-1) signals every
+# process the caller may signal, except the caller itself and init.
+_KILL_ALL = """
+import os
+import signal
+
+try:
+    os.kill(-1, signal.SIGKILL)
+except ProcessLookupError:
+    pass
+"""
+
+
+def kill_user_processes(uid: int, gid: int) -> None:
+    """Kill every process running as uid, however it was started.
+
+    subprocess kills only the child it started, so a process the child put in
+    the background, or in a session of its own, would keep running as that
+    user. A helper running as the user calls kill(-1, SIGKILL). The kernel
+    walks the process list under the lock that fork takes, so nothing forks
+    its way past it. Raises SandboxError when the helper fails, so the caller
+    stops rather than carry on beside a live process."""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", _KILL_ALL],
+            cwd="/",
+            env={},
+            capture_output=True,
+            text=True,
+            timeout=30,
+            user=uid,
+            group=gid,
+            extra_groups=[],
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise SandboxError(f"could not stop the processes of uid {uid}: {error}") from None
+    if completed.returncode != 0:
+        raise SandboxError(
+            f"could not stop the processes of uid {uid}: "
+            f"the kill helper exited {completed.returncode}"
+        )
 
 
 def _give_to(path: Path, uid: int, gid: int) -> None:

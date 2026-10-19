@@ -134,3 +134,58 @@ def test_as_root_with_no_sandbox_user_the_test_file_does_not_run(monkeypatch):
 
     with pytest.raises(sandbox.SandboxError, match="sandbox user"):
         verify("def add(a, b):\n    return a + b\n", PASSING_TEST)
+
+
+def test_as_root_whatever_the_test_file_left_running_is_killed(monkeypatch):
+    """A process the test file started, in its own session or not, would
+    outlive subprocess.run's own kill. Everything the sandbox user runs goes."""
+    calls = []
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        pwd, "getpwnam", lambda name: pwd.struct_passwd((name, "x", 4321, 4321, "", "/", "/bin/sh"))
+    )
+    monkeypatch.setattr(os, "chown", lambda *a, **k: None)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda args, **k: (
+            calls.append("pytest")
+            or subprocess.CompletedProcess(args, 0, stdout="1 passed", stderr="")
+        ),
+    )
+    monkeypatch.setattr(
+        sandbox, "kill_user_processes", lambda uid, gid: calls.append(("kill", uid, gid))
+    )
+
+    verify("def add(a, b):\n    return a + b\n", PASSING_TEST)
+
+    assert calls == ["pytest", ("kill", 4321, 4321)]
+
+
+def _unprivileged_user() -> pwd.struct_passwd | None:
+    for name in ("sandbox", "chore", "nobody"):
+        try:
+            return pwd.getpwnam(name)
+        except KeyError:
+            continue
+    return None
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="switching users needs root, as in the image")
+def test_kill_user_processes_stops_a_process_that_left_its_session():
+    user = _unprivileged_user()
+    if user is None:
+        pytest.skip("no unprivileged user to run as")
+    escaped = subprocess.Popen(
+        ["sleep", "60"],
+        user=user.pw_uid,
+        group=user.pw_gid,
+        extra_groups=[],
+        start_new_session=True,
+    )
+    time.sleep(0.5)
+
+    sandbox.kill_user_processes(user.pw_uid, user.pw_gid)
+
+    assert escaped.wait(timeout=10) == -9
+    assert os.getpid() > 0  # the caller, root, is still here

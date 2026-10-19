@@ -9,6 +9,7 @@ worker got that far before it died, so the chore picks up from there.
 """
 
 import json
+import os
 import subprocess
 import uuid
 from pathlib import Path
@@ -539,15 +540,48 @@ def test_as_root_the_test_command_runs_as_the_chore_user(tmp_path, monkeypatch):
         return _FakeProcess()
 
     monkeypatch.setattr(repo_chore.subprocess, "Popen", fake_popen)
+    killed = []
+    monkeypatch.setattr(
+        repo_chore, "kill_user_processes", lambda uid, gid: killed.append((uid, gid))
+    )
     chore = setup(tmp_path, github=type("G", (), {"url": "http://unused"})())
 
     passed, _, _ = repo_chore._run_tests(clone, chore, tmp_path)
 
     assert passed
+    # Whatever the command left running is gone before git runs as root.
+    assert killed == [(4321, 4321)]
     assert (popen_kwargs["user"], popen_kwargs["group"]) == (4321, 4321)
     assert popen_kwargs["extra_groups"] == []
     assert (str(clone / "calc.py"), 4321) in chowned
     assert (str(tmp_path / "home"), 4321) in chowned
+
+
+def test_as_root_a_failed_kill_stops_the_chore_before_git(tmp_path, monkeypatch):
+    import pwd
+
+    from app import repo_chore
+    from app.sandbox import SandboxError
+
+    clone = tmp_path / "repo"
+    clone.mkdir()
+    monkeypatch.setattr(repo_chore.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        repo_chore.pwd,
+        "getpwnam",
+        lambda name: pwd.struct_passwd((name, "x", 4321, 4321, "", "/", "/bin/sh")),
+    )
+    monkeypatch.setattr(repo_chore.os, "chown", lambda *a, **k: None)
+    monkeypatch.setattr(repo_chore.subprocess, "Popen", lambda *a, **k: _FakeProcess())
+
+    def cannot_kill(uid, gid):
+        raise SandboxError("the kill helper exited 1")
+
+    monkeypatch.setattr(repo_chore, "kill_user_processes", cannot_kill)
+    chore = setup(tmp_path, github=type("G", (), {"url": "http://unused"})())
+
+    with pytest.raises(repo_chore.ChoreError, match="kill helper"):
+        repo_chore._run_tests(clone, chore, tmp_path)
 
 
 def test_as_root_with_no_chore_user_the_tests_do_not_run(tmp_path, monkeypatch):
@@ -730,8 +764,8 @@ def _after_the_push(monkeypatch, hook) -> None:
 
     original = repo_chore._Git.run
 
-    def run(self, *args, cwd, remote=False):
-        out = original(self, *args, cwd=cwd, remote=remote)
+    def run(self, *args, **kwargs):
+        out = original(self, *args, **kwargs)
         if args[:1] == ("push",) and "--delete" not in args:
             hook()
         return out
@@ -1404,3 +1438,108 @@ def test_a_note_chore_retry_prompts_keep_the_question_option_and_the_paths(
     for prompt in edits:
         assert '{"question"' in prompt
         assert "test_subtract.py" in prompt
+
+
+# The test command runs code the model wrote, as the chore user, and git then
+# commits and pushes as root. Each trick below is something that code can try
+# against that git. None may change what is committed, where it is pushed, or
+# run anything as root.
+PACKAGE = '{"name": "fixture"}\n'
+HOOKS = (
+    "mkdir -p .git/hooks && for h in pre-commit pre-push; do "
+    "printf '#!/bin/sh\ntouch {marker}-%s\n' $h > .git/hooks/$h && chmod +x .git/hooks/$h; "
+    "done"
+)
+TRICKS = {
+    "hooks": HOOKS,
+    "insteadof": "git config url.{evil}/.insteadOf {real}/",
+    "swap": (
+        "mv .git .git-moved && git init -q && git remote add origin {evil}/owner/fixture.git && "
+        + HOOKS
+    ),
+    "tamper": (
+        "printf '{{\"name\": \"pwned\"}}\n' > package.json && printf '# tampered\n' >> calc.py "
+        "&& git add package.json calc.py"
+    ),
+    "background": "{{ (sleep 1; touch {marker}-background) > /dev/null 2>&1 & }}",
+}
+TRICKS["all"] = " && ".join(
+    TRICKS[name] for name in ("hooks", "insteadof", "tamper", "background", "swap")
+)
+
+
+@pytest.mark.parametrize("source", ["api", "review_note"])
+@pytest.mark.parametrize("trick", sorted(TRICKS))
+def test_what_the_test_command_does_to_git_never_reaches_the_commit_or_the_push(
+    migrated_db, remote, github, tmp_path, source, trick
+):
+    import time
+
+    push_commit(remote, tmp_path, "package.json", PACKAGE)
+    evil = tmp_path / "evil"
+    (evil / "owner").mkdir(parents=True)
+    git("clone", "-q", "--bare", str(remote), str(evil / "owner" / "fixture.git"), cwd=tmp_path)
+    marker = tmp_path / "marker"
+    command = TRICKS[trick].format(
+        marker=marker, evil=f"file://{evil}", real=f"file://{tmp_path / 'remotes'}"
+    )
+    run_id = chore_run(migrated_db, source=source)
+    model = StubModel(replies=[pick("calc.py"), change(GOOD_CALC)])
+    allowed = ("calc.py", "test_subtract.py") if source == "review_note" else None
+    config = setup(tmp_path, github, f"{command} && {TEST_COMMAND}", allowed_paths=allowed)
+
+    result = run_repo_chore(migrated_db, run_id, model, config, worker_id=WORKER)
+    time.sleep(1.5)  # long enough for a process the test command left behind to act
+
+    branch = f"agent/{run_id}"
+    assert result.status == "succeeded"
+    assert sorted(path.name for path in tmp_path.glob("marker*")) == []
+    assert branch in remote_branches(remote)
+    assert remote_branches(evil / "owner" / "fixture.git") == ["main"]
+    changed = git("diff", "--name-only", "main", branch, cwd=remote).split()
+    assert changed == ["calc.py", "test_subtract.py"]
+    assert git("show", f"{branch}:calc.py", cwd=remote) == GOOD_CALC.strip()
+    assert git("show", f"{branch}:package.json", cwd=remote) == PACKAGE.strip()
+    assert git("rev-parse", f"{branch}~1", cwd=remote) == git("rev-parse", "main", cwd=remote)
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="needs root and a chore user, as in the image")
+@pytest.mark.parametrize("source", ["api", "review_note"])
+def test_as_root_the_chore_user_cannot_reach_roots_git_or_outlive_its_tests(
+    migrated_db, remote, github, tmp_path, source
+):
+    """Only meaningful as root in the image's layout, where the test command
+    really runs as another user. It goes for the worker's own git dir and
+    work tree by name, and leaves a process in a session of its own."""
+    import tempfile
+    import time
+
+    shared = Path(tempfile.mkdtemp())
+    shared.chmod(0o777)
+    marker = shared / "marker"
+    evil = tmp_path / "evil"
+    (evil / "owner").mkdir(parents=True)
+    git("clone", "-q", "--bare", str(remote), str(evil / "owner" / "fixture.git"), cwd=tmp_path)
+    attack = (
+        'test "$(id -u)" != 0 && test -d ../root && ! ls ../root > /dev/null 2>&1 && '
+        "{ mkdir -p ../root/git/hooks; "
+        f"printf '#!/bin/sh\ntouch {marker}-hook\n' > ../root/git/hooks/pre-commit; "
+        f"git --git-dir=../root/git config url.file://{evil}/.insteadOf "
+        f"file://{tmp_path / 'remotes'}/; "
+        f"printf 'pwned\n' > ../root/repo/calc.py; true; }} 2> /dev/null && "
+        f"{{ setsid sh -c 'sleep 1; touch {marker}-setsid' > /dev/null 2>&1 < /dev/null & }}"
+    )
+    run_id = chore_run(migrated_db, source=source)
+    model = StubModel(replies=[pick("calc.py"), change(GOOD_CALC)])
+    allowed = ("calc.py", "test_subtract.py") if source == "review_note" else None
+    config = setup(tmp_path, github, f"{attack} && {TEST_COMMAND}", allowed_paths=allowed)
+
+    result = run_repo_chore(migrated_db, run_id, model, config, worker_id=WORKER)
+    time.sleep(2)
+
+    branch = f"agent/{run_id}"
+    assert result.status == "succeeded"
+    assert sorted(path.name for path in shared.iterdir()) == []
+    assert branch in remote_branches(remote)
+    assert remote_branches(evil / "owner" / "fixture.git") == ["main"]
+    assert git("show", f"{branch}:calc.py", cwd=remote) == GOOD_CALC.strip()

@@ -18,13 +18,14 @@ from urllib.parse import urlsplit
 import psycopg
 from psycopg.rows import dict_row
 
+from app.advice_text import fenced_lines
 from app.budget import check_budget, home_runs_started_today, runs_started_today
 from app.chores import start_chore
 from app.config import HOME_PROVIDERS, Settings
 from app.d1 import D1Client, D1Error
 from app.escalation import MESSAGE_LIMIT, _fit
 from app.github import FAILED_CONCLUSIONS, GitHubClient, GitHubError
-from app.mercury_config import RepoConfig, ReviewNotesConfig
+from app.mercury_config import RepoConfig, ReviewNotesConfig, path_entry_covers
 from app.tasks import TASK_TYPES
 from app.telegram import TelegramClient, TelegramError
 
@@ -142,9 +143,7 @@ def valid_page(page: object) -> bool:
 def _fenced(label: str, text: str) -> list[str]:
     """label is fixed text. The note's words follow inside a fence longer than
     any run of backticks in them, so they cannot close it."""
-    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
-    fence = "`" * max(3, longest + 1)
-    return [label, fence, text, fence]
+    return fenced_lines(label, text)
 
 
 def fenced_text(label: str, text: str) -> str:
@@ -393,7 +392,7 @@ def preview_alias(branch: str) -> str:
 
 
 def _under(path: str, entry: str) -> bool:
-    return path == entry or path.startswith(entry.rstrip("/") + "/")
+    return path_entry_covers(entry, path)
 
 
 def diff_flags(diff: str, config: ReviewNotesConfig) -> list[str]:

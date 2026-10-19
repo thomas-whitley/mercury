@@ -1543,3 +1543,44 @@ def test_as_root_the_chore_user_cannot_reach_roots_git_or_outlive_its_tests(
     assert branch in remote_branches(remote)
     assert remote_branches(evil / "owner" / "fixture.git") == ["main"]
     assert git("show", f"{branch}:calc.py", cwd=remote) == GOOD_CALC.strip()
+
+
+def test_an_advised_rerun_of_a_question_shows_the_question_it_answers(
+    migrated_db, remote, github, tmp_path
+):
+    asked = note_chore(migrated_db)
+    question = "Which heading, the page title or the ``` banner?"
+    run_repo_chore(
+        migrated_db, asked,
+        StubModel(replies=[pick("calc.py"), json.dumps({"question": question})]),
+        setup(tmp_path, github, allowed_paths=PAGES), worker_id=WORKER,
+    )  # fmt: skip
+    assert done(migrated_db, asked)["reason"] == NEEDS_THOMAS
+    advised = str(
+        migrated_db.execute(
+            "INSERT INTO runs (task, type, repo, source, source_run_id, hint) "
+            "VALUES ('A reviewer left a note.', 'repo_chore', %s, 'review_note', %s, %s) "
+            "RETURNING id",
+            (REPO, asked, "The page title."),
+        ).fetchone()[0]
+    )
+    assert claim_run(migrated_db, advised, WORKER)
+    model = StubModel(replies=[pick("calc.py"), write_to("src/pages/about.astro", ABOUT)])
+
+    run_repo_chore(
+        migrated_db, advised, model, setup(tmp_path, github, allowed_paths=PAGES), worker_id=WORKER
+    )
+
+    for prompt in model.prompts[:2]:
+        assert f"````\n{question}\n````" in prompt  # fenced, and the fence outlasts its backticks
+        assert "The owner's hint: The page title." in prompt
+        assert "answered it with the hint" in prompt
+
+
+def test_a_long_question_is_capped_in_the_advice():
+    from app.advice_text import MAX_QUESTION_CHARS
+
+    block = advice_block("Yes.", {"status": "escalated", "question": "q" * 5_000})
+
+    assert "q" * MAX_QUESTION_CHARS in block
+    assert "q" * (MAX_QUESTION_CHARS + 1) not in block

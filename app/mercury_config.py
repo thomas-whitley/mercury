@@ -42,6 +42,24 @@ class TaskSettings:
     budget_tokens: int | None = None
 
 
+def _as_path_entry(entry: str) -> str:
+    """A path entry as the guard reads it. An entry whose last part has no
+    extension is a folder and gets a trailing "/", as the spec writes folders
+    without one. A misread fails closed: a file with no extension (LICENSE)
+    becomes a folder that matches nothing, and a folder with a dot in its name
+    is matched exactly, so it allows nothing under it until written with "/"."""
+    if entry.endswith("/") or "." in entry.rsplit("/", 1)[-1]:
+        return entry
+    return entry + "/"
+
+
+def path_entry_covers(entry: str, path: str) -> bool:
+    """A path is covered by an entry it equals, or by a folder entry (one
+    ending in "/") it sits under. The diff guard and the diff flags both use
+    this, on entries ReviewNotesConfig has already read."""
+    return path == entry or (entry.endswith("/") and path.startswith(entry))
+
+
 @dataclass(frozen=True)
 class ReviewNotesConfig:
     """The review_notes: section. Notes left on a site are read from the
@@ -49,9 +67,10 @@ class ReviewNotesConfig:
     Only a note on one of live_hosts starts one. preview_pattern holds {alias},
     a branch preview's hostname label. reviewer_name is how a pull request
     names the person who left the note. allowed_paths is the diff guard: a
-    note chore may write a file that equals an entry or starts with an entry
-    ending in "/". shared_paths and sensitive_files are the guard's flags (a
-    later task reads them). daily_cap is the most note chores started in any
+    note chore may write a file that path_entry_covers allows. shared_paths and
+    sensitive_files are the guard's flags. allowed_paths and shared_paths are
+    read as folders, with a "/" added, unless their last part has an
+    extension (see _as_path_entry). daily_cap is the most note chores started in any
     24 hours."""
 
     enabled: bool
@@ -65,6 +84,12 @@ class ReviewNotesConfig:
     shared_paths: tuple[str, ...]
     sensitive_files: tuple[str, ...]
     daily_cap: int = 10
+
+    def __post_init__(self) -> None:
+        # However the config is built, the guard and the flags read the same entries.
+        for name in ("allowed_paths", "shared_paths"):
+            entries = tuple(_as_path_entry(entry) for entry in getattr(self, name))
+            object.__setattr__(self, name, entries)
 
 
 @dataclass(frozen=True)

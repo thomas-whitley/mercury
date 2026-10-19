@@ -47,7 +47,7 @@ from pathlib import Path, PurePosixPath
 
 import psycopg
 
-from app.advice_text import MAX_DIFF_CHARS, advice_block
+from app.advice_text import MAX_DIFF_CHARS, MAX_QUESTION_CHARS, advice_block
 from app.chore_prompts import (
     ASK,
     MAX_FILE_CHARS,
@@ -66,7 +66,7 @@ from app.loop import (
     LoopResult,
     _complete_with_retry,
 )
-from app.mercury_config import RepoConfig
+from app.mercury_config import RepoConfig, path_entry_covers
 from app.model import Model
 from app.review_notes import fenced_text, note_pull_lead, note_title
 from app.runs import finish_run, heartbeat, record_step
@@ -100,7 +100,6 @@ OUTAGE = "providers unavailable"
 # ChoreSetup allows, and may answer with a question in place of files.
 OUTSIDE_PATHS = "changes outside the paths a note may touch"
 NEEDS_THOMAS = "the note needs Thomas"
-MAX_QUESTION_CHARS = 1_000
 MAX_SUMMARY_CHARS = 300
 
 # The rung that answered is the run's provider by now: a fallback rewrites it
@@ -598,9 +597,7 @@ def _allowed(path: object, allowed: tuple[str, ...]) -> bool:
         return False
     if any(segment in ("", ".", "..") for segment in path.split("/")):
         return False
-    return any(
-        path == entry or (entry.endswith("/") and path.startswith(entry)) for entry in allowed
-    )
+    return any(path_entry_covers(entry, path) for entry in allowed)
 
 
 def _lands_inside(clone: Path, path: str, allowed: tuple[str, ...]) -> bool:

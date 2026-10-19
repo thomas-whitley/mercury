@@ -184,7 +184,7 @@ def test_review_notes_loads(tmp_path):
         preview_pattern="https://{alias}-site.sub.workers.dev",
         account_id="0000",
         database_id="0000-0000",
-        allowed_paths=("src/pages", "public"),
+        allowed_paths=("src/pages/", "public/"),
         shared_paths=("src/site.config.ts",),
         sensitive_files=("src/site.config.ts",),
         daily_cap=10,
@@ -238,3 +238,35 @@ def test_a_bad_review_notes_section_stops_startup(tmp_path, old, new, words):
 
     with pytest.raises(ValueError, match=re.escape(words)):
         load_mercury_config(write(tmp_path, text))
+
+
+def test_a_folder_entry_without_a_slash_allows_the_files_under_it(tmp_path):
+    from app.repo_chore import _outside_paths
+
+    allowed = load_mercury_config(write(tmp_path, REVIEW_NOTES_YAML)).review_notes.allowed_paths
+
+    assert _outside_paths({"src/pages/about.astro": "", "public/a/b.png": ""}, allowed) == []
+    assert _outside_paths({"src/pagesx/a.astro": ""}, allowed) == ["src/pagesx/a.astro"]
+
+
+def test_path_entries_are_read_as_folders_unless_their_last_part_has_an_extension(tmp_path):
+    text = REVIEW_NOTES_YAML.replace(
+        "  shared_paths: [src/site.config.ts]\n",
+        "  shared_paths: [src/site.config.ts, src/layouts, src/styles/]\n",
+    ).replace("allowed_paths: [src/pages, public]", "allowed_paths: [src/pages, LICENSE]")
+
+    notes = load_mercury_config(write(tmp_path, text)).review_notes
+
+    assert notes.shared_paths == ("src/site.config.ts", "src/layouts/", "src/styles/")
+    # A file with no extension reads as a folder, so it is refused, never widened.
+    assert notes.allowed_paths == ("src/pages/", "LICENSE/")
+
+
+def test_the_diff_flags_and_the_path_guard_read_an_entry_the_same_way(tmp_path):
+    from app.repo_chore import _allowed
+    from app.review_notes import _under
+
+    notes = load_mercury_config(write(tmp_path, REVIEW_NOTES_YAML)).review_notes
+    for path in ("src/pages", "src/pages/a.astro", "src/pagesx/a", "public", "public/x", "x"):
+        for entry in notes.allowed_paths + notes.shared_paths:
+            assert _under(path, entry) == _allowed(path, (entry,)), (path, entry)

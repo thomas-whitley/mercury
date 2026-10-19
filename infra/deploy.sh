@@ -26,6 +26,7 @@ az deployment group create \
       modelApiKey="${MODEL_API_KEY:-}" \
       voyageApiKey="${VOYAGE_API_KEY:-}" \
       pagespeedApiKey="${PAGESPEED_API_KEY:-}" \
+      cloudflareD1Token="${CLOUDFLARE_D1_TOKEN:-}" \
       ollamaApiKey="${OLLAMA_API_KEY:-}" \
       maxRunsPerDay="${MAX_RUNS_PER_DAY:-20}" \
       localModelUrl="${LOCAL_MODEL_URL:-}" \

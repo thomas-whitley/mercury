@@ -55,6 +55,10 @@ param maxLocalRunsPerDay int = 200
 @secure()
 param pagespeedApiKey string = ''
 
+@description('Cloudflare API token with Account, D1, Edit. The scheduler reads review notes from D1 with it. Empty leaves the review notes step without a token.')
+@secure()
+param cloudflareD1Token string = ''
+
 @description('Telegram bot token. The api replies with it and the worker edits progress and sends budget messages. Empty leaves the bot silent.')
 @secure()
 param telegramBotToken string = ''
@@ -361,11 +365,30 @@ var leaseSeconds = 120
 // app/worker.py.
 var pendingWorkQuery = 'SELECT count(*) FROM runs WHERE finished_at IS NULL AND (type <> \'site_check\' OR (type = \'site_check\' AND check_kind = \'lighthouse\' AND (executor = \'cloud\' OR (claimed_by IS NULL AND created_at < now() - make_interval(secs => ${checkClaimWindowSeconds})) OR (status = \'running\' AND heartbeat_at < now() - make_interval(secs => ${leaseSeconds + checkClaimWindowSeconds})))))'
 
+// The scheduler alone reads D1, so the Cloudflare token goes to it alone.
+var cloudflareD1Secret = empty(cloudflareD1Token)
+  ? []
+  : [
+      {
+        name: 'cloudflare-d1-token'
+        value: cloudflareD1Token
+      }
+    ]
+
+var cloudflareD1Environment = empty(cloudflareD1Token)
+  ? []
+  : [
+      {
+        name: 'CLOUDFLARE_D1_TOKEN'
+        secretRef: 'cloudflare-d1-token'
+      }
+    ]
+
 // The scheduler makes no model call, so it gets no model or embedding key.
 // It gets the bot token to send a suspension or CI failure message, and the
 // GitHub token for the CI watch and the dependency audit. Only used when
 // deployScheduler is true, so the bearer token cannot be empty here.
-var schedulerSecrets = concat(coreSecrets, configSecret, telegramTokenSecret, githubTokenSecret, [
+var schedulerSecrets = concat(coreSecrets, configSecret, telegramTokenSecret, githubTokenSecret, cloudflareD1Secret, [
   {
     name: 'mercury-bearer-token'
     value: mercuryBearerToken
@@ -590,7 +613,7 @@ resource scheduler 'Microsoft.App/jobs@2024-03-01' = if (deployScheduler) {
               name: 'MERCURY_CONFIG_B64'
               secretRef: 'mercury-config'
             }
-          ], telegramTokenEnvironment, githubTokenEnvironment)
+          ], telegramTokenEnvironment, githubTokenEnvironment, cloudflareD1Environment)
         }
       ]
     }

@@ -43,6 +43,27 @@ class TaskSettings:
 
 
 @dataclass(frozen=True)
+class ReviewNotesConfig:
+    """The review_notes: section. Notes left on a site are read from the
+    Cloudflare D1 database account_id/database_id and become chores on repo.
+    Only a note on one of live_hosts starts one. preview_pattern holds {alias},
+    a branch preview's hostname label. allowed_paths, shared_paths and
+    sensitive_files are the diff guard's lists (a later task reads them).
+    daily_cap is the most note chores started in any 24 hours."""
+
+    enabled: bool
+    repo: str
+    live_hosts: tuple[str, ...]
+    preview_pattern: str
+    account_id: str
+    database_id: str
+    allowed_paths: tuple[str, ...]
+    shared_paths: tuple[str, ...]
+    sensitive_files: tuple[str, ...]
+    daily_cap: int = 10
+
+
+@dataclass(frozen=True)
 class MercuryConfig:
     sites: tuple[str, ...]
     pages: tuple[str, ...] = ()
@@ -54,6 +75,7 @@ class MercuryConfig:
     timezone: str = "Australia/Melbourne"
     runs_days: int = RUNS_DAYS
     tasks: dict[str, TaskSettings] = field(default_factory=dict)
+    review_notes: ReviewNotesConfig | None = None
 
 
 def load_mercury_config(path: str | Path) -> MercuryConfig:
@@ -71,15 +93,68 @@ def load_mercury_config(path: str | Path) -> MercuryConfig:
     telegram = data.get("telegram") or {}
     chat_id = telegram.get("chat_id")
     retention = data.get("retention") or {}
+    repos = tuple(_repo(entry) for entry in portfolio.get("repos") or [])
     return MercuryConfig(
         sites=tuple(portfolio.get("sites") or []),
         pages=tuple(portfolio.get("pages") or []),
         telegram_chat_id=int(chat_id) if chat_id else None,
-        repos=tuple(_repo(entry) for entry in portfolio.get("repos") or []),
+        repos=repos,
         event_bodies_days=int(retention.get("event_bodies_days", EVENT_BODIES_DAYS)),
         runs_days=int(retention.get("runs_days", RUNS_DAYS)),
         timezone=telegram.get("timezone") or "Australia/Melbourne",
         tasks=_tasks(data.get("tasks") or {}),
+        review_notes=_review_notes(data.get("review_notes"), repos),
+    )
+
+
+def _review_notes(section: object, repos: tuple[RepoConfig, ...]) -> ReviewNotesConfig | None:
+    if section is None:
+        return None
+    if not isinstance(section, dict):
+        raise ValueError("mercury.yaml: review_notes: must be a mapping")
+
+    def text(key: str) -> str:
+        value = section.get(key)
+        if value is None or isinstance(value, (bool, dict, list)) or not str(value).strip():
+            raise ValueError(f"mercury.yaml: review_notes.{key} is required")
+        return str(value).strip()
+
+    def names(key: str, *, required: bool) -> tuple[str, ...]:
+        value = section.get(key)
+        if value is None and not required:
+            return ()
+        listed = isinstance(value, list) and all(
+            isinstance(item, str) and item.strip() for item in value
+        )
+        if not listed or (required and not value):
+            kind = "a non empty list of strings" if required else "a list of strings"
+            raise ValueError(f"mercury.yaml: review_notes.{key} must be {kind}")
+        return tuple(item.strip() for item in value)
+
+    repo = text("repo")
+    if not any(entry.name == repo and entry.test_command for entry in repos):
+        raise ValueError(
+            f"mercury.yaml: review_notes.repo {repo!r} must be listed under portfolio.repos "
+            "with a test_command"
+        )
+    preview_pattern = text("preview_pattern")
+    if "{alias}" not in preview_pattern:
+        raise ValueError("mercury.yaml: review_notes.preview_pattern must contain {alias}")
+    daily_cap = section.get("daily_cap", 10)
+    if not isinstance(daily_cap, int) or isinstance(daily_cap, bool) or daily_cap < 1:
+        raise ValueError("mercury.yaml: review_notes.daily_cap must be a positive whole number")
+    return ReviewNotesConfig(
+        # Only a YAML boolean true. A quoted "true" keeps notes off.
+        enabled=section.get("enabled") is True,
+        repo=repo,
+        live_hosts=names("live_hosts", required=True),
+        preview_pattern=preview_pattern,
+        account_id=text("account_id"),
+        database_id=text("database_id"),
+        allowed_paths=names("allowed_paths", required=True),
+        shared_paths=names("shared_paths", required=False),
+        sensitive_files=names("sensitive_files", required=False),
+        daily_cap=daily_cap,
     )
 
 

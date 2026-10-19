@@ -141,6 +141,10 @@ class Settings:
     # Runs on a home provider a day, apart from max_runs_per_day (decision 25
     # of docs/build-brief-evals.md).
     max_local_runs_per_day: int = 200
+    # The review notes reader (app/d1.py). The token has D1 edit permission on
+    # one Cloudflare account and nothing else, and only the scheduler holds it.
+    cloudflare_d1_token: str | None = None
+    cloudflare_api_url: str = "https://api.cloudflare.com/client/v4"
 
 
 def _default_worker_id() -> str:
@@ -180,4 +184,8 @@ def load_settings() -> Settings:
         repo_test_timeout_seconds=float(os.environ.get("REPO_TEST_TIMEOUT_SECONDS", "600")),
         osv_api_url=os.environ.get("OSV_API_URL") or "https://api.osv.dev",
         max_local_runs_per_day=int(os.environ.get("MAX_LOCAL_RUNS_PER_DAY", "200")),
+        cloudflare_d1_token=os.environ.get("CLOUDFLARE_D1_TOKEN") or None,
+        cloudflare_api_url=(
+            os.environ.get("CLOUDFLARE_API_URL") or "https://api.cloudflare.com/client/v4"
+        ),
     )

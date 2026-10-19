@@ -35,6 +35,21 @@ portfolio:
   pages:                # Lighthouse and the broken link crawl, weekly, on the self hosted worker
     - https://example.com/
 
+# Optional. Notes a reviewer leaves on a website, stored in that site's Cloudflare D1
+# database (table review_comments), become repo chores. Needs CLOUDFLARE_D1_TOKEN in the
+# scheduler's environment. Every value below is a placeholder.
+# review_notes:
+#   enabled: false                  # only a YAML true starts chores
+#   repo: owner/repo-two            # must be listed above with a test_command
+#   live_hosts: [www.example.com]   # a note on any other host is recorded, never run
+#   preview_pattern: "https://{alias}-site.example.workers.dev"
+#   account_id: "00000000000000000000000000000000"
+#   database_id: "00000000-0000-0000-0000-000000000000"
+#   allowed_paths: [src/pages, src/content, public]
+#   shared_paths: [src/site.config.ts]
+#   sensitive_files: [src/site.config.ts]
+#   daily_cap: 10                   # note chores started in any 24 hours
+
 # The scheduler Job fires once an hour, on the hour in UTC, and nothing reads
 # a cron line here (app/scheduler.py). On each tick it checks every site for
 # uptime, watches every repo's CI through the GitHub Actions API, and applies
@@ -51,7 +66,7 @@ retention:
 
 # Environment variables the image expects. Secrets:
 #   DATABASE_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, MERCURY_BEARER_TOKEN,
-#   MERCURY_GITHUB_TOKEN, MODEL_API_KEY (Gemini), OLLAMA_API_KEY, PAGESPEED_API_KEY,
+#   MERCURY_GITHUB_TOKEN, CLOUDFLARE_D1_TOKEN (scheduler only), MODEL_API_KEY (Gemini), OLLAMA_API_KEY, PAGESPEED_API_KEY,
 #   and ANTHROPIC_API_KEY, which no type uses.
 # Plain settings: MAX_RUNS_PER_DAY (20), DAILY_TOKENS_PER_PROVIDER (500000),
 #   MONTHLY_BUDGET_USD (5).

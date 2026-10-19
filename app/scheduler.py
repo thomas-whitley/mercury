@@ -30,12 +30,14 @@ from app.approvals import ask, expire_due
 from app.audit import OSVClient, OSVError, audit_repo
 from app.checks import check_site
 from app.cleanup import run_cleanup
-from app.config import load_settings
+from app.config import Settings, load_settings
+from app.d1 import D1Client, D1Error
 from app.github import GitHubClient, GitHubError
 from app.logging_setup import configure_logging
-from app.mercury_config import load_mercury_config
+from app.mercury_config import MercuryConfig, load_mercury_config
 from app.migrations import apply_migrations
 from app.outage import retry_outages
+from app.review_notes import open_notes, start_note_chores
 from app.runs import finish_run, record_step
 from app.schedule_state import SUSPEND_AFTER, is_suspended, record_failure, record_success
 from app.tasks import SCHEDULER_CHECK_KINDS, SELF_HOSTED_CHECK_KINDS, configure_task_types
@@ -437,6 +439,46 @@ def schedule_digest(
     return run_id
 
 
+def advance_review_notes(
+    conn: psycopg.Connection,
+    settings: Settings,
+    config: MercuryConfig,
+    telegram: TelegramClient | None,
+    github: GitHubClient | None,
+) -> list[str]:
+    """Read the open review notes and start a chore for each new one. Skipped
+    when review_notes is not configured or there is no Cloudflare token. A D1
+    call that fails counts towards suspending the step, and the tick goes on.
+    Returns the ids of the runs started."""
+    notes_config = config.review_notes
+    if notes_config is None or not settings.cloudflare_d1_token:
+        return []
+    schedule_name = "review_notes"
+    if is_suspended(conn, schedule_name):
+        logger.info("skipping %s: schedule suspended", schedule_name)
+        return []
+    repo = next((r for r in config.repos if r.name == notes_config.repo), None)
+    if repo is None:  # load_mercury_config refuses this, so only a hand built config gets here
+        logger.error("review_notes.repo is not in the repo list")
+        return []
+    d1 = D1Client(
+        settings.cloudflare_d1_token,
+        notes_config.account_id,
+        notes_config.database_id,
+        settings.cloudflare_api_url,
+    )
+    try:
+        notes = open_notes(d1)
+    except D1Error as error:
+        logger.error("could not read the review notes: %s", error)
+        _fail(conn, schedule_name, "Reading the review notes", telegram, config.telegram_chat_id)
+        return []
+    record_success(conn, schedule_name)
+    started = start_note_chores(conn, notes, notes_config, repo)
+    logger.info("review notes: %s open, %s chore(s) started", len(notes), len(started))
+    return started
+
+
 def _close_check(conn: psycopg.Connection, run_id: str, finding: dict, status: str) -> None:
     """The finding as step 1 and a done event as step 2, the shape a posted
     check result has, so the run's stream ends."""
@@ -484,6 +526,7 @@ def main() -> None:  # pragma: no cover - the process entry point
             telegram=telegram,
             chat_id=config.telegram_chat_id,
         )
+        created += advance_review_notes(conn, settings, config, telegram, github)
         created += audit_dependencies(
             conn,
             repos,

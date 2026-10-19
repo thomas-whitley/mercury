@@ -11,7 +11,7 @@ import re
 import pytest
 import yaml
 
-from app.mercury_config import TaskSettings, load_mercury_config
+from app.mercury_config import ReviewNotesConfig, TaskSettings, load_mercury_config
 
 
 def test_load_mercury_config_reads_the_site_list(tmp_path):
@@ -153,3 +153,86 @@ def test_a_repo_may_set_its_own_test_timeout(tmp_path):
     slow, fast = config.repos
     assert slow.test_timeout_seconds == 900.0
     assert fast.test_timeout_seconds is None
+
+
+REVIEW_NOTES_YAML = """portfolio:
+  repos:
+    - name: owner/site
+      test_command: npm test
+review_notes:
+  enabled: true
+  repo: owner/site
+  live_hosts: [live.example.com]
+  preview_pattern: "https://{alias}-site.sub.workers.dev"
+  account_id: "0000"
+  database_id: "0000-0000"
+  allowed_paths: [src/pages, public]
+  shared_paths: [src/site.config.ts]
+  sensitive_files: [src/site.config.ts]
+"""
+
+
+def test_review_notes_loads(tmp_path):
+    config = load_mercury_config(write(tmp_path, REVIEW_NOTES_YAML))
+
+    assert config.review_notes == ReviewNotesConfig(
+        enabled=True,
+        repo="owner/site",
+        live_hosts=("live.example.com",),
+        preview_pattern="https://{alias}-site.sub.workers.dev",
+        account_id="0000",
+        database_id="0000-0000",
+        allowed_paths=("src/pages", "public"),
+        shared_paths=("src/site.config.ts",),
+        sensitive_files=("src/site.config.ts",),
+        daily_cap=10,
+    )
+
+
+def test_no_review_notes_section_means_none(tmp_path):
+    assert load_mercury_config(write(tmp_path, "portfolio: {}\n")).review_notes is None
+
+
+def test_review_notes_is_enabled_only_by_a_yaml_true(tmp_path):
+    text = REVIEW_NOTES_YAML.replace("enabled: true", 'enabled: "true"')
+
+    assert load_mercury_config(write(tmp_path, text)).review_notes.enabled is False
+
+
+def test_review_notes_with_an_unknown_repo_is_refused(tmp_path):
+    text = REVIEW_NOTES_YAML.replace("repo: owner/site", "repo: owner/other")
+
+    with pytest.raises(ValueError, match="review_notes.repo"):
+        load_mercury_config(write(tmp_path, text))
+
+
+def test_review_notes_on_a_repo_with_no_test_command_is_refused(tmp_path):
+    text = REVIEW_NOTES_YAML.replace("      test_command: npm test\n", "")
+
+    with pytest.raises(ValueError, match="test_command"):
+        load_mercury_config(write(tmp_path, text))
+
+
+@pytest.mark.parametrize(
+    "old, new, words",
+    [
+        ('  database_id: "0000-0000"\n', "", "review_notes.database_id"),
+        ("  live_hosts: [live.example.com]\n", "  live_hosts: []\n", "review_notes.live_hosts"),
+        ("{alias}-site", "site", "{alias}"),
+        ("  allowed_paths: [src/pages, public]\n", "", "review_notes.allowed_paths"),
+        (
+            "  sensitive_files: [src/site.config.ts]\n",
+            "  sensitive_files: oops\n",
+            "sensitive_files",
+        ),
+        ("  enabled: true\n", "  enabled: true\n  daily_cap: 0\n", "review_notes.daily_cap"),
+        ("  enabled: true\n", "  enabled: true\n  daily_cap: ten\n", "review_notes.daily_cap"),
+        ("  enabled: true\n", "  enabled: true\n  daily_cap: true\n", "review_notes.daily_cap"),
+    ],
+)
+def test_a_bad_review_notes_section_stops_startup(tmp_path, old, new, words):
+    text = REVIEW_NOTES_YAML.replace(old, new)
+    assert text != REVIEW_NOTES_YAML
+
+    with pytest.raises(ValueError, match=re.escape(words)):
+        load_mercury_config(write(tmp_path, text))

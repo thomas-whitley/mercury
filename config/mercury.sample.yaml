@@ -29,6 +29,7 @@ portfolio:
       auto_approve: false  # true starts chores from the API, MCP or n8n without asking; throwaway repos only
     - name: owner/repo-two
       test_command: npm ci && npm test
+      # test_timeout_seconds: 900  # optional; default is REPO_TEST_TIMEOUT_SECONDS (600)
   sites:                # uptime, hourly, plain HTTP from the scheduler Job
     - https://example.com
   pages:                # Lighthouse and the broken link crawl, weekly, on the self hosted worker

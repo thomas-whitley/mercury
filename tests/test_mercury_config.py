@@ -139,3 +139,17 @@ def test_a_type_with_no_tasks_entry_is_absent(tmp_path):
 def test_a_config_mercury_would_misread_stops_it_at_startup(tmp_path, text, words):
     with pytest.raises(ValueError, match=re.escape(words)):
         load_mercury_config(write(tmp_path, text))
+
+
+def test_a_repo_may_set_its_own_test_timeout(tmp_path):
+    config = load_mercury_config(
+        write(
+            tmp_path,
+            "portfolio:\n  repos:\n"
+            "    - name: o/slow\n      test_command: npm test\n      test_timeout_seconds: 900\n"
+            "    - name: o/fast\n      test_command: npm test\n",
+        )
+    )
+    slow, fast = config.repos
+    assert slow.test_timeout_seconds == 900.0
+    assert fast.test_timeout_seconds is None

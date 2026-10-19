@@ -389,7 +389,11 @@ def _run_chore(
         clone_base=settings.github_clone_base,
         github=GitHubClient(settings.mercury_github_token, settings.github_api_url),
         token=settings.mercury_github_token,
-        test_timeout_seconds=settings.repo_test_timeout_seconds,
+        test_timeout_seconds=(
+            repo.test_timeout_seconds
+            if repo.test_timeout_seconds is not None
+            else settings.repo_test_timeout_seconds
+        ),
         heartbeat_database_url=settings.database_url,
     )
     result = run_repo_chore(

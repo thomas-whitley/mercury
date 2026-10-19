@@ -495,8 +495,8 @@ resource worker 'Microsoft.App/containerApps@2024-03-01' = {
           name: 'worker'
           image: image
           resources: {
-            cpu: json('0.25')
-            memory: '0.5Gi'
+            cpu: json('1.0')
+            memory: '2Gi'
           }
           env: concat(sharedEnvironment, [
             {

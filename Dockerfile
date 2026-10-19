@@ -1,5 +1,5 @@
 # The runs page. Built here so the Python stage never needs Node.
-FROM node:22-slim AS web
+FROM node:24.20.0-slim AS web
 
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
@@ -21,6 +21,12 @@ RUN apt-get update \
     && useradd --system --no-create-home --shell /usr/sbin/nologin sandbox
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.17 /uv /usr/local/bin/uv
+
+# Node for repo chores whose test command is npm. Same tag as the web stage.
+# npm and npx are links into the module, so they are recreated here.
+COPY --from=node:24.20.0-slim /usr/local/bin/node /usr/local/bin/node
+COPY --from=node:24.20.0-slim /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 WORKDIR /srv
 

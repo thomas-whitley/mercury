@@ -597,3 +597,39 @@ def test_process_run_answers_a_chat_run_through_telegram(migrated_db, fake_teleg
     assert fake_telegram.sent("editMessageText") == [
         {"chat_id": 42, "message_id": 7, "text": "Which URL?"}
     ]
+
+
+@pytest.mark.parametrize(
+    ("repo_timeout", "expected"),
+    [(900.0, 900.0), (None, 123.0)],
+)
+def test_a_chore_uses_its_repos_timeout_over_the_default(
+    migrated_db, monkeypatch, repo_timeout, expected
+):
+    from app import worker
+    from app.loop import LoopResult
+    from app.mercury_config import RepoConfig
+
+    seen = {}
+
+    def fake_run_repo_chore(conn, run_id, model, setup, **kwargs):
+        seen["timeout"] = setup.test_timeout_seconds
+        return LoopResult(status="succeeded", attempts=1, tokens_used=0)
+
+    monkeypatch.setattr(worker, "run_repo_chore", fake_run_repo_chore)
+    run_id = migrated_db.execute(
+        "INSERT INTO runs (task, repo) VALUES ('t', 'o/r') RETURNING id"
+    ).fetchone()[0]
+    repo = RepoConfig(name="o/r", test_command="npm test", test_timeout_seconds=repo_timeout)
+
+    worker._run_chore(
+        migrated_db,
+        run_id,
+        StubModel(replies=[]),
+        settings_with(repo_test_timeout_seconds=123.0),
+        (repo,),
+        None,
+        1000,
+    )
+
+    assert seen["timeout"] == expected

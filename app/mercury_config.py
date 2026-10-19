@@ -28,6 +28,8 @@ class RepoConfig:
     # true in mercury.yaml lets a chore from the API, MCP or n8n start without
     # the Approve button. Meant for the throwaway fixture the evals run on.
     auto_approve: bool = False
+    # Seconds the test command may run. None keeps REPO_TEST_TIMEOUT_SECONDS.
+    test_timeout_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -118,4 +120,7 @@ def _repo(entry: str | dict) -> RepoConfig:
         test_command=entry.get("test_command"),
         # Only a YAML boolean true. A quoted "yes" keeps the gate.
         auto_approve=entry.get("auto_approve") is True,
+        test_timeout_seconds=(
+            float(entry["test_timeout_seconds"]) if "test_timeout_seconds" in entry else None
+        ),
     )

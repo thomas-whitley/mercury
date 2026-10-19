@@ -20,7 +20,7 @@ from app.loop import (
     _complete_with_retry,
 )
 from app.model import Model
-from app.report import waiting_counts
+from app.report import notes_waiting, waiting_counts
 from app.runs import finish_run, record_step
 from app.telegram import TelegramClient, TelegramError
 
@@ -38,8 +38,8 @@ code repositories. You are given facts as JSON. Use only those facts and never i
 number, a name or a cause. Lead with anything that needs attention: a site that failed a \
 check, a Lighthouse score that dropped since the previous run, broken links, failing CI, \
 vulnerable dependencies, a suspended schedule, a check that errored, repo chores waiting \
-for a hint or for a Claude session. Then say in one line what was fine. Plain text, no \
-markdown, at most 1,200 characters."""
+for a hint or for a Claude session, review notes waiting on the owner. \
+Then say in one line what was fine. Plain text, no markdown, at most 1,200 characters."""
 
 # A run counts as a check only when step 1 holds a check's result. One the
 # scheduler closed as an orphan never checked the site, so it is counted as
@@ -190,6 +190,7 @@ def gather_facts(conn: psycopg.Connection) -> dict:
         "runs": runs,
         "escalations_waiting": waiting,
         "needs_claude": claude,
+        "review_notes_waiting": notes_waiting(conn),
     }
 
 
@@ -258,6 +259,8 @@ def render_facts(facts: dict) -> str:
         lines.append(f"Suspended: {name}.")
     if line := _waiting_line(facts.get("escalations_waiting", 0), facts.get("needs_claude", 0)):
         lines.append(line)
+    if facts.get("review_notes_waiting"):
+        lines.append(f"Review notes: {facts['review_notes_waiting']} waiting on you.")
     for run_type, statuses in facts["runs"].items():
         counts = ", ".join(f"{count} {status}" for status, count in statuses.items())
         lines.append(f"Runs {run_type}: {counts}.")

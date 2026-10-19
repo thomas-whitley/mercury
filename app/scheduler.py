@@ -39,7 +39,7 @@ from app.logging_setup import configure_logging
 from app.mercury_config import MercuryConfig, load_mercury_config
 from app.migrations import apply_migrations
 from app.outage import retry_outages
-from app.review_notes import advance_waiting, open_notes, start_note_chores
+from app.review_notes import advance_waiting, open_notes, settle_notes, start_note_chores
 from app.runs import finish_run, record_step
 from app.schedule_state import SUSPEND_AFTER, is_suspended, record_failure, record_success
 from app.tasks import SCHEDULER_CHECK_KINDS, SELF_HOSTED_CHECK_KINDS, configure_task_types
@@ -492,6 +492,7 @@ def advance_review_notes(
         notes_config.database_id,
         settings.cloudflare_api_url,
     )
+    started: list[str] = []
     try:
         # Notes already started move on first, so a finished chore's page is
         # free before the new notes are looked at.
@@ -506,14 +507,23 @@ def advance_review_notes(
             http_get,
         )
         notes = open_notes(d1)
+        # A D1 write that failed is counted below, once the new notes have been
+        # looked at: the other rows settle and the tick goes on.
+        settle_error = None
+        try:
+            settle_notes(conn, d1, notes_config, github, notes)
+        except D1Error as error:
+            settle_error = error
         started = start_note_chores(conn, notes, notes_config, repo)
+        if settle_error is not None:
+            raise settle_error
     except Exception as error:  # noqa: BLE001 - nothing here may stop the rest of the tick
         # D1Error carries a safe message. For anything else only the class
         # name is logged, since a message can quote a note.
         reason = str(error) if isinstance(error, D1Error) else type(error).__name__
         logger.error("review notes step failed: %s", reason)
         _fail(conn, schedule_name, "Reading the review notes", telegram, config.telegram_chat_id)
-        return []
+        return started
     record_success(conn, schedule_name)
     logger.info("review notes: %s open, %s chore(s) started", len(notes), len(started))
     return started

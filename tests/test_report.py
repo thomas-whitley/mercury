@@ -152,3 +152,28 @@ def test_a_quiet_chore_is_left_out_of_the_escalations(migrated_db, source):
     run_id = escalated_chore(migrated_db, "tests still failing after 3 attempts", source=source)
 
     assert run_id[:8] not in report(migrated_db)
+
+
+def test_the_report_lists_notes(migrated_db):
+    for note_id, page, state, pr, edited in (
+        (1, "/about/", "reported", "https://github.com/owner/site/pull/7", True),
+        (2, "/contact/", "preview", None, False),
+        (3, "/faq/", "capped", None, False),
+    ):
+        migrated_db.execute(
+            "INSERT INTO review_notes (note_id, host, page, note_updated_at, state, pr_url, "
+            "note_body, edited) VALUES (%s, 'h', %s, 't', %s, %s, 'SECRET BODY', %s)",
+            (note_id, page, state, pr, edited),
+        )
+
+    text = report(migrated_db)
+
+    assert "## Review notes" in text
+    assert "- Note 1, /about/, reported, https://github.com/owner/site/pull/7, edited" in text
+    assert "- Note 2, /contact/, preview" in text
+    assert "- Note 3, /faq/, capped" in text
+    assert "SECRET BODY" not in text
+
+
+def test_the_report_says_when_there_are_no_notes(migrated_db):
+    assert "## Review notes\n\nNone yet." in report(migrated_db)

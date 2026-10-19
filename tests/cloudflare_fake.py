@@ -68,6 +68,16 @@ class FakeCloudflare:
                 return 200, {"success": False, "errors": [{"code": 7500, "message": "bad"}]}
             if "review_comments" not in payload.get("sql", ""):
                 return 400, {"success": False, "errors": [{"message": "unknown query"}]}
+            sql = payload["sql"]
+            if sql.startswith("UPDATE review_comments SET status = 'done'"):
+                for n in self.notes:
+                    if n["id"] == payload["params"][0] and n["status"] == "open":
+                        n["status"] = "done"
+                return 200, {
+                    "success": True,
+                    "errors": [],
+                    "result": [{"success": True, "results": [], "meta": {}}],
+                }
             keys = ("id", "host", "page", "anchor_text", "quote", "body", "updated_at")
             open_rows = sorted(
                 (n for n in self.notes if n["status"] == "open"), key=lambda n: n["id"]

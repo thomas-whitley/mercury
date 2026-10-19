@@ -462,3 +462,17 @@ def test_the_digest_says_when_chores_wait_on_the_owner(migrated_db):
 
     text = render_facts(gather_facts(migrated_db))
     assert "2 chores are waiting for a hint and 1 needs a Claude session; see the report." in text
+
+
+def test_the_digest_says_when_notes_wait(migrated_db):
+    assert "Review notes" not in render_facts(gather_facts(migrated_db))
+
+    for note_id, state in ((1, "question"), (2, "reported"), (3, "waiting"), (4, "merged")):
+        migrated_db.execute(
+            "INSERT INTO review_notes (note_id, host, page, note_updated_at, state) "
+            "VALUES (%s, 'h', %s, 't', %s)",
+            (note_id, f"/p{note_id}/", state),
+        )
+
+    lines = render_facts(gather_facts(migrated_db)).splitlines()
+    assert lines.count("Review notes: 2 waiting on you.") == 1

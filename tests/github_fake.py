@@ -75,10 +75,16 @@ class FakeGitHub:
                 return 404, {"message": "Not Found"}
             repo = f"{segments[1]}/{segments[2]}"
             if method == "GET":
-                head = parse_qs(parts.query).get("head", [""])[0]
+                query = parse_qs(parts.query)
+                head = query.get("head", [""])[0]
+                only_open = query.get("state", ["open"])[0] == "open"
                 owner = segments[1]
                 return 200, [
-                    p for p in self.pulls if p["repo"] == repo and f"{owner}:{p['head']}" == head
+                    p
+                    for p in self.pulls
+                    if p["repo"] == repo
+                    and f"{owner}:{p['head']}" == head
+                    and (p["state"] == "open" or not only_open)
                 ]
             number = len(self.pulls) + 1
             pull = {
@@ -88,6 +94,9 @@ class FakeGitHub:
                 "base": payload["base"],
                 "title": payload["title"],
                 "body": payload.get("body", ""),
+                # Tests set state to "closed" and merged_at to a time for a merged one.
+                "state": "open",
+                "merged_at": None,
                 "html_url": f"https://github.com/{repo}/pull/{number}",
             }
             self.pulls.append(pull)

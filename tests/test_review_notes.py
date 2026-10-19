@@ -24,6 +24,7 @@ from app.review_notes import (
     note_title,
     open_notes,
     preview_alias,
+    settle_notes,
     start_note_chores,
 )
 from app.run_list import ONE_RUN, serialize_run_row
@@ -985,6 +986,7 @@ def test_one_notes_failure_does_not_stop_the_next(migrated_db, tick):
 def test_the_scheduler_step_moves_started_notes_on_before_reading_new_ones(
     migrated_db, cloudflare, queued
 ):
+    cloudflare.add_note(1)
     succeeded_chore(migrated_db)
 
     advance_review_notes(
@@ -1195,3 +1197,264 @@ def test_the_real_http_get_does_not_follow_a_redirect():
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ---- Task 7: the tick on merge ----
+
+DONE_SQL = (
+    "UPDATE review_comments SET status = 'done', updated_at = datetime('now') "
+    "WHERE id = ? AND status = 'open'"
+)
+
+
+def open_pull(github, conn, note_id=1, state="open", merged=False):
+    run_id = str(
+        conn.execute("SELECT run_id FROM review_notes WHERE note_id = %s", (note_id,)).fetchone()[0]
+    )
+    github.pulls.append(
+        {
+            "repo": "owner/site",
+            "head": f"agent/{run_id}",
+            "html_url": PR,
+            "state": state,
+            "merged_at": "2026-10-20T01:00:00Z" if merged else None,
+        }
+    )
+    return run_id
+
+
+def settle(conn, cloudflare, github, notes=None):
+    d1 = d1_for(cloudflare)
+    settle_notes(
+        conn,
+        d1,
+        make_config(),
+        GitHubClient("gh-token", github.url),
+        open_notes(d1) if notes is None else notes,
+    )
+
+
+def d1_writes(cloudflare):
+    return [c for c in cloudflare.calls if c["sql"].startswith("UPDATE")]
+
+
+def test_pull_state_reads_open_merged_closed_and_none(github):
+    client = GitHubClient("t", github.url)
+    for head, state, merged_at in (
+        ("agent/a", "open", None),
+        ("agent/b", "closed", "2026-10-20T01:00:00Z"),
+        ("agent/c", "closed", None),
+    ):
+        github.pulls.append(
+            {"repo": "owner/site", "head": head, "state": state, "merged_at": merged_at}
+        )
+
+    assert client.pull_state("owner/site", "agent/a") == "open"
+    assert client.pull_state("owner/site", "agent/b") == "merged"
+    assert client.pull_state("owner/site", "agent/c") == "closed"
+    assert client.pull_state("owner/site", "agent/d") == "none"
+
+
+def test_a_merged_note_is_marked_done_in_d1(migrated_db, tick, github, fake_telegram, cloudflare):
+    cloudflare.add_note(1)
+    reported(migrated_db, tick, github)
+    open_pull(github, migrated_db, merged=True, state="closed")
+
+    settle(migrated_db, cloudflare, github)
+
+    assert d1_writes(cloudflare) == [{"sql": DONE_SQL, "params": [1]}]
+    assert row(migrated_db)["state"] == "merged"
+    assert cloudflare.notes[0]["status"] == "done"
+
+
+def test_a_pull_request_merged_before_its_message_ticks_the_note_and_sends_none(
+    migrated_db, tick, github, fake_telegram, cloudflare
+):
+    cloudflare.add_note(1)
+    succeeded_chore(migrated_db)
+    tick()  # waiting
+    open_pull(github, migrated_db, merged=True, state="closed")
+
+    settle(migrated_db, cloudflare, github)
+    tick(3)
+
+    assert row(migrated_db)["state"] == "merged"
+    assert len(d1_writes(cloudflare)) == 1
+    assert messages(fake_telegram) == []
+
+
+def test_an_open_pull_request_changes_nothing(migrated_db, tick, github, fake_telegram, cloudflare):
+    cloudflare.add_note(1)
+    reported(migrated_db, tick, github)
+    open_pull(github, migrated_db)
+
+    settle(migrated_db, cloudflare, github)
+
+    assert row(migrated_db)["state"] == "reported"
+    assert d1_writes(cloudflare) == []
+
+
+def test_a_pull_request_that_cannot_be_found_leaves_the_row_and_logs_the_id(
+    migrated_db, tick, github, fake_telegram, cloudflare, caplog
+):
+    cloudflare.add_note(1, body="a secret reviewer sentence")
+    reported(migrated_db, tick, github)
+
+    settle(migrated_db, cloudflare, github)
+
+    assert row(migrated_db)["state"] == "reported"
+    assert d1_writes(cloudflare) == []
+    assert "review note 1" in caplog.text
+    assert "secret reviewer sentence" not in caplog.text
+
+
+def test_a_closed_pull_request_leaves_the_note_open(
+    migrated_db, tick, github, fake_telegram, cloudflare
+):
+    cloudflare.add_note(1)
+    reported(migrated_db, tick, github)
+    open_pull(github, migrated_db, state="closed")
+    runs_before = run_count(migrated_db)
+
+    settle(migrated_db, cloudflare, github)
+    start_note_chores(migrated_db, open_notes(d1_for(cloudflare)), make_config(), REPO)
+
+    assert row(migrated_db)["state"] == "closed"
+    assert d1_writes(cloudflare) == []
+    assert run_count(migrated_db) == runs_before
+
+
+def test_a_d1_failure_leaves_the_row_and_the_others_still_settle(
+    migrated_db, tick, github, fake_telegram, cloudflare, monkeypatch
+):
+    cloudflare.add_note(1, page="/a/")
+    cloudflare.add_note(2, page="/b/")
+    reported(migrated_db, tick, github, note_id=1, page="/a/")
+    reported(migrated_db, tick, github, note_id=2, page="/b/")
+    open_pull(github, migrated_db, 1, merged=True, state="closed")
+    open_pull(github, migrated_db, 2, merged=True, state="closed")
+    notes = open_notes(d1_for(cloudflare))
+    real = D1Client.query
+
+    def flaky(self, sql, params):
+        if sql.startswith("UPDATE") and params == [1]:
+            raise D1Error("D1 query: HTTP 500")
+        return real(self, sql, params)
+
+    monkeypatch.setattr(D1Client, "query", flaky)
+    with pytest.raises(D1Error):
+        settle(migrated_db, cloudflare, github, notes)
+
+    assert states(migrated_db) == {1: "reported", 2: "merged"}
+
+
+def test_the_step_counts_a_failed_done_write_on_the_schedule_entry(
+    migrated_db, tick, github, fake_telegram, cloudflare, monkeypatch
+):
+    cloudflare.add_note(1)
+    reported(migrated_db, tick, github)
+    open_pull(github, migrated_db, merged=True, state="closed")
+    real = D1Client.query
+
+    def flaky(self, sql, params):
+        if sql.startswith("UPDATE"):
+            raise D1Error("D1 query: HTTP 500")
+        return real(self, sql, params)
+
+    monkeypatch.setattr(D1Client, "query", flaky)
+    advance_review_notes(
+        migrated_db, settings_for(cloudflare), mercury_config(make_config()), None, tick.github
+    )
+
+    assert row(migrated_db)["state"] == "reported"
+    failures = migrated_db.execute(
+        "SELECT consecutive_failures FROM schedule_state WHERE name = 'review_notes'"
+    ).fetchone()
+    assert failures == (1,)
+
+
+def test_a_deleted_note_is_gone_and_its_pull_request_left(
+    migrated_db, tick, github, fake_telegram, cloudflare
+):
+    cloudflare.add_note(1)
+    reported(migrated_db, tick, github)
+    open_pull(github, migrated_db)
+    calls_before = list(github.calls)
+    cloudflare.notes[0]["status"] = "deleted"
+
+    settle(migrated_db, cloudflare, github)
+
+    assert row(migrated_db)["state"] == "gone"
+    assert github.calls == calls_before
+    assert d1_writes(cloudflare) == []
+
+
+@pytest.mark.parametrize("state", ["merged", "closed", "gone"])
+def test_a_finished_row_is_not_made_gone(migrated_db, cloudflare, github, state):
+    start_note_chores(migrated_db, [note(1)], make_config(), REPO)
+    migrated_db.execute("UPDATE review_notes SET state = %s", (state,))
+
+    settle(migrated_db, cloudflare, github)
+
+    assert row(migrated_db)["state"] == state
+
+
+@pytest.mark.parametrize("state", ["preview", "capped"])
+def test_a_preview_or_capped_row_whose_note_left_d1_is_gone(migrated_db, cloudflare, github, state):
+    start_note_chores(migrated_db, [note(1)], make_config(), REPO)
+    migrated_db.execute("UPDATE review_notes SET state = %s", (state,))
+
+    settle(migrated_db, cloudflare, github)
+
+    assert row(migrated_db)["state"] == "gone"
+
+
+def test_a_failed_read_of_the_notes_marks_nothing_gone(migrated_db, cloudflare, github):
+    cloudflare.add_note(1)
+    start_note_chores(migrated_db, open_notes(d1_for(cloudflare)), make_config(), REPO)
+    cloudflare.status_override = 500
+
+    advance_review_notes(
+        migrated_db, settings_for(cloudflare), mercury_config(make_config()), None, None
+    )
+
+    assert row(migrated_db)["state"] == "chore"
+
+
+def test_an_edited_note_is_flagged_not_rerun(migrated_db, tick, github, fake_telegram, cloudflare):
+    cloudflare.add_note(1)
+    start_note_chores(migrated_db, open_notes(d1_for(cloudflare)), make_config(), REPO)
+    run_id = str(migrated_db.execute("SELECT run_id FROM review_notes").fetchone()[0])
+    finish_chore(migrated_db, run_id, pr_url=PR, summary="Changed it", diff="")
+    tick()  # waiting
+    runs_before = run_count(migrated_db)
+    cloudflare.notes[0]["updated_at"] = "2026-10-19 05:00:00"
+
+    settle(migrated_db, cloudflare, github)
+    settle(migrated_db, cloudflare, github)
+    tick(2)
+    finish_both(migrated_db)
+    tick()
+
+    flagged = migrated_db.execute("SELECT edited FROM review_notes").fetchone()
+    assert flagged == (True,)
+    assert run_count(migrated_db) == runs_before + 2  # only the two Lighthouse checks
+    assert any("edited this note" in text for text in messages(fake_telegram))
+
+
+def test_an_edit_after_the_message_is_flagged_and_the_row_stays_reported(
+    migrated_db, tick, github, fake_telegram, cloudflare
+):
+    cloudflare.add_note(1)
+    reported(migrated_db, tick, github)
+    open_pull(github, migrated_db)
+    sent = len(messages(fake_telegram))
+    cloudflare.notes[0]["updated_at"] = "2026-10-19 05:00:00"
+
+    settle(migrated_db, cloudflare, github)
+
+    assert migrated_db.execute("SELECT edited, state FROM review_notes").fetchone() == (
+        True,
+        "reported",
+    )
+    assert len(messages(fake_telegram)) == sent

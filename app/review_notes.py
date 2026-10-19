@@ -736,3 +736,90 @@ def _report(conn: psycopg.Connection, row: dict, run_id: str, scores: dict, tick
         message_id = None
     conn.execute(_SET_REPORTED, (message_id, row["note_id"]))
     logger.info("review note %s reported as message %s", row["note_id"], message_id)
+
+
+# ---- After the pull request: merged, closed, deleted and edited ----
+
+_SETTLE_ROWS = """
+SELECT note_id, state, run_id, note_updated_at FROM review_notes
+WHERE state NOT IN ('merged', 'closed', 'gone') ORDER BY note_id
+"""
+_MARK_EDITED = """
+UPDATE review_notes SET edited = true, note_updated_at = %s, updated_at = now()
+WHERE note_id = %s
+"""
+_MARK_DONE_IN_D1 = (
+    "UPDATE review_comments SET status = 'done', updated_at = datetime('now') "
+    "WHERE id = ? AND status = 'open'"
+)
+_TRACKED_BY_PR = ("chore", "question", "waiting", "reported")
+
+
+def settle_notes(
+    conn: psycopg.Connection,
+    d1: D1Client,
+    config: ReviewNotesConfig,
+    github: GitHubClient | None,
+    notes: list[Note],
+) -> None:
+    """Follow each tracked note after its pull request. `notes` is the open
+    notes read this tick, and the caller must not call this when that read
+    failed, so an outage never marks every note gone.
+
+    A row whose note left D1 becomes gone and its pull request is left alone.
+    A changed updated_at flags the row edited and never reruns it. A waiting or
+    reported row whose pull request merged is marked done in D1 and becomes
+    merged, and one whose pull request closed becomes closed. A D1 write that
+    fails leaves its row as it was; the other rows still settle, and the last
+    D1Error is raised at the end so the caller counts it."""
+    open_by_id = {n.id: n for n in notes}
+    with conn.cursor(row_factory=dict_row) as cursor:
+        rows = cursor.execute(_SETTLE_ROWS).fetchall()
+    failure: D1Error | None = None
+    for row in rows:
+        try:
+            with conn.transaction():
+                _settle_row(conn, row, open_by_id.get(row["note_id"]), d1, config, github)
+        except D1Error as error:
+            logger.error("review note %s: not marked done in D1: %s", row["note_id"], error)
+            failure = error
+        except Exception as error:  # noqa: BLE001 - one note must not stop the others
+            logger.error("review note %s did not settle: %s", row["note_id"], type(error).__name__)
+    if failure is not None:
+        raise failure
+
+
+def _settle_row(
+    conn: psycopg.Connection,
+    row: dict,
+    note: Note | None,
+    d1: D1Client,
+    config: ReviewNotesConfig,
+    github: GitHubClient | None,
+) -> None:
+    note_id, state = row["note_id"], row["state"]
+    if note is None:
+        conn.execute(_SET_STATE, ("gone", note_id))
+        logger.info("review note %s left D1, its pull request is left as it is", note_id)
+        return
+    if state not in _TRACKED_BY_PR:
+        return
+    if note.updated_at != row["note_updated_at"]:
+        conn.execute(_MARK_EDITED, (note.updated_at, note_id))
+        logger.info("review note %s was edited, not rerun", note_id)
+    if state not in ("waiting", "reported") or row["run_id"] is None or github is None:
+        return
+    try:
+        pull = github.pull_state(config.repo, f"agent/{row['run_id']}")
+    except GitHubError:
+        logger.error("review note %s: pull request state not read, will retry", note_id)
+        return
+    if pull == "merged":
+        d1.query(_MARK_DONE_IN_D1, [note_id])
+        conn.execute(_SET_STATE, ("merged", note_id))
+        logger.info("review note %s merged and marked done", note_id)
+    elif pull == "closed":
+        conn.execute(_SET_STATE, ("closed", note_id))
+        logger.info("review note %s: pull request closed, note left open", note_id)
+    elif pull == "none":
+        logger.warning("review note %s: no pull request found for its branch", note_id)

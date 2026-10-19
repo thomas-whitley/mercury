@@ -30,6 +30,17 @@ class GitHubClient:
         pulls = self._call("GET", f"/repos/{repo}/pulls?state=open&head={owner}:{branch}")
         return pulls[0]["html_url"] if pulls else None
 
+    def pull_state(self, repo: str, branch: str) -> str:
+        """open, merged or closed for the pull request from the branch, or none
+        when there is no such pull request. Merged wins over open, open over closed."""
+        owner = repo.split("/", 1)[0]
+        pulls = self._call("GET", f"/repos/{repo}/pulls?state=all&head={owner}:{branch}")
+        if not pulls:
+            return "none"
+        if any(p.get("merged_at") for p in pulls):
+            return "merged"
+        return "open" if any(p.get("state") == "open" for p in pulls) else "closed"
+
     def open_pull(self, repo: str, branch: str, base: str, title: str, body: str) -> str:
         pull = self._call(
             "POST",

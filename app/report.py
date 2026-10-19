@@ -15,6 +15,7 @@ import psycopg
 from app.budget import month_spend_usd
 from app.config import PROVIDERS
 from app.escalation import chain_root
+from app.review_notes import valid_page
 
 MAX_DIFF_CHARS = 6000
 MAX_OUTPUT_CHARS = 2000
@@ -60,6 +61,37 @@ FROM runs r
 WHERE r.status = 'escalated' AND r.source NOT IN ('eval', 'bank')
   AND NOT EXISTS (SELECT 1 FROM runs n WHERE n.source_run_id = r.id)
 """
+# Notes still being followed, and the ones that finished since the report began.
+# The note's words are never selected: only its id, page, state and pull request.
+_NOTES = """
+SELECT note_id, page, state, pr_url, edited FROM review_notes
+WHERE state NOT IN ('merged', 'closed', 'gone') OR updated_at >= %s
+ORDER BY note_id
+"""
+# A note on the owner: a question to answer, or a pull request to merge.
+_NOTES_WAITING = "SELECT count(*) FROM review_notes WHERE state IN ('question', 'reported')"
+
+
+def notes_section(conn: psycopg.Connection, since: datetime | date) -> list[str]:
+    """The review notes: id, page, state, pull request and whether it was edited."""
+    lines = ["## Review notes", ""]
+    found = conn.execute(_NOTES, (since,)).fetchall()
+    for note_id, page, state, pr_url, edited in found:
+        shown = page if valid_page(page) else "(not a site path)"
+        line = f"- Note {note_id}, {shown}, {state}"
+        if pr_url:
+            line += f", {pr_url}"
+        if edited:
+            line += ", edited"
+        lines.append(line)
+    if not found:
+        lines.append("None yet.")
+    return lines + [""]
+
+
+def notes_waiting(conn: psycopg.Connection) -> int:
+    """Review notes waiting on the owner: a question, or a pull request to merge."""
+    return conn.execute(_NOTES_WAITING).fetchone()[0]
 
 
 def waiting_counts(conn: psycopg.Connection) -> tuple[int, int]:
@@ -142,8 +174,9 @@ def build_report(
     if not started:
         lines.append("None yet.")
 
+    lines.append("")
+    lines += notes_section(conn, since)
     lines += [
-        "",
         "## Eval",
         "",
         "The latest eval report is the newest file in evals/results/ in the public repo.",

@@ -193,7 +193,7 @@ def test_notes_on_different_pages_run_side_by_side(migrated_db):
     assert run_count(migrated_db) == 2
 
 
-def test_disabled_starts_nothing_but_existing_notes_advance(migrated_db):
+def test_disabled_starts_nothing_and_records_no_row(migrated_db):
     started = start_note_chores(migrated_db, [note(1)], make_config(enabled=False), REPO)
 
     assert started == []
@@ -1635,4 +1635,35 @@ def test_a_note_edited_while_capped_is_not_flagged_edited_when_it_starts(
         "chore",
         False,
         "2026-10-19 05:00:00",
+    )
+
+
+def test_disabled_starts_no_new_note_but_waiting_and_reported_rows_move_on(
+    migrated_db, tick, github, fake_telegram, cloudflare, queued
+):
+    """enabled: false stops new notes only. A waiting row still finds its
+    preview, and a reported row whose pull request merged still settles."""
+    cloudflare.add_note(1)
+    cloudflare.add_note(2, page="/contact/")
+    cloudflare.add_note(3, page="/faq/")
+    succeeded_chore(migrated_db, note_id=1)
+    tick()  # waiting
+    reported(migrated_db, tick, github, note_id=2, page="/contact/")
+    open_pull(github, migrated_db, note_id=2, merged=True, state="closed")
+    runs_before = run_count(migrated_db)
+
+    advance_review_notes(
+        migrated_db, settings_for(cloudflare), mercury_config(make_config(enabled=False)),
+        None, GitHubClient("gh-token", github.url), lambda url: 200,
+    )  # fmt: skip
+
+    assert row(migrated_db, 1)["preview_url"] is not None
+    assert row(migrated_db, 2)["state"] == "merged"
+    assert d1_writes(cloudflare) == [{"sql": DONE_SQL, "params": [2]}]
+    assert 3 not in states(migrated_db)
+    # No chore for note 3. (No check is queued either: these settings hold no bearer token.)
+    assert run_count(migrated_db) == runs_before
+    assert (
+        migrated_db.execute("SELECT count(*) FROM runs WHERE type = 'repo_chore'").fetchone()[0]
+        == 2
     )

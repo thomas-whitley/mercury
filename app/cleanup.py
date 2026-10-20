@@ -6,7 +6,9 @@ later still replays each step's seq and kind and the done event's status, the
 same shape a caller with no token sees (app/stream.py without_body). A
 site_check keeps everything, because its step 1 is the summary the digest
 compares week over week. A chore's model calls go at the same age, except
-a bank run's, which are Phase 5's training data. A run older than runs_days
+a bank run's, which are Phase 5's training data. A review note that is
+finished (merged, closed or gone) loses the reviewer's words copied onto its
+row at the same age, counted from when it finished. A run older than runs_days
 goes, steps, events and model calls with it.
 
 Both statements only touch rows that still have something to remove, so a
@@ -75,6 +77,16 @@ WHERE c.run_id = r.id
 """
 
 
+# The reviewer's words, copied onto a note's row for its pull request
+# (migration 018), go once the note is finished and past the window.
+_STRIP_NOTES = """
+UPDATE review_notes SET note_body = NULL, note_anchor = NULL, note_quote = NULL
+WHERE state IN ('merged', 'closed', 'gone')
+  AND updated_at < now() - make_interval(days => %s)
+  AND (note_body IS NOT NULL OR note_anchor IS NOT NULL OR note_quote IS NOT NULL)
+"""
+
+
 @dataclass(frozen=True)
 class CleanupResult:
     runs_stripped: int
@@ -92,6 +104,7 @@ def run_cleanup(
             conn.execute(_STRIP_STEPS, (stripped,))
             conn.execute(_STRIP_EVENTS, (stripped,))
         conn.execute(_DROP_CALLS, (event_bodies_days,))
+        conn.execute(_STRIP_NOTES, (event_bodies_days,))
         deleted = conn.execute(_DELETE_RUNS, (runs_days,)).rowcount
 
     result = CleanupResult(runs_stripped=len(stripped), runs_deleted=deleted)

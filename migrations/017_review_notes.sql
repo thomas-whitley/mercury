@@ -1,7 +1,8 @@
 -- Review notes left on a website become repo chores (docs/superpowers/specs/
 -- 2026-10-19-review-notes-chores-design.md). review_notes is what Mercury has
 -- seen of each note, keyed by the note's id in the site's D1 database. The
--- note's own text is never copied here.
+-- note's own text is not copied here; migration 018 adds the columns that
+-- hold it for the pull request, and app/cleanup.py clears them.
 ALTER TABLE runs DROP CONSTRAINT runs_source_check;
 ALTER TABLE runs ADD CONSTRAINT runs_source_check
     CHECK (source IN ('telegram', 'mcp', 'n8n', 'api', 'scheduler', 'eval', 'bank', 'review_note'));

@@ -168,3 +168,34 @@ def test_model_calls_go_with_the_bodies_except_a_bank_runs(migrated_db):
 
     left = {row[0] for row in migrated_db.execute("SELECT run_id::text FROM model_calls")}
     assert left == {bank, fresh}
+
+
+def _note(conn, note_id: int, state: str, days_ago: int) -> None:
+    conn.execute(
+        "INSERT INTO review_notes (note_id, host, page, note_updated_at, state, note_body, "
+        "note_anchor, note_quote, updated_at) "
+        "VALUES (%s, 'h', '/p/', 't', %s, 'body', 'anchor', 'quote', "
+        "now() - make_interval(days => %s))",
+        (note_id, state, days_ago),
+    )
+
+
+def _note_text(conn) -> dict:
+    rows = conn.execute(
+        "SELECT note_id, note_body, note_anchor, note_quote FROM review_notes ORDER BY note_id"
+    ).fetchall()
+    return {row[0]: row[1:] for row in rows}
+
+
+def test_a_finished_notes_words_go_with_the_run_bodies(migrated_db):
+    for note_id, state in enumerate(["merged", "closed", "gone"], start=1):
+        _note(migrated_db, note_id, state, days_ago=31)
+    _note(migrated_db, 4, "merged", days_ago=29)  # inside the window
+    for note_id, state in enumerate(["question", "reported", "capped"], start=5):
+        _note(migrated_db, note_id, state, days_ago=60)  # still being followed
+
+    run_cleanup(migrated_db)
+
+    text = _note_text(migrated_db)
+    assert [text[i] for i in (1, 2, 3)] == [(None, None, None)] * 3
+    assert all(text[i] == ("body", "anchor", "quote") for i in (4, 5, 6, 7))

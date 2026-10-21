@@ -624,6 +624,12 @@ def _apply_edits(
         if path not in texts:
             texts[path] = written.get(path)
             if texts[path] is None:
+                # Whatever allowed_paths is, never read a file a symlink leads
+                # out of the clone.
+                try:
+                    (clone / path).resolve().relative_to(clone.resolve())
+                except (ValueError, OSError, RuntimeError):
+                    return {}, f"{path} leads outside the repository, so it cannot be edited."
                 try:
                     with (clone / path).open(encoding="utf-8", newline="") as handle:
                         texts[path] = handle.read()

@@ -78,6 +78,9 @@ def shown_files(root: Path, paths: list[str], *, keep_newlines: bool = False) ->
     """Each file that exists and is text, cut to MAX_FILE_CHARS. The caller
     has already refused any path outside the repository. keep_newlines shows
     a CRLF file with its CRLFs, so a search text can be copied exactly."""
+    # shortcut: a file over MAX_FILE_CHARS is shown cut, so a note chore can only
+    # edit its shown part (a find past the cut is "not found"), upgrade when a
+    # note chore escalates UNUSABLE on a long file.
     shown = {}
     for path in paths:
         target = root / path

@@ -1910,3 +1910,97 @@ def test_every_prompt_of_a_note_chore_asks_for_edits_and_none_for_files(
     assert any("failed. Its output" in p for p in prompts)
     assert any("leaves the repository as it was" in p for p in prompts)
     assert any("removes or skips tests" in p for p in prompts)
+
+
+def opened_paths(monkeypatch) -> list[str]:
+    """Every path opened through Path.open from now on."""
+    import pathlib
+
+    seen: list[str] = []
+    real = pathlib.Path.open
+
+    def spy(self, *args, **kwargs):
+        seen.append(str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "open", spy)
+    return seen
+
+
+def test_apply_edits_never_opens_a_file_that_a_symlink_leads_out_of_the_clone(
+    tmp_path, monkeypatch
+):
+    from app.repo_chore import _apply_edits
+
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("SECRET TEXT")
+    (clone / "link.txt").symlink_to(outside)
+    (clone / "dirlink").symlink_to(tmp_path)
+    seen = opened_paths(monkeypatch)
+
+    for path in ("link.txt", "dirlink/outside.txt"):
+        written: dict[str, str] = {}
+        files, problem = _apply_edits(
+            [{"path": path, "find": "SECRET", "replace": "x"}], written, clone
+        )
+        assert files == {} and problem and "SECRET" not in problem
+        assert written == {}
+
+    assert not [p for p in seen if p.endswith("outside.txt") or p.endswith("link.txt")]
+
+
+def test_a_symlink_that_stays_inside_the_clone_can_still_be_edited(tmp_path):
+    from app.repo_chore import _apply_edits
+
+    (tmp_path / "real.txt").write_text("one two")
+    (tmp_path / "alias.txt").symlink_to("real.txt")
+
+    files, problem = _apply_edits(
+        [{"path": "alias.txt", "find": "two", "replace": "2"}], {}, tmp_path
+    )
+
+    assert problem is None and files == {"alias.txt": "one 2"}
+
+
+def test_a_chore_with_no_allowed_paths_does_not_read_through_a_symlink_out_of_the_clone(
+    migrated_db, remote, github, tmp_path, monkeypatch
+):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("SECRET TEXT")
+    work = tmp_path / "linker2"
+    git("clone", "-q", str(remote), str(work), cwd=tmp_path)
+    (work / "leak.txt").symlink_to(secret)
+    git("add", ".", cwd=work)
+    git("-c", "user.name=s", "-c", "user.email=s@example.com", "commit", "-qm", "l", cwd=work)
+    git("push", "-q", "origin", "main", cwd=work)
+    seen = opened_paths(monkeypatch)
+    reply = edits_reply(("leak.txt", "SECRET", "x"))
+    run_id = note_chore(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), reply, reply, reply])
+
+    run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert done(migrated_db, run_id)["reason"] == UNUSABLE
+    assert not [p for p in seen if p.endswith("leak.txt")]
+    assert all("SECRET TEXT" not in prompt for prompt in model.prompts)
+    assert remote_branches(remote) == ["main"]
+
+
+def test_a_refused_path_is_never_read_for_an_edit(
+    migrated_db, remote, github, tmp_path, monkeypatch
+):
+    link_into_remote(remote, tmp_path, "link", "../..")
+    seen = opened_paths(monkeypatch)
+    replies = [
+        pick("calc.py"),
+        edits_reply(("src/pages/link/calc.py", "def add", "def plus")),
+        edits_reply(("package.json", "x", "y")),
+        edits_reply(("../calc.py", "def add", "def plus")),
+    ]
+
+    run_id, _, _ = run_note(migrated_db, github, tmp_path, replies)
+
+    assert done(migrated_db, run_id)["reason"] == OUTSIDE_PATHS
+    assert not [p for p in seen if p.endswith(("link/calc.py", "package.json", "../calc.py"))]

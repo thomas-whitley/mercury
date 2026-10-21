@@ -50,6 +50,9 @@ import psycopg
 from app.advice_text import MAX_DIFF_CHARS, MAX_QUESTION_CHARS, advice_block
 from app.chore_prompts import (
     ASK,
+    EDIT_RULES,
+    EDITS_FORMAT,
+    FILES_REPLY,
     MAX_FILE_CHARS,
     MAX_FILES_READ,
     SYSTEM,
@@ -101,6 +104,9 @@ OUTAGE = "providers unavailable"
 OUTSIDE_PATHS = "changes outside the paths a note may touch"
 NEEDS_THOMAS = "the note needs Thomas"
 MAX_SUMMARY_CHARS = 300
+# A note chore replies with search and replace edits (see _apply_edits).
+MAX_EDITS = 20
+MAX_EDIT_CHARS = 20_000
 
 # The rung that answered is the run's provider by now: a fallback rewrites it
 # before the retry that reaches the next rung (app/worker.py _with_fallback).
@@ -290,7 +296,7 @@ def _run(
     listing = tree_listing(tree)
     wanted = ask(read_prompt(instruction, advice, listing))
     paths = [p for p in (wanted or {}).get("read") or [] if isinstance(p, str)]
-    shown = _read_files(clone, paths[:MAX_FILES_READ])
+    shown = _read_files(clone, paths[:MAX_FILES_READ], keep_newlines=from_note)
     write("read", {"files": sorted(shown)}, tokens=state["last_tokens"])
     if state["tokens"] >= token_budget:
         return close("budget_exhausted", {"reason": "token budget spent"})
@@ -301,7 +307,10 @@ def _run(
     if setup.allowed_paths is not None:
         where = f" Change only files that equal or sit under: {', '.join(setup.allowed_paths)}."
     note_text = (ASK if from_note else "") + where
-    prompt = edit_prompt(instruction, advice, listing, shown, may_ask=from_note) + where
+    prompt = (
+        edit_prompt(instruction, advice, listing, shown, may_ask=from_note, by_edits=from_note)
+        + where
+    )
     # Every file the model has written so far, as it wrote it. The tests and
     # the commit both start from this, never from a tree the tests could touch.
     written: dict[str, str] = {}
@@ -312,7 +321,11 @@ def _run(
         state["weakened"] = None
         state["unchanged"] = False
         reply = ask(prompt)
-        files = (reply or {}).get("files")
+        # A note chore replies with edits, which become the same path to text
+        # dict that an ordinary chore's files are. Until the paths have passed
+        # the checks below, only their names stand in for it.
+        edits = (reply or {}).get("edits") if from_note else None
+        files = _edit_paths(edits) if from_note else (reply or {}).get("files")
         question = (reply or {}).get("question")
         if from_note and not files and isinstance(question, str) and question.strip():
             # The note is a question or too vague. Nothing is written or pushed.
@@ -330,8 +343,11 @@ def _run(
                 for p in files
                 if p not in outside and not _lands_inside(clone, p, setup.allowed_paths)
             ]
-        if not isinstance(files, dict) or not files or refused or outside:
-            problem = "Your reply was not the JSON asked for."
+        edit_problem = None
+        if from_note and files and not refused and not outside:
+            files, edit_problem = _apply_edits(edits, written, clone)
+        if not isinstance(files, dict) or not files or refused or outside or edit_problem:
+            problem = edit_problem or "Your reply was not the JSON asked for."
             if refused:
                 problem = (
                     f"These paths are not allowed: {', '.join(refused)}. Stay inside the "
@@ -375,8 +391,8 @@ def _run(
                     f"{listing}\n\nYour change so far:\n{current}\n\n"
                     f"`{setup.repo.test_command}` passed, but your change leaves the repository "
                     "as it was, so it does not carry out the instruction. "
-                    'Reply {"files": {"path": "the full new contents"}, "summary": "one line"} '
-                    "with the files that make the change." + note_text
+                    + _reply_with(from_note, "files that make the change", "edits that make it")
+                    + note_text
                 )
                 continue
             problems = weakened_tests(staged)
@@ -397,16 +413,17 @@ def _run(
                 "the repository already has:\n" + "\n".join(problems) + "\n\n"
                 f"The repository's own version of those files:\n{originals}\n\n"
                 "Keep every existing test as it is, with the same name, and add new tests "
-                'beside them. Reply {"files": {"path": "the full new contents"}, '
-                '"summary": "one line"} with the corrected files.' + note_text
+                "beside them. "
+                + _reply_with(from_note, "corrected files", "corrected edits")
+                + note_text
             )
             continue
         prompt = (
             f"Instruction:\n{instruction}{advice}\n\nFiles in the repository:\n{listing}\n\n"
             f"Your change so far:\n{current}\n\n"
             f"`{setup.repo.test_command}` failed. Its output ended:\n{test_output}\n\n"
-            'Reply {"files": {"path": "the full new contents"}, "summary": "one line"} '
-            "with the corrected files." + note_text
+            + _reply_with(from_note, "corrected files", "corrected edits")
+            + note_text
         )
     else:
         git.run("add", "--", *sorted(written)) if written else None
@@ -564,6 +581,76 @@ def _parse(text: str) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def _reply_with(from_note: bool, files_what: str, edits_what: str) -> str:
+    """The retry prompts' ask for a reply: whole files, or for a note chore
+    search and replace edits."""
+    if from_note:
+        return f"Reply {EDITS_FORMAT} with the {edits_what}.{EDIT_RULES}"
+    return f"{FILES_REPLY} with the {files_what}."
+
+
+def _edit_paths(edits) -> dict[str, str] | None:
+    """The paths a reply's edits name, as a dict the path checks accept, or
+    None when the reply is not a usable list of edits: not a list, empty,
+    over MAX_EDITS, an edit that is not an object with string path, find and
+    replace, or a find or replace over MAX_EDIT_CHARS."""
+    if not isinstance(edits, list) or not edits or len(edits) > MAX_EDITS:
+        return None
+    for edit in edits:
+        if not isinstance(edit, dict):
+            return None
+        fields = [edit.get(key) for key in ("path", "find", "replace")]
+        if not all(isinstance(field, str) for field in fields):
+            return None
+        if len(fields[1]) > MAX_EDIT_CHARS or len(fields[2]) > MAX_EDIT_CHARS:
+            return None
+    return dict.fromkeys(edit["path"] for edit in edits)
+
+
+def _apply_edits(
+    edits: list[dict], written: dict[str, str], clone: Path
+) -> tuple[dict[str, str], str | None]:
+    """Search and replace, edit by edit and in order. Returns the new text of
+    every file named and no problem; or an empty dict and a sentence for the
+    retry prompt, and nothing is kept from a reply with any bad edit.
+
+    A file's text to start from is what an earlier attempt of this chore wrote,
+    else the clone's file as it stands at the base, read with its line endings.
+    A find must occur once. An empty find makes a file that does not exist yet.
+    Every character a find does not cover stays as it was."""
+    texts: dict[str, str | None] = {}
+    for edit in edits:
+        path, find, replace = edit["path"], edit["find"], edit["replace"]
+        if path not in texts:
+            texts[path] = written.get(path)
+            if texts[path] is None:
+                try:
+                    with (clone / path).open(encoding="utf-8", newline="") as handle:
+                        texts[path] = handle.read()
+                except FileNotFoundError:
+                    pass
+                except (OSError, UnicodeDecodeError):
+                    return {}, f"{path} cannot be edited, it is not a text file."
+        text = texts[path]
+        if find == "":
+            if text is not None:
+                return {}, (
+                    f"{path} already exists, so an empty find is not allowed there. "
+                    "Give a find that is copied exactly from the file and is longer."
+                )
+            texts[path] = replace
+            continue
+        count = 0 if text is None else text.count(find)
+        if count != 1:
+            seen = "not found" if count == 0 else f"found {count} times"
+            return {}, (
+                f"In {path} a find was {seen}. Copy the find exactly from the file as "
+                "shown, and make it longer so that it occurs once."
+            )
+        texts[path] = text.replace(find, replace, 1)
+    return {path: text for path, text in texts.items() if text is not None}, None
+
+
 def _refused_paths(files) -> list[str]:
     if not isinstance(files, dict):
         return []
@@ -617,8 +704,12 @@ def _write_files(tree: Path, files: dict[str, str]) -> None:
         target.write_text(body)
 
 
-def _read_files(clone: Path, paths: list[str]) -> dict[str, str]:
-    return shown_files(clone, [path for path in paths if not _refused_paths({path: ""})])
+def _read_files(clone: Path, paths: list[str], *, keep_newlines: bool = False) -> dict[str, str]:
+    return shown_files(
+        clone,
+        [path for path in paths if not _refused_paths({path: ""})],
+        keep_newlines=keep_newlines,
+    )
 
 
 def _scrubbed_env(home: Path) -> dict[str, str]:

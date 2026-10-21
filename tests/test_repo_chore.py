@@ -992,6 +992,28 @@ def write_to(path: str, body: str) -> str:
     return json.dumps({"files": {path: body}, "summary": "x"})
 
 
+def new_file(path: str, body: str, summary: str = "x") -> str:
+    """A note chore's reply that creates a file."""
+    return json.dumps({"edits": [{"path": path, "find": "", "replace": body}], "summary": summary})
+
+
+def note_change(calc: str) -> str:
+    """A note chore's reply that does what change() does for an ordinary one."""
+    return json.dumps(
+        {
+            "edits": [
+                {"path": "calc.py", "find": CALC, "replace": calc},
+                {"path": "test_subtract.py", "find": "", "replace": TEST_SUBTRACT},
+            ],
+            "summary": "Add subtract",
+        }
+    )
+
+
+def change_for(source: str, calc: str) -> str:
+    return note_change(calc) if source == "review_note" else change(calc)
+
+
 def note_chore(conn, instruction: str = "A reviewer left a note.") -> str:
     return chore_run(conn, instruction, source="review_note")
 
@@ -1000,7 +1022,7 @@ def test_a_note_chore_outside_its_paths_is_refused_and_escalates(
     migrated_db, remote, github, tmp_path
 ):
     run_id = note_chore(migrated_db)
-    model = StubModel(replies=[pick("calc.py"), edit(package__json="{}")])
+    model = StubModel(replies=[pick("calc.py"), new_file("package.json", "{}")])
 
     result = run_repo_chore(
         migrated_db, run_id, model, setup(tmp_path, github, allowed_paths=PAGES), worker_id=WORKER
@@ -1026,7 +1048,7 @@ def test_a_path_needs_an_entry_that_ends_in_a_slash_or_an_exact_match(
     migrated_db, remote, github, tmp_path, path
 ):
     run_id = note_chore(migrated_db)
-    model = StubModel(replies=[pick("calc.py"), json.dumps({"files": {path: "x"}})])
+    model = StubModel(replies=[pick("calc.py"), new_file(path, "x")])
 
     run_repo_chore(
         migrated_db, run_id, model, setup(tmp_path, github, allowed_paths=PAGES), worker_id=WORKER
@@ -1038,7 +1060,7 @@ def test_a_path_needs_an_entry_that_ends_in_a_slash_or_an_exact_match(
 
 def test_an_entry_without_a_slash_allows_just_that_file(migrated_db, remote, github, tmp_path):
     run_id = note_chore(migrated_db)
-    model = StubModel(replies=[pick("calc.py"), write_to("src/site.config.ts", "x = 1\n")])
+    model = StubModel(replies=[pick("calc.py"), new_file("src/site.config.ts", "x = 1\n")])
     config = setup(tmp_path, github, allowed_paths=("src/site.config.ts",))
 
     result = run_repo_chore(migrated_db, run_id, model, config, worker_id=WORKER)
@@ -1053,8 +1075,8 @@ def test_one_refused_attempt_then_an_allowed_one_opens_the_pull_request(
     model = StubModel(
         replies=[
             pick("calc.py"),
-            edit(package__json="{}"),
-            write_to("src/pages/about.astro", ABOUT),
+            new_file("package.json", "{}"),
+            new_file("src/pages/about.astro", ABOUT),
         ]
     )
 
@@ -1070,7 +1092,7 @@ def test_a_note_chore_inside_its_paths_opens_its_pull_request(
     migrated_db, remote, github, tmp_path
 ):
     run_id = note_chore(migrated_db)
-    model = StubModel(replies=[pick("calc.py"), write_to("src/pages/about.astro", ABOUT)])
+    model = StubModel(replies=[pick("calc.py"), new_file("src/pages/about.astro", ABOUT)])
 
     result = run_repo_chore(
         migrated_db, run_id, model, setup(tmp_path, github, allowed_paths=PAGES), worker_id=WORKER
@@ -1161,9 +1183,7 @@ def add_note(conn, run_id: str, **changes) -> None:
 def test_a_note_pull_request_puts_the_note_first(migrated_db, remote, github, tmp_path):
     run_id = note_chore(migrated_db, "THE INSTRUCTION")
     add_note(migrated_db, run_id)
-    reply = json.dumps(
-        {"files": {"src/pages/about.astro": ABOUT}, "summary": "Warmer heading on About"}
-    )
+    reply = new_file("src/pages/about.astro", ABOUT, summary="Warmer heading on About")
     model = StubModel(replies=[pick("calc.py"), reply])
     config = setup(tmp_path, github, allowed_paths=PAGES, reviewer_name="Reviewer")
 
@@ -1198,7 +1218,7 @@ def test_a_rerun_pull_request_finds_the_note_through_its_chain(
     migrated_db.execute(
         "UPDATE runs SET source_run_id = %s, hint = 'use 5' WHERE id = %s", (first, second)
     )
-    model = StubModel(replies=[pick("calc.py"), write_to("src/pages/about.astro", ABOUT)])
+    model = StubModel(replies=[pick("calc.py"), new_file("src/pages/about.astro", ABOUT)])
     config = setup(tmp_path, github, allowed_paths=PAGES, reviewer_name="Reviewer")
 
     run_repo_chore(migrated_db, second, model, config, worker_id=WORKER)
@@ -1212,7 +1232,7 @@ def test_a_note_chore_with_no_note_row_keeps_the_ordinary_layout(
     migrated_db, remote, github, tmp_path
 ):
     run_id = note_chore(migrated_db, "Add subtract to calc.py")
-    model = StubModel(replies=[pick("calc.py"), change(GOOD_CALC)])
+    model = StubModel(replies=[pick("calc.py"), note_change(GOOD_CALC)])
 
     run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
 
@@ -1234,7 +1254,7 @@ def test_an_ordinary_pull_request_keeps_its_layout(migrated_db, remote, github, 
 def test_the_note_never_reaches_a_log_line(migrated_db, remote, github, tmp_path, caplog):
     run_id = note_chore(migrated_db)
     add_note(migrated_db, run_id, note_body="SECRET WORDS")
-    reply = write_to("src/pages/about.astro", ABOUT)
+    reply = new_file("src/pages/about.astro", ABOUT)
     model = StubModel(replies=[pick("calc.py"), reply])
     config = setup(tmp_path, github, allowed_paths=PAGES, reviewer_name="Reviewer")
 
@@ -1283,7 +1303,7 @@ def process_note(migrated_db, clean_db, github, tmp_path, monkeypatch, model, **
 def test_the_worker_gives_a_note_chore_the_configured_paths(
     migrated_db, clean_db, remote, github, tmp_path, monkeypatch
 ):
-    model = StubModel(replies=[pick("calc.py"), edit(package__json="{}")])
+    model = StubModel(replies=[pick("calc.py"), new_file("package.json", "{}")])
 
     run_id, result = process_note(
         migrated_db, clean_db, github, tmp_path, monkeypatch, model, review_notes=notes_config()
@@ -1296,7 +1316,7 @@ def test_the_worker_gives_a_note_chore_the_configured_paths(
 def test_the_worker_lets_a_note_chore_with_no_config_write_nothing(
     migrated_db, clean_db, remote, github, tmp_path, monkeypatch
 ):
-    model = StubModel(replies=[pick("calc.py"), write_to("src/pages/about.astro", ABOUT)])
+    model = StubModel(replies=[pick("calc.py"), new_file("src/pages/about.astro", ABOUT)])
 
     run_id, result = process_note(migrated_db, clean_db, github, tmp_path, monkeypatch, model)
 
@@ -1313,7 +1333,7 @@ def test_the_worker_names_the_reviewer_in_the_pull_request(
     settings = worker_settings(tmp_path, github, monkeypatch)
     run_id = note_chore(migrated_db)
     add_note(migrated_db, run_id)
-    model = StubModel(replies=[pick("calc.py"), write_to("src/pages/about.astro", ABOUT)])
+    model = StubModel(replies=[pick("calc.py"), new_file("src/pages/about.astro", ABOUT)])
 
     process_run(
         migrated_db,
@@ -1399,7 +1419,7 @@ def test_a_write_through_a_symlink_out_of_the_allowed_folder_is_refused(
 
     link_into_remote(remote, tmp_path, "link", target)
     run_id = note_chore(migrated_db)
-    reply = json.dumps({"files": {written: "pwned"}, "summary": "x"})
+    reply = new_file(written, "pwned")
     model = StubModel(replies=[pick("calc.py"), reply])
     writes = []
     real = pathlib.Path.write_text
@@ -1423,7 +1443,7 @@ def test_a_note_chore_retry_prompts_keep_the_question_option_and_the_paths(
     migrated_db, remote, github, tmp_path
 ):
     run_id = note_chore(migrated_db)
-    model = StubModel(replies=[pick("calc.py"), change(BAD_CALC)])
+    model = StubModel(replies=[pick("calc.py"), note_change(BAD_CALC)])
 
     allowed = ("calc.py", "test_subtract.py")
 
@@ -1484,7 +1504,7 @@ def test_what_the_test_command_does_to_git_never_reaches_the_commit_or_the_push(
         marker=marker, evil=f"file://{evil}", real=f"file://{tmp_path / 'remotes'}"
     )
     run_id = chore_run(migrated_db, source=source)
-    model = StubModel(replies=[pick("calc.py"), change(GOOD_CALC)])
+    model = StubModel(replies=[pick("calc.py"), change_for(source, GOOD_CALC)])
     allowed = ("calc.py", "test_subtract.py") if source == "review_note" else None
     config = setup(tmp_path, github, f"{command} && {TEST_COMMAND}", allowed_paths=allowed)
 
@@ -1530,7 +1550,7 @@ def test_as_root_the_chore_user_cannot_reach_roots_git_or_outlive_its_tests(
         f"{{ setsid sh -c 'sleep 1; touch {marker}-setsid' > /dev/null 2>&1 < /dev/null & }}"
     )
     run_id = chore_run(migrated_db, source=source)
-    model = StubModel(replies=[pick("calc.py"), change(GOOD_CALC)])
+    model = StubModel(replies=[pick("calc.py"), change_for(source, GOOD_CALC)])
     allowed = ("calc.py", "test_subtract.py") if source == "review_note" else None
     config = setup(tmp_path, github, f"{attack} && {TEST_COMMAND}", allowed_paths=allowed)
 
@@ -1565,7 +1585,7 @@ def test_an_advised_rerun_of_a_question_shows_the_question_it_answers(
         ).fetchone()[0]
     )
     assert claim_run(migrated_db, advised, WORKER)
-    model = StubModel(replies=[pick("calc.py"), write_to("src/pages/about.astro", ABOUT)])
+    model = StubModel(replies=[pick("calc.py"), new_file("src/pages/about.astro", ABOUT)])
 
     run_repo_chore(
         migrated_db, advised, model, setup(tmp_path, github, allowed_paths=PAGES), worker_id=WORKER
@@ -1584,3 +1604,309 @@ def test_a_long_question_is_capped_in_the_advice():
 
     assert "q" * MAX_QUESTION_CHARS in block
     assert "q" * (MAX_QUESTION_CHARS + 1) not in block
+
+
+# Note chores edit by search and replace. Untouched text cannot change, because
+# the model never types a whole file out again.
+DASH = "—"
+EN_DASH = "–"
+ABOUT_PATH = "src/pages/about.astro"
+TRIAL_ABOUT = f"<h1>Our tidy work</h1>\r\n<p>A {DASH} B</p>\n<p>C {DASH} D</p>\n<p>E {DASH} F</p>\n"
+
+
+def edits_reply(*items: tuple[str, str, str], summary: str = "x") -> str:
+    return json.dumps(
+        {
+            "edits": [{"path": p, "find": f, "replace": r} for p, f, r in items],
+            "summary": summary,
+        }
+    )
+
+
+def push_bytes(remote: Path, tmp_path: Path, path: str, body: bytes) -> None:
+    work = tmp_path / "push-bytes"
+    git("clone", "-q", str(remote), str(work), cwd=tmp_path)
+    target = work / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(body)
+    git("add", path, cwd=work)
+    git(
+        "-c", "user.name=seed", "-c", "user.email=seed@example.com", "commit", "-qm", "page",
+        cwd=work,
+    )  # fmt: skip
+    git("push", "-q", "origin", "main", cwd=work)
+
+
+def pushed_bytes(remote: Path, run_id: str, path: str) -> bytes:
+    return subprocess.run(
+        ["git", "cat-file", "-p", f"agent/{run_id}:{path}"],
+        cwd=remote, check=True, capture_output=True,
+    ).stdout  # fmt: skip
+
+
+def run_note(migrated_db, github, tmp_path, replies, *, allowed=PAGES):
+    run_id = note_chore(migrated_db)
+    model = StubModel(replies=replies)
+    config = setup(tmp_path, github, allowed_paths=allowed)
+    result = run_repo_chore(migrated_db, run_id, model, config, worker_id=WORKER)
+    return run_id, model, result
+
+
+def last_reply_problem(prompt: str) -> str:
+    return prompt.split("Your last reply could not be used.")[-1]
+
+
+def test_a_one_word_edit_leaves_every_other_byte_of_the_file_as_it_was(
+    migrated_db, remote, github, tmp_path
+):
+    push_bytes(remote, tmp_path, ABOUT_PATH, TRIAL_ABOUT.encode())
+    reply = edits_reply((ABOUT_PATH, "tidy work", "neat work"))
+
+    run_id, model, result = run_note(migrated_db, github, tmp_path, [pick(ABOUT_PATH), reply])
+
+    assert result.status == "succeeded"
+    pushed = pushed_bytes(remote, run_id, ABOUT_PATH)
+    assert pushed == TRIAL_ABOUT.replace("tidy work", "neat work").encode()
+    assert pushed.count(DASH.encode()) == 3
+    assert EN_DASH.encode() not in pushed
+    assert b"\r\n" in pushed
+    # The model is shown the CRLF as it is, so a find can be copied exactly.
+    assert "\r\n" in model.prompts[1]
+
+
+@pytest.mark.parametrize("find, said", [("no such text", "not found"), ("<p>", "found 3 times")])
+def test_a_find_that_is_missing_or_ambiguous_writes_nothing_and_is_named_in_the_retry(
+    migrated_db, remote, github, tmp_path, find, said
+):
+    push_bytes(remote, tmp_path, ABOUT_PATH, TRIAL_ABOUT.encode())
+    # The first edit is fine. The reply is refused whole, so it is not applied.
+    reply = edits_reply((ABOUT_PATH, "<h1>", "<h2>"), (ABOUT_PATH, find, "x"))
+
+    run_id, model, result = run_note(
+        migrated_db, github, tmp_path, [pick(ABOUT_PATH), reply, reply, reply]
+    )
+
+    assert result.status == "escalated"
+    assert done(migrated_db, run_id)["reason"] == UNUSABLE
+    assert remote_branches(remote) == ["main"]
+    assert kinds(migrated_db, run_id).count("test") == 0
+    assert "Your last reply could not be used" not in model.prompts[1]
+    for retry in model.prompts[2:]:
+        problem = last_reply_problem(retry)
+        assert ABOUT_PATH in problem
+        assert said in problem
+        assert "longer" in problem
+        assert "<h2>" not in retry
+
+
+def test_two_edits_to_one_file_apply_in_order_and_the_second_may_match_the_first(
+    migrated_db, remote, github, tmp_path
+):
+    push_bytes(remote, tmp_path, ABOUT_PATH, TRIAL_ABOUT.encode())
+    reply = edits_reply(
+        (ABOUT_PATH, "Our tidy work", "Our neat work"),
+        (ABOUT_PATH, "neat work</h1>", "neat work, done</h1>"),
+    )
+
+    run_id, _, result = run_note(migrated_db, github, tmp_path, [pick(ABOUT_PATH), reply])
+
+    assert result.status == "succeeded"
+    pushed = pushed_bytes(remote, run_id, ABOUT_PATH)
+    assert pushed == TRIAL_ABOUT.replace("Our tidy work", "Our neat work, done").encode()
+
+
+def test_an_empty_find_creates_a_file_that_does_not_exist_yet(
+    migrated_db, remote, github, tmp_path
+):
+    reply = edits_reply(("src/pages/new.astro", "", ABOUT))
+
+    run_id, _, result = run_note(migrated_db, github, tmp_path, [pick("calc.py"), reply])
+
+    assert result.status == "succeeded"
+    assert pushed_bytes(remote, run_id, "src/pages/new.astro") == ABOUT.encode()
+
+
+def test_an_empty_find_on_a_file_that_exists_is_unusable(migrated_db, remote, github, tmp_path):
+    push_bytes(remote, tmp_path, ABOUT_PATH, TRIAL_ABOUT.encode())
+    reply = edits_reply((ABOUT_PATH, "", "wiped"))
+
+    run_id, model, _ = run_note(
+        migrated_db, github, tmp_path, [pick(ABOUT_PATH), reply, reply, reply]
+    )
+
+    assert done(migrated_db, run_id)["reason"] == UNUSABLE
+    assert remote_branches(remote) == ["main"]
+    assert ABOUT_PATH in last_reply_problem(model.prompts[2])
+
+
+def test_a_file_written_by_an_earlier_attempt_is_the_text_the_next_edit_matches(
+    migrated_db, remote, github, tmp_path
+):
+    first = edits_reply(("calc.py", CALC, BAD_CALC), ("test_subtract.py", "", TEST_SUBTRACT))
+    # BAD_CALC holds "return a + b" twice, so the second edit names the def line.
+    second = edits_reply(
+        (
+            "calc.py",
+            "def subtract(a, b):\n    return a + b",
+            "def subtract(a, b):\n    return a - b",
+        )
+    )
+
+    run_id, _, result = run_note(
+        migrated_db, github, tmp_path, [pick("calc.py"), first, second],
+        allowed=("calc.py", "test_subtract.py"),
+    )  # fmt: skip
+
+    assert result.status == "succeeded"
+    assert pushed_bytes(remote, run_id, "calc.py") == GOOD_CALC.encode()
+
+
+def test_an_edit_outside_the_allowed_paths_is_refused_as_before(
+    migrated_db, remote, github, tmp_path
+):
+    reply = edits_reply(("package.json", "", "{}"))
+
+    run_id, model, result = run_note(migrated_db, github, tmp_path, [pick("calc.py"), reply])
+
+    assert result.status == "escalated"
+    assert done(migrated_db, run_id)["reason"] == OUTSIDE_PATHS
+    assert "package.json" in model.prompts[2]
+    assert remote_branches(remote) == ["main"]
+
+
+def test_an_edit_through_a_symlink_out_of_the_allowed_folder_is_refused(
+    migrated_db, remote, github, tmp_path
+):
+    link_into_remote(remote, tmp_path, "link", "../..")
+    reply = edits_reply(("src/pages/link/calc.py", "def add", "def plus"))
+
+    run_id, _, result = run_note(migrated_db, github, tmp_path, [pick("calc.py"), reply])
+
+    assert result.status == "escalated"
+    assert done(migrated_db, run_id)["reason"] == OUTSIDE_PATHS
+    assert remote_branches(remote) == ["main"]
+
+
+def test_a_note_chore_that_replies_with_files_gets_an_unusable_reply(
+    migrated_db, remote, github, tmp_path
+):
+    replies = [pick("calc.py")] + [write_to("src/pages/a.astro", ABOUT)] * 3
+
+    run_id, model, _ = run_note(migrated_db, github, tmp_path, replies)
+
+    assert done(migrated_db, run_id)["reason"] == UNUSABLE
+    assert remote_branches(remote) == ["main"]
+    assert "Your last reply could not be used" in model.prompts[2]
+
+
+def one_edit(**changes) -> dict:
+    return {"path": "src/pages/a.astro", "find": "", "replace": "x", **changes}
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"edits": "tidy"},
+        {"edits": []},
+        {"edits": {"path": "src/pages/a.astro"}},
+        {"edits": [one_edit(replace=5)]},
+        {"edits": [one_edit(find=None)]},
+        {"edits": [one_edit(path=7)]},
+        {"edits": [{"path": "src/pages/a.astro", "replace": "x"}]},
+        {"edits": [{"path": "src/pages/a.astro", "find": ""}]},
+        {"edits": ["src/pages/a.astro"]},
+        {"edits": [one_edit(path=f"src/pages/a{i}.astro") for i in range(21)]},
+        {"edits": [one_edit(replace="x" * 20_001)]},
+        {"edits": [one_edit(path=ABOUT_PATH, find="y" * 20_001)]},
+    ],
+)
+def test_a_malformed_or_oversized_edits_reply_is_unusable(
+    migrated_db, remote, github, tmp_path, reply
+):
+    replies = [pick("calc.py")] + [json.dumps(reply)] * 3
+
+    run_id, _, _ = run_note(migrated_db, github, tmp_path, replies)
+
+    assert done(migrated_db, run_id)["reason"] == UNUSABLE
+    assert remote_branches(remote) == ["main"]
+
+
+def test_twenty_edits_and_20000_characters_are_within_the_limits(
+    migrated_db, remote, github, tmp_path
+):
+    items = [(f"src/pages/a{i}.astro", "", "x" * 1000) for i in range(19)]
+    items.append(("src/pages/big.astro", "", "y" * 20_000))
+
+    _, _, result = run_note(migrated_db, github, tmp_path, [pick("calc.py"), edits_reply(*items)])
+
+    assert result.status == "succeeded"
+
+
+def test_an_ordinary_chore_still_asks_for_files_and_its_prompt_is_unchanged():
+    plain = edit_prompt("do it", "", "a.py", {"a.py": "x = 1\n"})
+
+    assert plain == (
+        "Instruction:\ndo it\n\nFiles in the repository:\na.py\n\n"
+        "Contents:\n=== a.py ===\nx = 1\n\n\n"
+        'Reply {"files": {"path": "the full new contents"}, "summary": "one line"}, '
+        "including only files you change or create."
+    )
+
+
+def test_an_ordinary_chore_replying_with_edits_is_unusable(migrated_db, remote, github, tmp_path):
+    run_id = chore_run(migrated_db)
+    reply = edits_reply(("calc.py", CALC, GOOD_CALC))
+    model = StubModel(replies=[pick("calc.py")] + [reply] * 3)
+
+    run_repo_chore(migrated_db, run_id, model, setup(tmp_path, github), worker_id=WORKER)
+
+    assert done(migrated_db, run_id)["reason"] == UNUSABLE
+    assert '"edits"' not in model.prompts[1]
+
+
+def test_the_edit_prompt_for_a_note_asks_for_edits_and_says_how_to_write_them():
+    prompt = edit_prompt("do it", "", "a.py", {"a.py": "x"}, may_ask=True, by_edits=True)
+
+    assert '{"edits": [{"path"' in prompt
+    assert '"find"' in prompt and '"replace"' in prompt
+    assert '"files"' not in prompt
+    assert "exactly" in prompt and "occur once" in prompt
+    assert "in order" in prompt
+    assert "stays as it is" in prompt
+    assert '{"question"' in prompt
+
+
+def test_every_prompt_of_a_note_chore_asks_for_edits_and_none_for_files(
+    migrated_db, remote, github, tmp_path
+):
+    unchanged = edits_reply(("calc.py", "def add", "def add"))
+    weakening = edits_reply(("test_calc.py", "def test_add", "def test_plus"))
+    fumbled = edits_reply(("calc.py", "no such text", "x"))
+    red = edits_reply(("calc.py", CALC, BAD_CALC), ("test_subtract.py", "", TEST_SUBTRACT))
+    red_again = edits_reply(
+        (
+            "calc.py",
+            "def subtract(a, b):\n    return a + b",
+            "def subtract(a, b):\n    return a + 0",
+        )
+    )
+    allowed = ("calc.py", "test_calc.py", "test_subtract.py")
+    runs = [
+        [pick("calc.py"), fumbled, red, red_again],
+        [pick("calc.py"), unchanged, unchanged, unchanged],
+        [pick("test_calc.py"), weakening, weakening, weakening],
+    ]
+
+    prompts = []
+    for replies in runs:
+        _, model, _ = run_note(migrated_db, github, tmp_path, replies, allowed=allowed)
+        prompts += model.prompts[1:]
+
+    assert len(prompts) == 9
+    for prompt in prompts:
+        assert '"edits"' in prompt
+        assert '"files"' not in prompt
+    assert any("Your last reply could not be used" in p for p in prompts)
+    assert any("failed. Its output" in p for p in prompts)
+    assert any("leaves the repository as it was" in p for p in prompts)
+    assert any("removes or skips tests" in p for p in prompts)

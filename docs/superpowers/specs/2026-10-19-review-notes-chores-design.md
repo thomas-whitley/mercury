@@ -210,7 +210,7 @@ The sections above stay as the approved record. Where the build now differs from
 
 **The edit format.** A note chore replies with search and replace edits, not whole files, and an ordinary chore still replies with whole files. The trial chore on 2026-10-21 changed an em dash to an en dash on a line it was not asked to touch, because a full file reply rewrites every line.
 
-**What Mercury stores.** The note's body, anchor text and quote are stored on the Mercury row, so the worker builds the pull request body without a Cloudflare token and never calls D1. The token stays with the scheduler alone. The three columns are cleared on the same schedule as run bodies.
+**What Mercury stores.** The note's body, anchor text and quote are stored on the Mercury row, so the worker builds the pull request body without a Cloudflare token and never calls D1. The token stays with the scheduler alone. The retention cleanup clears the three columns only for notes in `merged`, `closed` or `gone` that are past the retention window.
 
 **The score warning.** A preview score more than 5 points below the live page's is posted as a comment on the pull request, after the Telegram message is recorded. It is not written into the pull request body, which the spec's Lighthouse paragraph says it is.
 

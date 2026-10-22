@@ -1,5 +1,5 @@
 """The GitHub REST calls Mercury makes, with the token as a header. A repo
-chore lists and opens pull requests. The CI watch reads a repo's default
+chore lists and opens pull requests and comments on them. The CI watch reads a repo's default
 branch and its completed workflow runs. The dependency audit lists a repo's
 files and reads its lock files.
 """
@@ -48,6 +48,12 @@ class GitHubClient:
             {"title": title, "head": branch, "base": base, "body": body},
         )
         return pull["html_url"]
+
+    def comment_on_pull(self, repo: str, pull: int | str, body: str) -> None:
+        """Comment on a pull request, given its number or its URL. A pull request
+        is an issue to the comments API."""
+        number = int(str(pull).rstrip("/").rsplit("/", 1)[-1])
+        self._call("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
 
     def default_branch(self, repo: str) -> str:
         return self._call("GET", f"/repos/{repo}")["default_branch"]

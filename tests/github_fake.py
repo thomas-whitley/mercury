@@ -1,8 +1,8 @@
 """A fake of the GitHub REST calls Mercury makes, on a real local socket:
 list the open pull requests for a head branch and open one (a repo chore),
 read a repo's default branch and its completed workflow runs (the CI
-watch), and list a repo's files and read one raw (the dependency audit). It
-records every call and the Authorization header each carried. Point
+watch), post a comment on a pull request, and list a repo's files and read one
+raw (the dependency audit). It records every call and the Authorization header each carried. Point
 GITHUB_API_URL at `url` to use it.
 """
 
@@ -24,6 +24,10 @@ class FakeGitHub:
         # owner/name to {path: text}, for the tree and raw content calls.
         self.files: dict[str, dict[str, str]] = {}
         self.status_override: int | None = None
+        # Each is (repo, issue or pull number, body), for POST .../issues/{n}/comments.
+        self.comments: list[tuple[str, int, str]] = []
+        # The next this many comment posts answer 500 and are not recorded.
+        self.comment_failures = 0
         self._lock = threading.Lock()
         fake = self
 
@@ -70,6 +74,20 @@ class FakeGitHub:
             reads_repo = len(segments) >= 3 and segments[3:4] != ["pulls"]
             if method == "GET" and segments[0] == "repos" and reads_repo:
                 return self._read_repo(segments, parse_qs(parts.query), headers)
+            # /repos/{owner}/{name}/issues/{number}/comments
+            if (
+                method == "POST"
+                and len(segments) == 6
+                and segments[0] == "repos"
+                and segments[3] == "issues"
+                and segments[5] == "comments"
+            ):
+                if self.comment_failures > 0:
+                    self.comment_failures -= 1
+                    return 500, {"message": "Server Error"}
+                repo = f"{segments[1]}/{segments[2]}"
+                self.comments.append((repo, int(segments[4]), payload["body"]))
+                return 201, {"id": len(self.comments), "body": payload["body"]}
             # /repos/{owner}/{name}/pulls
             if len(segments) != 4 or segments[0] != "repos" or segments[3] != "pulls":
                 return 404, {"message": "Not Found"}

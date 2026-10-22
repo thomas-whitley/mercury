@@ -1735,3 +1735,79 @@ def test_disabled_starts_no_new_note_but_waiting_and_reported_rows_move_on(
         == 2
     )
 
+
+# ---- The score warning on the pull request ----
+
+
+def comment_bodies(github) -> list[str]:
+    return [body for _, _, body in github.comments]
+
+
+def test_a_warning_posts_one_comment_with_both_scores(migrated_db, tick, github, fake_telegram):
+    reported(migrated_db, tick, github, live=0.92, preview=0.80)
+
+    tick(3)
+
+    [(repo, number, body)] = github.comments
+    assert (repo, number) == ("owner/site", 7)
+    assert "Warning: the preview scores 12 points below the live page." in body
+    assert "92" in body and "80" in body
+    assert len(messages(fake_telegram)) == 1
+
+
+def test_no_warning_posts_no_comment(migrated_db, tick, github):
+    reported(migrated_db, tick, github, live=0.92, preview=0.88)
+
+    tick(3)
+
+    assert github.comments == []
+
+
+def test_scores_from_different_machines_post_no_comment(migrated_db, tick, github):
+    reported(migrated_db, tick, github, live=0.92, preview=0.5, preview_exec="github_hosted")
+
+    tick(3)
+
+    assert github.comments == []
+
+
+def test_a_failing_comment_does_not_stop_the_message_and_is_retried_a_bounded_number_of_times(
+    migrated_db, tick, github, fake_telegram, caplog
+):
+    github.comment_failures = 100
+    caplog.set_level(logging.INFO)
+
+    reported(migrated_db, tick, github, live=0.92, preview=0.80)
+    tick(10)
+
+    assert len(messages(fake_telegram)) == 1
+    assert row(migrated_db)["state"] == "reported"
+    posts = [c for c in github.calls if c[0] == "POST" and c[1].endswith("/comments")]
+    assert len(posts) == 3
+    gave_up = [r.getMessage() for r in caplog.records if "comment" in r.getMessage()]
+    assert any("review note 1" in line and "given up" in line for line in gave_up)
+    assert not any("Change the heading" in r.getMessage() for r in caplog.records)
+
+
+def test_a_comment_that_failed_once_is_posted_once_on_a_later_tick(
+    migrated_db, tick, github, fake_telegram
+):
+    github.comment_failures = 1
+
+    reported(migrated_db, tick, github, live=0.92, preview=0.80)
+    assert github.comments == []
+    tick(5)
+
+    assert len(github.comments) == 1
+    assert len(messages(fake_telegram)) == 1
+
+
+def test_a_comment_never_carries_the_note_text(migrated_db, tick, github):
+    reported(
+        migrated_db, tick, github, live=0.92, preview=0.80,
+        body="Secret words of the reviewer", anchor_text="Tapped words", quote="Quoted words",
+    )  # fmt: skip
+
+    [body] = comment_bodies(github)
+    for words in ("Secret words", "Tapped words", "Quoted words"):
+        assert words not in body

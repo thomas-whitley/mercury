@@ -354,6 +354,7 @@ LIGHTHOUSE_TICKS = 3  # ticks a queued check may take before the message goes wi
 SIZE_FILES = 3
 SIZE_LINES = 60
 SCORE_WARNING_POINTS = 5
+SCORE_COMMENT_TRIES = 3  # posts of the score comment, the first included, before giving up
 ERROR_CHARS = 200
 SUMMARY_CHARS = 300
 MAX_KEYS = 10
@@ -406,8 +407,22 @@ _SET_PREVIEW_CHECK = """
 UPDATE review_notes SET preview_check_id = %s, updated_at = now() WHERE note_id = %s
 """
 _SET_REPORTED = """
-UPDATE review_notes SET state = 'reported', message_id = %s, updated_at = now()
+UPDATE review_notes SET state = 'reported', message_id = %s, score_comment = %s,
+                        updated_at = now()
 WHERE note_id = %s AND state = 'waiting'
+"""
+# A reported note whose score comment is not posted yet and has tries left.
+_COMMENT_ROWS = """
+SELECT note_id, pr_url, score_comment, score_comment_tries FROM review_notes
+WHERE state IN ('reported', 'merged', 'closed') AND score_comment IS NOT NULL
+  AND score_comment_tries < %s ORDER BY note_id
+"""
+_COMMENT_POSTED = """
+UPDATE review_notes SET score_comment = NULL, updated_at = now() WHERE note_id = %s
+"""
+_COMMENT_FAILED = """
+UPDATE review_notes SET score_comment_tries = score_comment_tries + 1, updated_at = now()
+WHERE note_id = %s
 """
 
 _DIFF_HEADER = re.compile(r"diff --git a/(.*) b/(.*)")
@@ -498,6 +513,15 @@ def _score_lines(scores: dict) -> list[str]:
         if gap > SCORE_WARNING_POINTS:
             lines.append(f"Warning: the preview scores {gap} points below the live page.")
     return lines
+
+
+def score_comment(scores: dict) -> str | None:
+    """The pull request comment for a score warning: the warning and both
+    scores, or None when the scores carry no warning. None of the note's words."""
+    lines = _score_lines(scores)
+    if not any(line.startswith("Warning:") for line in lines):
+        return None
+    return "\n\n".join(lines)
 
 
 def note_message(note: Note, row: dict, flags: list[str], ci: str, scores: dict) -> str:
@@ -594,6 +618,8 @@ def advance_waiting(
     the one message once the scores are in or have been waited for long enough.
     Each note is its own transaction, so one failing leaves the others going."""
     tick = _Tick(config, github, telegram, chat_id, api_base_url, bearer_token, http_get)
+    # First, so a comment that failed this tick waits for the next one.
+    _retry_score_comments(conn, tick)
     with conn.cursor(row_factory=dict_row) as cursor:
         rows = cursor.execute(_WAITING_ROWS).fetchall()
     for row in rows:
@@ -835,8 +861,43 @@ def _report(conn: psycopg.Connection, row: dict, run_id: str, scores: dict, tick
         # page forever. The note moves on with no message id.
         logger.error("review note %s: message refused for good, not retried", row["note_id"])
         message_id = None
-    conn.execute(_SET_REPORTED, (message_id, row["note_id"]))
+    conn.execute(_SET_REPORTED, (message_id, score_comment(scores), row["note_id"]))
     logger.info("review note %s reported as message %s", row["note_id"], message_id)
+    # Only a failed GitHub call is caught inside, so the message stays recorded.
+    _post_score_comment(conn, row["note_id"], row["pr_url"], score_comment(scores), 0, tick)
+
+
+def _post_score_comment(
+    conn: psycopg.Connection, note_id: int, pr_url: str, body: str | None, tries: int, tick: _Tick
+) -> None:
+    """Post the score warning on the pull request, once. A failure counts a try
+    and the next tick tries again, up to SCORE_COMMENT_TRIES in all; the line
+    that gives up carries the note's id only."""
+    if body is None or tick.github is None:
+        return
+    try:
+        tick.github.comment_on_pull(tick.config.repo, pr_url, body)
+    except (GitHubError, ValueError) as error:
+        conn.execute(_COMMENT_FAILED, (note_id,))
+        if tries + 1 >= SCORE_COMMENT_TRIES:
+            logger.error("review note %s: score comment given up", note_id)
+        else:
+            logger.error(
+                "review note %s: score comment not posted, will retry: %s",
+                note_id,
+                type(error).__name__,
+            )
+        return
+    conn.execute(_COMMENT_POSTED, (note_id,))
+    logger.info("review note %s: score warning posted on the pull request", note_id)
+
+
+def _retry_score_comments(conn: psycopg.Connection, tick: _Tick) -> None:
+    for note_id, pr_url, body, tries in conn.execute(
+        _COMMENT_ROWS, (SCORE_COMMENT_TRIES,)
+    ).fetchall():
+        with conn.transaction():
+            _post_score_comment(conn, note_id, pr_url, body, tries, tick)
 
 
 # ---- After the pull request: merged, closed, deleted and edited ----

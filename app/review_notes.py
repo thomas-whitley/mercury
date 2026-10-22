@@ -50,7 +50,19 @@ VALUES (%s, %s, %s, %s, %s) ON CONFLICT (note_id) DO NOTHING RETURNING note_id
 # and from the note as it reads now, so an edit made while it waited is no edit.
 _UNCAP = """
 UPDATE review_notes SET state = 'chore', note_updated_at = %s, updated_at = now()
-WHERE note_id = %s AND state = 'capped' RETURNING note_id
+WHERE note_id = %s AND state = 'capped' RETURNING run_id
+"""
+# A capped note whose last run was a rerun (advised, or an outage retry) keeps
+# that run on its row. Starting again, it queues the same rerun anew: the
+# instruction as the note reads now, the same hint, the same earlier run to
+# follow, so the prompt and the hint count (app/advice.py) are what they were.
+# The limited run is not the source, since it never ran and left nothing to read.
+_RESUME = """
+INSERT INTO runs (task, type, provider, repo, status, source, source_run_id, hint, base_sha)
+SELECT %s, 'repo_chore', CASE WHEN provider = ANY(%s) THEN provider ELSE %s END,
+       repo, 'pending', source, source_run_id, hint, base_sha
+FROM runs WHERE id = %s AND source_run_id IS NOT NULL
+RETURNING id
 """
 # The note's words go on the row for the worker, which has no D1 token, to put at
 # the top of the pull request. Capped as the instruction caps them.
@@ -68,10 +80,12 @@ SELECT EXISTS (
     WHERE page = %s AND note_id <> %s AND state IN ('chore', 'waiting', 'reported')
 )
 """
-# Note chores started in the last 24 hours, counted by the runs the notes got.
+# Note chores started in the last 24 hours, counted by the runs the notes got. A
+# capped note's run was stopped by a limit and did no work, so it is not counted.
 _STARTED_TODAY = """
 SELECT count(*) FROM review_notes n JOIN runs r ON r.id = n.run_id
-WHERE r.source = 'review_note' AND r.created_at > now() - interval '24 hours'
+WHERE r.source = 'review_note' AND n.state <> 'capped'
+  AND r.created_at > now() - interval '24 hours'
 """
 
 
@@ -274,15 +288,25 @@ def _advance_note(
         logger.info("review note %s waits for the day's run limit or token cap", note.id)
         return None
 
+    limited_run = None
     if state is None:
         claimed = _record(conn, note, "chore")
     else:
-        claimed = conn.execute(_UNCAP, (note.updated_at, note.id)).fetchone() is not None
+        uncapped = conn.execute(_UNCAP, (note.updated_at, note.id)).fetchone()
+        claimed = uncapped is not None
+        limited_run = uncapped[0] if uncapped else None
     if not claimed:
         return None
-    run_id = start_chore(
-        conn, repo, instruction_for(note), "review_note", TASK_TYPES["repo_chore"].provider
-    )
+    provider = TASK_TYPES["repo_chore"].provider
+    run_id = None
+    if limited_run is not None:
+        # The run a limit stopped was a rerun: carry on its chain with its hint.
+        resumed = conn.execute(
+            _RESUME, (instruction_for(note).strip(), HOME_PROVIDERS, provider, limited_run)
+        ).fetchone()
+        run_id = str(resumed[0]) if resumed else None
+    if run_id is None:
+        run_id = start_chore(conn, repo, instruction_for(note), "review_note", provider)
     conn.execute(
         _SET_RUN,
         (
@@ -361,6 +385,11 @@ _LIMITED = ("refused", "budget")
 _RECAP = """
 UPDATE review_notes SET state = 'capped', run_id = NULL, updated_at = now() WHERE note_id = %s
 """
+# A rerun's note keeps the run, so starting again resumes the chain (_RESUME).
+_RECAP_KEEPING_RUN = """
+UPDATE review_notes SET state = 'capped', updated_at = now() WHERE note_id = %s
+"""
+_IN_CHAIN = "SELECT source_run_id IS NOT NULL FROM runs WHERE id = %s"
 _SET_PR = """
 UPDATE review_notes SET pr_url = %s, state = 'waiting', pr_opened_ticks = 0, updated_at = now()
 WHERE note_id = %s
@@ -619,8 +648,10 @@ def _advance_row(conn: psycopg.Connection, row: dict, tick: _Tick) -> None:
         return
     if status in _LIMITED:
         # A limit of the day stopped it. It starts again, within the caps, like
-        # any capped note.
-        conn.execute(_RECAP, (note_id,))
+        # any capped note. A first run starts afresh; a rerun resumes its chain,
+        # so the owner's hint and the hint count are not lost.
+        in_chain = conn.execute(_IN_CHAIN, (run_id,)).fetchone()[0]
+        conn.execute(_RECAP_KEEPING_RUN if in_chain else _RECAP, (note_id,))
         logger.info("review note %s is capped again after run %s (%s)", note_id, run_id, status)
         return
     # Cancelled, an error that is not an outage, its own token budget spent, or

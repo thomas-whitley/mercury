@@ -7,10 +7,12 @@ at a time for each page. The note text is data and never reaches a log line.
 import dataclasses
 import datetime
 import logging
+import uuid
 
 import psycopg
 import pytest
 
+from app.advice import advised_count
 from app.config import load_settings
 from app.d1 import D1Client, D1Error
 from app.github import GitHubClient
@@ -1537,6 +1539,71 @@ def test_a_chore_stopped_by_a_limit_goes_back_to_capped_and_starts_again(
     assert rows(migrated_db)[0][:2] == (1, "chore")
 
 
+def limited_chain(conn, tick, status, how):
+    """A note whose first chore escalated, then a rerun (advised with a hint, or
+    an outage retry) that the day's limit stopped. Returns (first, limited)."""
+    first = chore_run(conn)
+    if how == "advised":
+        finish_chore(conn, first, "escalated", reason="the note needs Thomas", question="Which?")
+        hint = "'use the blue heading'"
+    else:
+        finish_chore(conn, first, "error", reason=OUTAGE)
+        hint = "NULL"
+    tick()
+    limited = str(
+        conn.execute(
+            "INSERT INTO runs (task, type, provider, repo, status, source, source_run_id, hint, "
+            "base_sha) VALUES ('t', 'repo_chore', 'p', 'owner/site', 'pending', 'review_note', "
+            f"%s, {hint}, 'abc123') RETURNING id",
+            (first,),
+        ).fetchone()[0]
+    )
+    tick()
+    finish_chore(conn, limited, status, reason="daily limit of 40 runs reached")
+    tick()
+    return first, limited
+
+
+@pytest.mark.parametrize("status", ["refused", "budget"])
+@pytest.mark.parametrize("how", ["advised", "outage"])
+def test_a_limited_rerun_resumes_its_chain_when_the_note_starts_again(
+    migrated_db, tick, status, how
+):
+    first, limited = limited_chain(migrated_db, tick, status, how)
+
+    # The note keeps its run, so it knows it was part of a chain, and counts no hint more.
+    assert rows(migrated_db) == [(1, "capped", uuid.UUID(limited))]
+    counted = advised_count(migrated_db, limited)
+
+    started = start_note_chores(migrated_db, [note(1)], make_config(), REPO)
+
+    [resumed] = started
+    assert resumed != limited
+    run = migrated_db.execute(
+        "SELECT status, source, source_run_id, hint, base_sha, repo, task FROM runs WHERE id = %s",
+        (resumed,),
+    ).fetchone()
+    expected_hint = "use the blue heading" if how == "advised" else None
+    assert run[:6] == ("pending", "review_note", uuid.UUID(first), expected_hint,
+                       "abc123", "owner/site")  # fmt: skip
+    assert "Change the heading" in run[6]
+    assert advised_count(migrated_db, resumed) == counted
+    state = row(migrated_db)
+    assert (state["state"], str(state["run_id"])) == ("chore", resumed)
+    # The chain goes on: the resumed run opening a pull request makes the note waiting.
+    finish_chore(migrated_db, resumed, pr_url=PR, summary="s", diff="")
+    tick()
+    assert row(migrated_db)["state"] == "waiting"
+
+
+def test_a_capped_rerun_does_not_count_against_the_daily_cap(migrated_db, tick):
+    limited_chain(migrated_db, tick, "refused", "advised")
+
+    started = start_note_chores(migrated_db, [note(1)], make_config(daily_cap=1), REPO)
+
+    assert len(started) == 1
+
+
 def test_a_chore_thomas_cancelled_is_closed_and_the_line_says_what_he_can_do(
     migrated_db, tick, fake_telegram
 ):
@@ -1667,3 +1734,4 @@ def test_disabled_starts_no_new_note_but_waiting_and_reported_rows_move_on(
         migrated_db.execute("SELECT count(*) FROM runs WHERE type = 'repo_chore'").fetchone()[0]
         == 2
     )
+

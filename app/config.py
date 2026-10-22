@@ -39,8 +39,10 @@ class ProviderConfig:
     # Read when the model is built, for an address and a tag that differ per machine.
     base_url_env: str | None = None
     model_env: str | None = None
-    # None takes MODEL_TIMEOUT_SECONDS.
+    # None takes MODEL_TIMEOUT_SECONDS. timeout_env, when set in the
+    # environment, overrides both, for a home model whose speed depends on the tag.
     timeout_seconds: float | None = None
+    timeout_env: str | None = None
     max_tokens: int = 2048
     # Ask the endpoint for a JSON object, so the reply always parses.
     json_mode: bool = False
@@ -85,6 +87,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         # A cold load plus a whole file reply on the 4060. The chore's own
         # heartbeat thread keeps the lease meanwhile.
         timeout_seconds=120.0,
+        timeout_env="LOCAL_MODEL_TIMEOUT_SECONDS",
         max_tokens=8192,
         json_mode=True,
     ),

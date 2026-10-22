@@ -28,6 +28,7 @@ services:
       LOCAL_MODEL_URL: ${LOCAL_MODEL_URL:-http://host.docker.internal:11434/v1}
       LOCAL_MODEL_TOKEN: ${LOCAL_MODEL_TOKEN:-unused-by-ollama-but-the-provider-needs-one}
       LOCAL_MODEL: ${LOCAL_MODEL:-mercury-local:base}
+      LOCAL_MODEL_TIMEOUT_SECONDS: ${LOCAL_MODEL_TIMEOUT_SECONDS:-}
       MAX_LOCAL_RUNS_PER_DAY: ${MAX_LOCAL_RUNS_PER_DAY:-200}
     volumes:
       - ./local/mercury.compose.yaml:/config/mercury.yaml:ro

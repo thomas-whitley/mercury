@@ -275,6 +275,18 @@ def test_build_model_reads_the_local_address_and_tag_from_the_environment(monkey
     assert model._client.timeout == 120.0
 
 
+def test_build_model_reads_the_local_timeout_from_the_environment(monkeypatch):
+    # qwen3-coder:30b spills onto the CPU on the 4060 and writes about 25
+    # tokens a second, so a whole file reply outlasts the 7B tag's 120 seconds.
+    monkeypatch.setenv("LOCAL_MODEL_TOKEN", "t" * 32)
+    monkeypatch.setenv("LOCAL_MODEL_URL", "http://127.0.0.1:11434/v1")
+    monkeypatch.setenv("LOCAL_MODEL_TIMEOUT_SECONDS", "600")
+
+    model = build_model(settings_with(model="gemini-3.5-flash-lite"), "local")
+
+    assert model._client.timeout == 600.0
+
+
 @pytest.mark.parametrize("provider", ["gemini", "ollama"])
 def test_free_cloud_providers_have_room_for_a_whole_file_reply(provider):
     # A chore replies with whole files; at 2048 a 165 line script and its tests

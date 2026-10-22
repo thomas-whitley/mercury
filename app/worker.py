@@ -177,13 +177,16 @@ def build_model(settings: Settings, provider_name: str) -> Model:
     model_name = (
         os.environ.get(provider.model_env) if provider.model_env else None
     ) or provider.model
+    timeout = os.environ.get(provider.timeout_env) if provider.timeout_env else None
     return OpenAICompatibleModel(
         model=model_name,
         api_key=api_key,
         base_url=base_url,
         max_tokens=provider.max_tokens,
         json_mode=provider.json_mode,
-        timeout_seconds=provider.timeout_seconds or settings.model_timeout_seconds,
+        timeout_seconds=float(timeout)
+        if timeout
+        else provider.timeout_seconds or settings.model_timeout_seconds,
     )
 
 

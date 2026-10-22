@@ -503,7 +503,7 @@ Node 24 went into the worker image so the site's own `npm ci`, `astro check`, vi
 
 The trial chore on 2026-10-21 (run `f96c092b`) was a one word copy change on a site repo. It took 209 seconds and 4,424 tokens on gemini, in one attempt, with `npm ci`, `astro check`, vitest and `astro build` all green on the worker. The worker's peak working set was 1.24 GiB of its 2 GiB, and its CPU peaked at 1.03 cores of 1. That run also changed an em dash to an en dash on a line it had not been asked to touch, so it did not pass, and the edit format came after it.
 
-The cold start of a note chore has not been measured yet, because the live deploy is waiting on the Azure subscription.
+The cold start of a note chore has not been measured yet. The deploy is paused while the Azure subscription is sorted out.
 
 There is no row for this in the claims table. The claim is filled in when the supervised trial passes.
 

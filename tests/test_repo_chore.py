@@ -524,6 +524,8 @@ def test_as_root_the_test_command_runs_as_the_chore_user(tmp_path, monkeypatch):
     clone = tmp_path / "repo"
     clone.mkdir()
     (clone / "calc.py").write_text(CALC)
+    home = tmp_path / "home-1"
+    home.mkdir()
     chowned, popen_kwargs = [], {}
     monkeypatch.setattr(repo_chore.os, "geteuid", lambda: 0)
     monkeypatch.setattr(
@@ -546,7 +548,7 @@ def test_as_root_the_test_command_runs_as_the_chore_user(tmp_path, monkeypatch):
     )
     chore = setup(tmp_path, github=type("G", (), {"url": "http://unused"})())
 
-    passed, _, _ = repo_chore._run_tests(clone, chore, tmp_path)
+    passed, _, _ = repo_chore._run_tests(clone, home, chore, tmp_path)
 
     assert passed
     # Whatever the command left running is gone before git runs as root.
@@ -554,7 +556,7 @@ def test_as_root_the_test_command_runs_as_the_chore_user(tmp_path, monkeypatch):
     assert (popen_kwargs["user"], popen_kwargs["group"]) == (4321, 4321)
     assert popen_kwargs["extra_groups"] == []
     assert (str(clone / "calc.py"), 4321) in chowned
-    assert (str(tmp_path / "home"), 4321) in chowned
+    assert (str(home), 4321) in chowned
 
 
 def test_as_root_a_failed_kill_stops_the_chore_before_git(tmp_path, monkeypatch):
@@ -565,6 +567,7 @@ def test_as_root_a_failed_kill_stops_the_chore_before_git(tmp_path, monkeypatch)
 
     clone = tmp_path / "repo"
     clone.mkdir()
+    home = tmp_path / "home-1"
     monkeypatch.setattr(repo_chore.os, "geteuid", lambda: 0)
     monkeypatch.setattr(
         repo_chore.pwd,
@@ -581,7 +584,7 @@ def test_as_root_a_failed_kill_stops_the_chore_before_git(tmp_path, monkeypatch)
     chore = setup(tmp_path, github=type("G", (), {"url": "http://unused"})())
 
     with pytest.raises(repo_chore.ChoreError, match="kill helper"):
-        repo_chore._run_tests(clone, chore, tmp_path)
+        repo_chore._run_tests(clone, home, chore, tmp_path)
 
 
 def test_as_root_with_no_chore_user_the_tests_do_not_run(tmp_path, monkeypatch):
@@ -589,6 +592,7 @@ def test_as_root_with_no_chore_user_the_tests_do_not_run(tmp_path, monkeypatch):
 
     clone = tmp_path / "repo"
     clone.mkdir()
+    home = tmp_path / "home-1"
 
     def no_such_user(name):
         raise KeyError(name)
@@ -599,7 +603,7 @@ def test_as_root_with_no_chore_user_the_tests_do_not_run(tmp_path, monkeypatch):
     chore = setup(tmp_path, github=type("G", (), {"url": "http://unused"})())
 
     with pytest.raises(repo_chore.ChoreError, match="chore user"):
-        repo_chore._run_tests(clone, chore, tmp_path)
+        repo_chore._run_tests(clone, home, chore, tmp_path)
 
 
 def test_three_unusable_replies_escalate_with_their_own_reason(
@@ -1563,6 +1567,67 @@ def test_as_root_the_chore_user_cannot_reach_roots_git_or_outlive_its_tests(
     assert branch in remote_branches(remote)
     assert remote_branches(evil / "owner" / "fixture.git") == ["main"]
     assert git("show", f"{branch}:calc.py", cwd=remote) == GOOD_CALC.strip()
+
+
+def test_each_attempt_runs_its_tests_in_a_new_empty_home(migrated_db, remote, github, tmp_path):
+    """Nothing the test command leaves in its HOME is there on the next
+    attempt, so root never has to hand back a home the chore user wrote. The
+    log sits where the chore user can write it too, so this holds as root."""
+    import tempfile
+
+    shared = Path(tempfile.mkdtemp())
+    shared.chmod(0o777)
+    log = shared / "homes.log"
+    command = (
+        f'printf \'%s|%s\\n\' "$HOME" "$(ls -A "$HOME")" >> {log} && '
+        f'touch "$HOME/left-behind" && {TEST_COMMAND}'
+    )
+    run_id = chore_run(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), change(BAD_CALC)])
+
+    result = run_repo_chore(
+        migrated_db, run_id, model, setup(tmp_path, github, command), worker_id=WORKER
+    )
+
+    assert result.status == "escalated"
+    seen = [line.split("|") for line in log.read_text().splitlines()]
+    assert len(seen) == 3
+    assert len({home for home, _ in seen}) == 3
+    assert [listing for _, listing in seen] == ["", "", ""]
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="needs root and a chore user, as in the image")
+def test_as_root_a_hard_link_left_in_home_never_hands_its_file_to_the_chore_user(
+    migrated_db, remote, github, tmp_path
+):
+    """Only meaningful as root in the image. Attempt 1 links a root-owned file
+    into its HOME and fails, so more attempts run. Were the home reused, root
+    would chown it again and give that file to the chore user. The file is
+    world-writable so the link is allowed even with fs.protected_hardlinks=1,
+    and it sits in /tmp, on the same filesystem as the chore's workdir."""
+    import tempfile
+
+    shared = Path(tempfile.mkdtemp())
+    shared.chmod(0o777)
+    target = shared / "roots-file"
+    target.write_text("root's\n")
+    target.chmod(0o666)
+    assert target.stat().st_uid == 0
+    log = shared / "linked"
+    command = (
+        f'{{ ln {target} "$HOME/link" 2> /dev/null && echo linked >> {log}; true; }} && '
+        f"{TEST_COMMAND}"
+    )
+    run_id = chore_run(migrated_db)
+    model = StubModel(replies=[pick("calc.py"), change(BAD_CALC)])
+
+    result = run_repo_chore(
+        migrated_db, run_id, model, setup(tmp_path, github, command), worker_id=WORKER
+    )
+
+    assert result.status == "escalated"
+    assert "linked" in log.read_text()
+    assert (target.stat().st_uid, target.stat().st_gid) == (0, 0)
 
 
 def test_an_advised_rerun_of_a_question_shows_the_question_it_answers(

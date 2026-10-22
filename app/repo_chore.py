@@ -24,9 +24,10 @@ it is never written to .git/config, never in a URL and never in a step.
 The test command runs code the model wrote, so nothing it can touch is read
 again by git running as root. The worker's own git dir and work tree sit in a
 directory only root can open, and every git command names both outright with
-hooks turned off. Each attempt's tests run in a fresh copy of the repo, which
-the chore user owns and git as root never reads; when the command ends every
-process the chore user has is killed and the copy is deleted. What is
+hooks turned off. Each attempt's tests run in a fresh copy of the repo with a
+fresh, empty HOME, which the chore user owns and git as root never reads; when
+the command ends every process the chore user has is killed and both are
+deleted. No npm or uv cache carries over between attempts. What is
 committed is the model's files as the worker wrote them into its own tree.
 """
 
@@ -758,21 +759,30 @@ def _test_in_a_copy(
     git: "_Git", written: dict[str, str], setup: ChoreSetup, workdir: Path, attempt: int
 ) -> tuple[bool, int | None, str]:
     """Run the test command in a fresh copy of the repo with the model's files
-    written in. The chore user owns the copy, its .git included, and may do
-    what it likes to it: the copy is deleted once every process the command
-    left has been killed, and git as root never reads it."""
+    written in, and a fresh, empty HOME. The chore user owns both and may do
+    what it likes to them: they are deleted once every process the command
+    left has been killed, and git as root never reads them.
+
+    Root hands each to the chore user only while it is new, so root never
+    chowns a tree the chore user could already write. A hard link planted in a
+    reused home would have let that chown reach a root-owned file elsewhere."""
     copy = workdir / f"test-{attempt}"
+    home = workdir / f"home-{attempt}"
     git.copy_to(copy)
     _write_files(copy, written)
+    home.mkdir()
     try:
-        return _run_tests(copy, setup, workdir)
+        return _run_tests(copy, home, setup, workdir)
     finally:
+        # rmtree never follows a symlink out of the tree, and removing a hard
+        # link leaves the file it shares untouched.
         shutil.rmtree(copy, ignore_errors=True)
+        shutil.rmtree(home, ignore_errors=True)
 
 
-def _run_tests(clone: Path, setup: ChoreSetup, workdir: Path) -> tuple[bool, int | None, str]:
-    home = workdir / "home"
-    home.mkdir(exist_ok=True)
+def _run_tests(
+    clone: Path, home: Path, setup: ChoreSetup, workdir: Path
+) -> tuple[bool, int | None, str]:
     ids = _chore_ids()
     switch: dict = {}
     if ids is not None:

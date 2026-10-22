@@ -11,6 +11,16 @@ import psycopg
 
 from app.config import HOME_PROVIDERS, PROVIDERS
 
+# The start of the reason the worker gives a run it refuses over the day's run
+# limit. The review notes step reads it to tell that refusal from any other.
+DAILY_LIMIT_REASON = "daily limit of "
+
+
+def daily_limit_reason(limit: int, home: bool) -> str:
+    """The reason a run is refused once its day's limit is passed."""
+    return f"{DAILY_LIMIT_REASON}{limit} {'local runs' if home else 'runs'} reached"
+
+
 # The runs counted against MAX_RUNS_PER_DAY and MAX_LOCAL_RUNS_PER_DAY. The
 # worker refuses a run once its own claim takes the day over the limit, and the
 # review notes step (app/review_notes.py) waits rather than start a chore then.

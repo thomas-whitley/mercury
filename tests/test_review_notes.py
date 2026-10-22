@@ -1540,7 +1540,7 @@ def test_a_chore_stopped_by_a_limit_goes_back_to_capped_and_starts_again(
     assert rows(migrated_db)[0][:2] == (1, "chore")
 
 
-def limited_chain(conn, tick, status, how):
+def limited_chain(conn, tick, status, how, reason="daily limit of 40 runs reached"):
     """A note whose first chore escalated, then a rerun (advised with a hint, or
     an outage retry) that the day's limit stopped. Returns (first, limited)."""
     first = chore_run(conn)
@@ -1560,7 +1560,7 @@ def limited_chain(conn, tick, status, how):
         ).fetchone()[0]
     )
     tick()
-    finish_chore(conn, limited, status, reason="daily limit of 40 runs reached")
+    finish_chore(conn, limited, status, reason=reason)
     tick()
     return first, limited
 
@@ -1595,6 +1595,39 @@ def test_a_limited_rerun_resumes_its_chain_when_the_note_starts_again(
     finish_chore(migrated_db, resumed, pr_url=PR, summary="s", diff="")
     tick()
     assert row(migrated_db)["state"] == "waiting"
+
+
+def test_a_resumed_chain_runs_on_the_configured_repo(migrated_db, tick):
+    """The limited run names a repo that mercury.yaml no longer has, as a repo
+    renamed while the chain was capped would."""
+    _, limited = limited_chain(migrated_db, tick, "refused", "advised")
+    migrated_db.execute("UPDATE runs SET repo = 'owner/old-site' WHERE id = %s", (limited,))
+
+    [resumed] = start_note_chores(migrated_db, [note(1)], make_config(), REPO)
+
+    repo = migrated_db.execute("SELECT repo FROM runs WHERE id = %s", (resumed,)).fetchone()[0]
+    assert repo == REPO.name
+
+
+@pytest.mark.parametrize("first_run", [True, False])
+def test_a_refusal_for_another_reason_closes_the_note_and_is_announced_once(
+    migrated_db, tick, fake_telegram, first_run
+):
+    gone = "owner/gone is not a repo with a test_command in mercury.yaml"
+    if first_run:
+        limited = chore_run(migrated_db)
+        finish_chore(migrated_db, limited, "refused", reason=gone)
+        tick(3)
+    else:
+        _, limited = limited_chain(migrated_db, tick, "refused", "advised", reason=gone)
+        tick(2)
+
+    assert row(migrated_db)["state"] == "closed"
+    [text] = messages(fake_telegram)
+    assert "ended refused" in text and limited in text
+    assert start_note_chores(migrated_db, [note(1)], make_config(), REPO) == []
+    tick(2)
+    assert len(messages(fake_telegram)) == 1
 
 
 def test_a_capped_rerun_does_not_count_against_the_daily_cap(migrated_db, tick):

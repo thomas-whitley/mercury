@@ -19,7 +19,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.advice_text import fenced_lines
-from app.budget import check_budget, home_runs_started_today, runs_started_today
+from app.budget import DAILY_LIMIT_REASON, check_budget, home_runs_started_today, runs_started_today
 from app.chores import start_chore
 from app.config import HOME_PROVIDERS, Settings
 from app.d1 import D1Client, D1Error
@@ -60,7 +60,7 @@ WHERE note_id = %s AND state = 'capped' RETURNING run_id
 _RESUME = """
 INSERT INTO runs (task, type, provider, repo, status, source, source_run_id, hint, base_sha)
 SELECT %s, 'repo_chore', CASE WHEN provider = ANY(%s) THEN provider ELSE %s END,
-       repo, 'pending', source, source_run_id, hint, base_sha
+       %s, 'pending', source, source_run_id, hint, base_sha
 FROM runs WHERE id = %s AND source_run_id IS NOT NULL
 RETURNING id
 """
@@ -302,7 +302,8 @@ def _advance_note(
     if limited_run is not None:
         # The run a limit stopped was a rerun: carry on its chain with its hint.
         resumed = conn.execute(
-            _RESUME, (instruction_for(note).strip(), HOME_PROVIDERS, provider, limited_run)
+            _RESUME,
+            (instruction_for(note).strip(), HOME_PROVIDERS, provider, repo.name, limited_run),
         ).fetchone()
         run_id = str(resumed[0]) if resumed else None
     if run_id is None:
@@ -383,7 +384,9 @@ _CHECK_RESULT = "SELECT output FROM steps WHERE run_id = %s AND seq = 1"
 _MOVE_RUN = "UPDATE review_notes SET run_id = %s, state = %s, updated_at = now() WHERE note_id = %s"
 _SET_STATE = "UPDATE review_notes SET state = %s, updated_at = now() WHERE note_id = %s"
 # A run the day's run limit refused, or a token or spend cap stopped. Its note
-# waits as capped and starts again, as a new chore, when there is room.
+# waits as capped and starts again, as a new chore, when there is room. Any other
+# refusal (a repo dropped from the config, a model that cannot be built) would
+# be refused again, so it is not one of these.
 _LIMITED = ("refused", "budget")
 _RECAP = """
 UPDATE review_notes SET state = 'capped', run_id = NULL, updated_at = now() WHERE note_id = %s
@@ -674,7 +677,7 @@ def _advance_row(conn: psycopg.Connection, row: dict, tick: _Tick) -> None:
     if status == "error" and done.get("reason") == OUTAGE:
         # retry_outages queues a retry, and the note follows it through the chain.
         return
-    if status in _LIMITED:
+    if status in _LIMITED and (status != "refused" or _refused_by_day_limit(done)):
         # A limit of the day stopped it. It starts again, within the caps, like
         # any capped note. A first run starts afresh; a rerun resumes its chain,
         # so the owner's hint and the hint count are not lost.
@@ -682,12 +685,16 @@ def _advance_row(conn: psycopg.Connection, row: dict, tick: _Tick) -> None:
         conn.execute(_RECAP_KEEPING_RUN if in_chain else _RECAP, (note_id,))
         logger.info("review note %s is capped again after run %s (%s)", note_id, run_id, status)
         return
-    # Cancelled, an error that is not an outage, its own token budget spent, or
-    # anything else: no hint and no retry reaches it, so the note is closed and
-    # the line says what Thomas can do.
+    # Cancelled, a refusal that is not the day's limit, an error that is not an
+    # outage, its own token budget spent, or anything else: no hint and no retry
+    # reaches it, so the note is closed and the line says what Thomas can do.
     _announce_ended(conn, row, run_id, status, tick)
     conn.execute(_SET_STATE, ("closed", note_id))
     logger.info("review note %s closed after run %s (%s)", note_id, run_id, status)
+
+
+def _refused_by_day_limit(done: dict) -> bool:
+    return str(done.get("reason") or "").startswith(DAILY_LIMIT_REASON)
 
 
 def _announce_ended(

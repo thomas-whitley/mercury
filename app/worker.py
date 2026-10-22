@@ -10,7 +10,13 @@ import psycopg
 from opentelemetry import trace
 
 from app.advice import mark_if_needs_claude
-from app.budget import BudgetTrip, check_budget, home_runs_started_today, runs_started_today
+from app.budget import (
+    BudgetTrip,
+    check_budget,
+    daily_limit_reason,
+    home_runs_started_today,
+    runs_started_today,
+)
 from app.chat import run_chat
 from app.config import (
     DEFAULT_CHECK_CLAIM_WINDOW_SECONDS,
@@ -272,9 +278,9 @@ def _process_run(
     # Check then act, which is safe only because the worker runs at one replica
     # (maxReplicas is 1 in the Bicep). Two workers could both pass this.
     if home and home_runs_started_today(conn) > settings.max_local_runs_per_day:
-        limit = f"daily limit of {settings.max_local_runs_per_day} local runs reached"
+        limit = daily_limit_reason(settings.max_local_runs_per_day, home=True)
     elif not home and runs_started_today(conn) > settings.max_runs_per_day:
-        limit = f"daily limit of {settings.max_runs_per_day} runs reached"
+        limit = daily_limit_reason(settings.max_runs_per_day, home=False)
     else:
         limit = None
     if limit is not None:

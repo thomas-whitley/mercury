@@ -491,6 +491,22 @@ PASSED
 
 From the Approve press to the chore ending took 5.3 seconds on the first run, covering the clone, the fixture's tests, the push and the two GitHub calls. [Pull request 2](https://github.com/thomas-whitley/mercury-fixture/pull/2) stays on the fixture, closed, as the record.
 
+## Review notes become chores
+
+A site repo can have a review mode where its owner leaves notes on a page, each stored in a Cloudflare D1 database. Once an hour the scheduler reads the open notes through the Cloudflare REST API and starts one `repo_chore` per note, up to 10 a day, with one note per page at a time. The model replies with search and replace edits, not whole files, and a change outside the folders `mercury.yaml` allows for notes is refused and counts as a failed attempt. The first trial chore, which replied with whole files, changed an em dash it had not been asked to touch, and that is why notes use edits. When the tests pass, the pull request opens with the note quoted first. Mercury then queues Lighthouse on the branch preview and on the live page, reads the CI result, and sends one Telegram message with the pull request, the CI result and both scores. After the merge it marks the note done in D1.
+
+The note's words are stored on Mercury's own row, so the worker never needs the Cloudflare token. The token belongs to the scheduler alone. Cloudflare scopes D1 permission to an account, not to one database, so the token can reach every D1 database on that account. `ludo-review` is the only one today.
+
+### What it cost to add
+
+Node 24 went into the worker image so the site's own `npm ci`, `astro check`, vitest and `astro build` can run there. The image grew from 771 MB to 965 MB.
+
+The trial chore on 2026-10-21 (run `f96c092b`) was a one word copy change on a site repo. It took 209 seconds and 4,424 tokens on gemini, in one attempt, with `npm ci`, `astro check`, vitest and `astro build` all green on the worker. The worker's peak working set was 1.24 GiB of its 2 GiB, and its CPU peaked at 1.03 cores of 1. That run also changed the em dash, so it did not pass, and the edit format came after it.
+
+The cold start of a note chore has not been measured yet. Not yet measured on the live deploy, which is waiting on the Azure subscription.
+
+There is no row for this in the claims table. The claim is filled in when the supervised trial passes.
+
 ## Evals
 
 An eval task is one YAML file in `evals/chores/`: the repo, an instruction that names every file and function it expects, and a grade test. There are 11, 8 small exact ones on a calculator and a text module and 3 on a standard library `orders` package, all on the public fixture repo `thomas-whitley/mercury-fixture`. The grade test never reaches the model. Mercury runs the chore as it runs any other, and the runner grades the branch afterwards on its own clone. A result passes when it still has every test id `main` has and skips none of them, its own tests pass, and the grade test passes. A result that drops or skips one of `main`'s tests fails, whatever the grade says.

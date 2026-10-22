@@ -201,3 +201,19 @@ These replace anything below that says otherwise.
 - The CI workflow file in the site repo, following the site's Node 24 build.
 - Test structure, with the Cloudflare API and GitHub faked in CI. One end to end trial on the live deploy with a real
   note, which is the supervised trial above, and its numbers in the README.
+
+## Changed while building (2026-10-20 to 2026-10-23)
+
+The sections above stay as the approved record. Where the build now differs from them, it differs as follows.
+
+**How a note chore can end.** The spec has a run that ends `escalated` for a question, and lists seven states. A note whose run ends `escalated`, for a question or an escalation, goes to `question`. A run that ends `refused` (the daily run limit) or `budget` sends the note back to `capped`, and a rerun that was held by a limit resumes its chain and its hint when the note starts again. A run that ends `budget_exhausted` or `cancelled`, or with any other error that is not an outage, sends the note to `closed` with one line to Thomas, because starting it again would spend 50,000 tokens and a cap slot every day on a note the model cannot do. An outage error leaves the note in `chore` and it is retried on the next tick. The table also has two states the spec does not list, `reported` (the message has gone, the pull request is still open) and `capped`. A note in `question` whose fix a Claude session pushes to `agent/<run id>` is marked done when that branch merges.
+
+**The edit format.** A note chore replies with search and replace edits, not whole files, and an ordinary chore still replies with whole files. The trial chore on 2026-10-21 changed an em dash to an en dash on a line it was not asked to touch, because a full file reply rewrites every line.
+
+**What Mercury stores.** The note's body, anchor text and quote are stored on the Mercury row, so the worker builds the pull request body without a Cloudflare token and never calls D1. The token stays with the scheduler alone. The three columns are cleared on the same schedule as run bodies.
+
+**The score warning.** A preview score more than 5 points below the live page's is posted as a comment on the pull request, after the Telegram message is recorded. It is not written into the pull request body, which the spec's Lighthouse paragraph says it is.
+
+**Lighthouse scores.** Mercury gives up waiting for the scores 3 ticks after the checks were queued, and the message goes out without them and says so. The spec bounds only the wait for the preview.
+
+**The chore user's isolation.** The chore runs as an unprivileged user, and the build closes the ways that user could reach root's work. Root's git directory is outside the chore user's reach, the chore's leftover processes are killed when it ends, and each test attempt gets a fresh home directory. This applies to every repo chore, not only to notes.

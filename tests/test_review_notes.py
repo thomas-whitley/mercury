@@ -6,6 +6,7 @@ at a time for each page. The note text is data and never reaches a log line.
 
 import dataclasses
 import datetime
+import http.client
 import logging
 import uuid
 
@@ -1811,3 +1812,41 @@ def test_a_comment_never_carries_the_note_text(migrated_db, tick, github):
     [body] = comment_bodies(github)
     for words in ("Secret words", "Tapped words", "Quoted words"):
         assert words not in body
+
+
+@pytest.mark.parametrize("error", [http.client.IncompleteRead(b"x"), RuntimeError("boom")])
+def test_an_unexpected_comment_error_leaves_the_note_reported_and_the_message_sent_once(
+    migrated_db, tick, github, fake_telegram, monkeypatch, error
+):
+    def explode(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(GitHubClient, "comment_on_pull", explode)
+
+    reported(migrated_db, tick, github, live=0.92, preview=0.80)
+    tick(6)
+
+    assert row(migrated_db)["state"] == "reported"
+    assert len(messages(fake_telegram)) == 1
+    tries, pending = migrated_db.execute(
+        "SELECT score_comment_tries, score_comment IS NOT NULL FROM review_notes"
+    ).fetchone()
+    assert (tries, pending) == (3, True)  # bounded: no fourth try
+
+
+def test_one_rows_failing_comment_does_not_stop_another_note_or_a_new_one(
+    migrated_db, tick, github, monkeypatch
+):
+    reported(migrated_db, tick, github, live=0.92, preview=0.80)
+    monkeypatch.setattr(
+        GitHubClient, "comment_on_pull", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))
+    )
+    migrated_db.execute("UPDATE review_notes SET score_comment_tries = 1")
+    other = succeeded_chore(migrated_db, note_id=2, page="/other/")
+
+    tick()
+    started = start_note_chores(migrated_db, [note(3, page="/third/")], make_config(), REPO)
+
+    assert row(migrated_db, 2)["state"] == "waiting"
+    assert len(started) == 1
+    assert other

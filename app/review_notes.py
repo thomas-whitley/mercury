@@ -354,7 +354,9 @@ LIGHTHOUSE_TICKS = 3  # ticks a queued check may take before the message goes wi
 SIZE_FILES = 3
 SIZE_LINES = 60
 SCORE_WARNING_POINTS = 5
-SCORE_COMMENT_TRIES = 3  # posts of the score comment, the first included, before giving up
+# Posts of the score comment, the first included, before giving up. Each pending comment can
+# add up to the 20 s GitHub timeout to a tick.
+SCORE_COMMENT_TRIES = 3
 ERROR_CHARS = 200
 SUMMARY_CHARS = 300
 MAX_KEYS = 10
@@ -618,8 +620,6 @@ def advance_waiting(
     the one message once the scores are in or have been waited for long enough.
     Each note is its own transaction, so one failing leaves the others going."""
     tick = _Tick(config, github, telegram, chat_id, api_base_url, bearer_token, http_get)
-    # First, so a comment that failed this tick waits for the next one.
-    _retry_score_comments(conn, tick)
     with conn.cursor(row_factory=dict_row) as cursor:
         rows = cursor.execute(_WAITING_ROWS).fetchall()
     for row in rows:
@@ -631,6 +631,8 @@ def advance_waiting(
         except Exception as error:  # noqa: BLE001 - one note must not stop the others
             # The class name only: a message can quote the note or a URL.
             logger.error("review note %s did not move on: %s", row["note_id"], type(error).__name__)
+    # After the loop, so each reported row has committed before its comment is tried.
+    _post_score_comments(conn, tick)
 
 
 def _advance_row(conn: psycopg.Connection, row: dict, tick: _Tick) -> None:
@@ -863,21 +865,17 @@ def _report(conn: psycopg.Connection, row: dict, run_id: str, scores: dict, tick
         message_id = None
     conn.execute(_SET_REPORTED, (message_id, score_comment(scores), row["note_id"]))
     logger.info("review note %s reported as message %s", row["note_id"], message_id)
-    # Only a failed GitHub call is caught inside, so the message stays recorded.
-    _post_score_comment(conn, row["note_id"], row["pr_url"], score_comment(scores), 0, tick)
 
 
 def _post_score_comment(
-    conn: psycopg.Connection, note_id: int, pr_url: str, body: str | None, tries: int, tick: _Tick
+    conn: psycopg.Connection, note_id: int, pr_url: str, body: str, tries: int, tick: _Tick
 ) -> None:
-    """Post the score warning on the pull request, once. A failure counts a try
-    and the next tick tries again, up to SCORE_COMMENT_TRIES in all; the line
-    that gives up carries the note's id only."""
-    if body is None or tick.github is None:
-        return
+    """Post the score warning on the pull request. Any failure counts a try, and
+    a later tick tries again until SCORE_COMMENT_TRIES posts have failed; the
+    line that gives up carries the note's id only."""
     try:
         tick.github.comment_on_pull(tick.config.repo, pr_url, body)
-    except (GitHubError, ValueError) as error:
+    except Exception as error:  # noqa: BLE001 - whatever it is, it ends in the bounded give-up
         conn.execute(_COMMENT_FAILED, (note_id,))
         if tries + 1 >= SCORE_COMMENT_TRIES:
             logger.error("review note %s: score comment given up", note_id)
@@ -892,12 +890,19 @@ def _post_score_comment(
     logger.info("review note %s: score warning posted on the pull request", note_id)
 
 
-def _retry_score_comments(conn: psycopg.Connection, tick: _Tick) -> None:
+def _post_score_comments(conn: psycopg.Connection, tick: _Tick) -> None:
+    """Post each due score comment, one transaction each, after the notes have
+    moved on. The first post is try 1. A failing row never stops the others."""
+    if tick.github is None:
+        return
     for note_id, pr_url, body, tries in conn.execute(
         _COMMENT_ROWS, (SCORE_COMMENT_TRIES,)
     ).fetchall():
-        with conn.transaction():
-            _post_score_comment(conn, note_id, pr_url, body, tries, tick)
+        try:
+            with conn.transaction():
+                _post_score_comment(conn, note_id, pr_url, body, tries, tick)
+        except Exception as error:  # noqa: BLE001 - one comment must not stop the others
+            logger.error("review note %s: score comment failed: %s", note_id, type(error).__name__)
 
 
 # ---- After the pull request: merged, closed, deleted and edited ----

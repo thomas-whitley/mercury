@@ -12,6 +12,12 @@ LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "db"}
 DEFAULT_TEST_DATABASE_URL = "postgresql://agent:agent@localhost:5432/agent_runs_test"
 
 
+@pytest.fixture(autouse=True)
+def _allow_local_check_targets(monkeypatch):
+    """Uptime checks refuse private hosts, and the tests' servers are local."""
+    monkeypatch.setattr("app.checks.ALLOW_PRIVATE_HOSTS", True)
+
+
 def _test_database_url() -> str:
     """The database the tests are allowed to destroy.
 

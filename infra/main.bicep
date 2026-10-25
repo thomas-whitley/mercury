@@ -357,13 +357,14 @@ var workerCheckEnvironment = concat(
 // this has to match that default.
 var leaseSeconds = 120
 
-// What wakes the worker: any unfinished run it executes, a Lighthouse check
+// What wakes the worker: a pending or running run it executes (a chore
+// awaiting Telegram approval is not claimable yet), a Lighthouse check
 // that waited out the claim window (from creation, or from a lapsed lease),
 // and a check the cloud path is running, so the worker is not scaled away
 // mid call. A check still inside its window does not count, or the worker
 // would sit awake for the whole window every week. This mirrors _CLAIMABLE in
 // app/worker.py.
-var pendingWorkQuery = 'SELECT count(*) FROM runs WHERE finished_at IS NULL AND (type <> \'site_check\' OR (type = \'site_check\' AND check_kind = \'lighthouse\' AND (executor = \'cloud\' OR (claimed_by IS NULL AND created_at < now() - make_interval(secs => ${checkClaimWindowSeconds})) OR (status = \'running\' AND heartbeat_at < now() - make_interval(secs => ${leaseSeconds + checkClaimWindowSeconds})))))'
+var pendingWorkQuery = 'SELECT count(*) FROM runs WHERE finished_at IS NULL AND ((type <> \'site_check\' AND status IN (\'pending\', \'running\')) OR (type = \'site_check\' AND check_kind = \'lighthouse\' AND (executor = \'cloud\' OR (claimed_by IS NULL AND created_at < now() - make_interval(secs => ${checkClaimWindowSeconds})) OR (status = \'running\' AND heartbeat_at < now() - make_interval(secs => ${leaseSeconds + checkClaimWindowSeconds})))))'
 
 // The scheduler alone reads D1, so the Cloudflare token goes to it alone.
 var cloudflareD1Secret = empty(cloudflareD1Token)

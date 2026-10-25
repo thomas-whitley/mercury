@@ -60,6 +60,23 @@ def test_a_pending_pytest_run_wakes_the_worker(migrated_db):
     assert pending_work(migrated_db) == 1
 
 
+def test_a_chore_awaiting_approval_does_not_wake_it(migrated_db):
+    # The worker cannot claim it until Telegram approves it, and a chore left
+    # unapproved on 2026-10-09 kept the worker awake for 24.7 hours.
+    migrated_db.execute("INSERT INTO runs (task, status) VALUES ('x', 'awaiting_approval')")
+
+    assert pending_work(migrated_db) == 0
+
+
+def test_a_running_chore_keeps_the_worker_up(migrated_db):
+    migrated_db.execute(
+        "INSERT INTO runs (task, status, claimed_by, heartbeat_at) "
+        "VALUES ('x', 'running', 'worker', now())"
+    )
+
+    assert pending_work(migrated_db) == 1
+
+
 def test_a_lighthouse_check_inside_its_window_does_not(migrated_db):
     add_check(migrated_db, age="9 minutes")
 

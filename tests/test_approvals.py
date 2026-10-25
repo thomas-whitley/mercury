@@ -275,6 +275,18 @@ def test_resume_command_resumes_a_suspended_site(bot, fake_telegram, migrated_db
     assert SITE in reply
 
 
+def test_resume_command_resumes_a_suspended_ci_watch(bot, fake_telegram, migrated_db):
+    name = "ci_watch:owner/repo"
+    for _ in range(3):
+        record_failure(migrated_db, name)
+
+    post(bot, update(f"/resume {name}"))
+
+    assert is_suspended(migrated_db, name) is False
+    [reply] = [payload["text"] for payload in fake_telegram.sent()]
+    assert reply == f"Resumed {name}."
+
+
 def test_resume_command_without_a_site_lists_what_is_suspended(bot, fake_telegram, migrated_db):
     suspend(migrated_db)
 

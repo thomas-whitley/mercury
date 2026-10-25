@@ -314,8 +314,11 @@ async def _resume(pool, site: str) -> str:
             names = [row[0] for row in await (await conn.execute(_SUSPENDED_NAMES)).fetchall()]
             listed = "\n".join(name.removeprefix(UPTIME_PREFIX) for name in names)
             return f"{RESUME_USAGE}\nSuspended:\n{listed}" if names else "Nothing is suspended."
-        name = site if site.startswith(UPTIME_PREFIX) else f"{UPTIME_PREFIX}{site}"
-        if (await conn.execute(RESUME, (name,))).rowcount == 0:
+        # A full name as listed (ci_watch:owner/repo) first, then a bare site.
+        for name in (site, f"{UPTIME_PREFIX}{site}"):
+            if (await conn.execute(RESUME, (name,))).rowcount:
+                break
+        else:
             return f"No schedule named {site}."
     logger.info("resumed %s from Telegram", name)
     return f"Resumed {site}."

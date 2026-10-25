@@ -24,9 +24,12 @@ def check_site(url: str, timeout_seconds: float = 10.0) -> SiteCheckResult:
     """A 2xx within the timeout passes; redirects are followed first, so the
     status seen is the final hop's. Anything else, including a
     timeout or a connection error, is a finding, not an exception."""
+    # Cloudflare refuses urllib's default agent with a 403, as the other
+    # clients here (app/github.py, app/d1.py) already found.
+    request = urllib.request.Request(url, headers={"User-Agent": "mercury"})
     started = time.monotonic()
     try:
-        with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             return SiteCheckResult(
                 url=url,
                 status_code=response.status,

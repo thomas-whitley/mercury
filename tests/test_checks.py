@@ -21,6 +21,11 @@ def local_server():
                 time.sleep(0.3)
             if self.path == "/broken":
                 self.send_response(500)
+            elif self.path == "/cloudflare" and self.headers["User-Agent"].startswith(
+                "Python-urllib"
+            ):
+                # Cloudflare's browser integrity check refuses urllib's default agent.
+                self.send_response(403)
             else:
                 self.send_response(200)
             self.end_headers()
@@ -84,6 +89,12 @@ def test_check_site_passes_on_a_2xx_response(local_server):
     assert result.status_code == 200
     assert result.latency_ms is not None and result.latency_ms >= 0
     assert result.error is None
+
+
+def test_check_site_passes_a_site_that_refuses_the_urllib_user_agent(local_server):
+    result = check_site(f"{local_server}/cloudflare")
+
+    assert result.status_code == 200
 
 
 def test_check_site_fails_on_a_5xx_response(local_server):

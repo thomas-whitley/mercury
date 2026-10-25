@@ -21,6 +21,9 @@ def local_server():
                 time.sleep(0.3)
             if self.path == "/broken":
                 self.send_response(500)
+            elif self.path == "/to-metadata":
+                self.send_response(302)
+                self.send_header("Location", "http://169.254.169.254/metadata/instance")
             elif self.path == "/cloudflare" and self.headers["User-Agent"].startswith(
                 "Python-urllib"
             ):
@@ -95,6 +98,35 @@ def test_check_site_passes_a_site_that_refuses_the_urllib_user_agent(local_serve
     result = check_site(f"{local_server}/cloudflare")
 
     assert result.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "ftp://example.com/",
+        "http://169.254.169.254/metadata/instance",
+        "http://10.0.0.5/",
+        "http://[::1]/",
+        "http://localhost/",
+    ],
+)
+def test_check_site_refuses_a_non_http_or_internal_url(url, monkeypatch):
+    monkeypatch.setattr("app.checks.ALLOW_PRIVATE_HOSTS", False)
+
+    result = check_site(url)
+
+    assert result.passed is False
+    assert result.status_code is None
+    assert result.error.startswith("refused")
+
+
+def test_check_site_refuses_a_redirect_to_the_metadata_address(local_server):
+    # Link local stays refused even with the tests' private hosts allowed.
+    result = check_site(f"{local_server}/to-metadata")
+
+    assert result.passed is False
+    assert result.error.startswith("refused")
 
 
 def test_check_site_fails_on_a_5xx_response(local_server):

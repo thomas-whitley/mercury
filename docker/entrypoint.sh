@@ -21,8 +21,11 @@ case "$ROLE" in
   scheduler)
     exec python -m app.scheduler
     ;;
+  telegram)
+    exec python -m app.telegram_poll
+    ;;
   *)
-    echo "Unknown ROLE '$ROLE'. Expected api, worker or scheduler." >&2
+    echo "Unknown ROLE '$ROLE'. Expected api, worker, scheduler or telegram." >&2
     exit 1
     ;;
 esac

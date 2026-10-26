@@ -20,6 +20,7 @@ services:
       MAX_RUNS_PER_DAY: ${MAX_RUNS_PER_DAY:-20}
       MERCURY_CONFIG_PATH: /config/mercury.yaml
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
     volumes:
       - ${MERCURY_HOME_CONFIG:-./local/mercury.home.yaml}:/config/mercury.yaml:ro
     # One replica is enough for one person, and the local db is not used.
@@ -67,5 +68,20 @@ services:
     volumes: !override
       - ${MERCURY_HOME_CONFIG:-./local/mercury.home.yaml}:/config/mercury.yaml:ro
     depends_on: !override
+      proxy:
+        condition: service_healthy
+
+  # Telegram cannot push to a webhook on this PC, so this pulls updates with
+  # getUpdates and posts each to the api's /telegram with the webhook's
+  # secret (app/telegram_poll.py). Starting it deletes the Azure webhook.
+  telegram:
+    build: .
+    restart: unless-stopped
+    environment:
+      ROLE: telegram
+      API_BASE_URL: http://proxy:8000
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN in .env}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:?set TELEGRAM_WEBHOOK_SECRET in .env}
+    depends_on:
       proxy:
         condition: service_healthy

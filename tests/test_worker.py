@@ -294,6 +294,37 @@ def test_free_cloud_providers_have_room_for_a_whole_file_reply(provider):
     assert PROVIDERS[provider].max_tokens == 8192
 
 
+def test_the_ollama_rung_waits_180_seconds(monkeypatch):
+    # A quality first model is slow: nemotron-3-ultra took 23 seconds for one
+    # small edit on 2026-10-26, and a chore prompt is many times bigger.
+    monkeypatch.setenv("OLLAMA_API_KEY", "k" * 32)
+    monkeypatch.delenv("OLLAMA_TIMEOUT_SECONDS", raising=False)
+
+    model = build_model(settings_with(model="gemini-3.5-flash-lite"), "ollama")
+
+    assert model._client.timeout == 180.0
+
+
+def test_build_model_reads_the_ollama_tag_and_timeout_from_the_environment(monkeypatch):
+    monkeypatch.setenv("OLLAMA_API_KEY", "k" * 32)
+    monkeypatch.setenv("OLLAMA_MODEL", "beam")
+    monkeypatch.setenv("OLLAMA_TIMEOUT_SECONDS", "300")
+
+    model = build_model(settings_with(model="gemini-3.5-flash-lite"), "ollama")
+
+    assert model._model == "beam"
+    assert model._client.timeout == 300.0
+
+
+def test_the_ollama_tag_defaults_to_gpt_oss(monkeypatch):
+    monkeypatch.setenv("OLLAMA_API_KEY", "k" * 32)
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+
+    model = build_model(settings_with(model="gemini-3.5-flash-lite"), "ollama")
+
+    assert model._model == "gpt-oss:120b"
+
+
 def test_build_model_refuses_local_without_an_address(monkeypatch):
     monkeypatch.setenv("LOCAL_MODEL_TOKEN", "t" * 32)
     monkeypatch.delenv("LOCAL_MODEL_URL", raising=False)

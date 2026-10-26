@@ -30,6 +30,9 @@ services:
       LOCAL_MODEL: ${LOCAL_MODEL:-mercury-local:base}
       LOCAL_MODEL_TIMEOUT_SECONDS: ${LOCAL_MODEL_TIMEOUT_SECONDS:-}
       MAX_LOCAL_RUNS_PER_DAY: ${MAX_LOCAL_RUNS_PER_DAY:-200}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gpt-oss:120b}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-}
     volumes:
       - ./local/mercury.compose.yaml:/config/mercury.yaml:ro
     extra_hosts:

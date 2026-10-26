@@ -7,17 +7,21 @@ other type can be handed out whatever the request says.
 """
 
 import json
+import logging
 import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, field_validator
+from starlette.concurrency import run_in_threadpool
 
 from app.auth import require_bearer_token
 from app.progress import push_progress_async
 from app.tasks import SELF_HOSTED_CHECK_KINDS
-from app.telegram import telegram_client
+from app.telegram import TelegramClient, TelegramError, telegram_client
+
+logger = logging.getLogger("agent_runs.check_claims")
 
 router = APIRouter(prefix="/checks", dependencies=[Depends(require_bearer_token)])
 
@@ -65,6 +69,7 @@ WHERE id = %s
   AND type = 'site_check'
   AND claimed_by = %s
   AND finished_at IS NULL
+RETURNING check_kind
 """
 
 _INSERT_STEP = """
@@ -161,14 +166,46 @@ async def post_check_result(
     async with request.app.state.pool.connection() as conn:
         async with conn.transaction():
             cursor = await conn.execute(_CLOSE, (run, posted.worker_id))
-            if cursor.rowcount != 1:
+            closed = await cursor.fetchone()
+            if closed is None:
                 raise HTTPException(status_code=409, detail="this worker does not hold the check")
             for seq, kind, output in ((1, "check", posted.result), (2, "done", done)):
                 await conn.execute(_INSERT_STEP, (run, seq, kind, Jsonb(output)))
                 await conn.execute(
                     _INSERT_EVENT, (run, seq, Jsonb({"kind": kind, "seq": seq, "output": output}))
                 )
-    await push_progress_async(
-        request.app.state.pool, run, telegram_client(request.app.state.settings)
-    )
+    telegram = telegram_client(request.app.state.settings)
+    if closed[0] == "flight_watch":
+        chat_id = request.app.state.mercury.telegram_chat_id
+        await run_in_threadpool(send_flight_alert, telegram, chat_id, run, posted.result)
+    await push_progress_async(request.app.state.pool, run, telegram)
     return done
+
+
+def send_flight_alert(
+    telegram: TelegramClient | None, chat_id: int | None, run_id: str, result: dict[str, Any]
+) -> None:
+    """Send a flight_watch result's message to the owner's chat, silently and
+    with no link preview. message is Telegram HTML. If Telegram cannot parse
+    it, plain, the same alert as plain text, goes instead. An empty message
+    sends nothing. The run is already closed, so a refused send is logged
+    and the worker still gets its 200."""
+    message = result.get("message")
+    if telegram is None or chat_id is None or not isinstance(message, str) or not message.strip():
+        return
+    quiet = {"disable_link_preview": True, "disable_notification": True}
+    try:
+        try:
+            telegram.send_message(chat_id, message, parse_mode="HTML", **quiet)
+        except TelegramError as error:
+            plain = result.get("plain")
+            if not _cannot_parse(error) or not isinstance(plain, str) or not plain.strip():
+                raise
+            logger.warning("flight alert %s was not valid HTML, sent as plain text", run_id)
+            telegram.send_message(chat_id, plain, **quiet)
+    except TelegramError as error:
+        logger.error("could not send the flight alert for %s: %s", run_id, error)
+
+
+def _cannot_parse(error: TelegramError) -> bool:
+    return error.status == 400 and "can't parse entities" in str(error)

@@ -57,7 +57,8 @@ portfolio:
 # the retention cleanup below. lighthouse, broken_links (per page) and
 # dependency_audit (per repo, OSV.dev over its lock files) are each due 7 days
 # after the last one. The digest is due at 07:30 in telegram.timezone, so the
-# first tick after it, 08:00, creates it.
+# first tick after it, 08:00, creates it, and the daily flight_watch with it.
+# A weekly flight_watch is due 7 days after the last one.
 schedule:
   stale_triage: "0 5 * * 1"     # not built yet
 

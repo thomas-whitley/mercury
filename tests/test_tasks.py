@@ -4,7 +4,13 @@ import httpx2
 
 from app.config import PROVIDERS
 from app.mercury_config import TaskSettings
-from app.tasks import TASK_TYPES, configure_task_types
+from app.tasks import (
+    CLOUD_FALLBACK_CHECK_KINDS,
+    PAGE_CHECK_KINDS,
+    SELF_HOSTED_CHECK_KINDS,
+    TASK_TYPES,
+    configure_task_types,
+)
 
 EXPECTED_NAMES = {"pytest", "chat", "repo_chore", "site_check", "digest"}
 
@@ -105,3 +111,14 @@ def test_the_api_applies_the_configs_ladder_at_startup(
     run = httpx2.get(f"{base}/runs/{created.json()['id']}", headers=auth_headers).json()
 
     assert run["provider"] == "ollama"
+
+
+def test_flight_watch_is_self_hosted_and_not_a_page_check():
+    assert "flight_watch" in SELF_HOSTED_CHECK_KINDS
+    assert "flight_watch" not in PAGE_CHECK_KINDS
+
+
+def test_flight_watch_not_in_cloud_fallback():
+    """Only the flight-finder worker on the home PC can search fares, so a
+    flight_watch nobody claims waits for it."""
+    assert "flight_watch" not in CLOUD_FALLBACK_CHECK_KINDS

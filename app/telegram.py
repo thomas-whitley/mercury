@@ -30,11 +30,26 @@ class TelegramClient:
         self._base_url = base_url.rstrip("/")
 
     def send_message(
-        self, chat_id: int, text: str, buttons: list[tuple[str, str]] | None = None
+        self,
+        chat_id: int,
+        text: str,
+        buttons: list[tuple[str, str]] | None = None,
+        *,
+        parse_mode: str | None = None,
+        disable_link_preview: bool = False,
+        disable_notification: bool = False,
     ) -> int:
         """Send text to the chat and return the new message's id. Each button
-        is a label and the callback data Telegram sends back when it is pressed."""
+        is a label and the callback data Telegram sends back when it is pressed.
+        parse_mode "HTML" has Telegram read the text's tags. A key is sent only
+        when its option is set, so a plain call sends what it always did."""
         payload: dict = {"chat_id": chat_id, "text": text}
+        if parse_mode is not None:
+            payload["parse_mode"] = parse_mode
+        if disable_link_preview:
+            payload["link_preview_options"] = {"is_disabled": True}
+        if disable_notification:
+            payload["disable_notification"] = True
         if buttons:
             payload["reply_markup"] = {
                 "inline_keyboard": [

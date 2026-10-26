@@ -7,6 +7,7 @@ runs and closes itself.
 import httpx2
 import psycopg
 import pytest
+import yaml
 
 TOKEN = "the-real-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -19,12 +20,17 @@ def api(start_server, monkeypatch):
     return start_server()
 
 
-def insert_run(db_url: str, type_: str = "site_check", kind: str | None = "lighthouse") -> str:
+def insert_run(
+    db_url: str,
+    type_: str = "site_check",
+    kind: str | None = "lighthouse",
+    task: str = "https://example.com",
+) -> str:
     with psycopg.connect(db_url, autocommit=True) as conn:
         return str(
             conn.execute(
                 "INSERT INTO runs (task, type, check_kind) VALUES (%s, %s, %s) RETURNING id",
-                ("https://example.com", type_, kind),
+                (task, type_, kind),
             ).fetchone()[0]
         )
 
@@ -330,3 +336,123 @@ def test_result_refuses_a_body_far_larger_than_a_summary(api, clean_db):
 
     assert response.status_code == 422
     assert run_state(clean_db, run_id) == ("running", 0, False)
+
+
+# The flight watch: the flight-finder worker on the home PC claims a
+# flight_watch check and posts its alert, which goes to the owner's chat.
+CHAT = 42
+ALERT = {
+    "mode": "daily",
+    "trips": [{"name": "Tokyo", "price": 612}],
+    "message": "<b>Tokyo</b> from $612",
+    "plain": "Tokyo from $612",
+    "blocked": [],
+}
+
+
+@pytest.fixture
+def bot_api(start_server, fake_telegram, monkeypatch, tmp_path):
+    config = tmp_path / "mercury.yaml"
+    config.write_text(yaml.dump({"telegram": {"chat_id": CHAT}}))
+    monkeypatch.setenv("MERCURY_CONFIG_PATH", str(config))
+    monkeypatch.setenv("MERCURY_BEARER_TOKEN", TOKEN)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    monkeypatch.setenv("TELEGRAM_API_URL", fake_telegram.url)
+    return start_server()
+
+
+def claimed_flight_watch(api: str, db_url: str, task: str = "daily") -> str:
+    run_id = insert_run(db_url, kind="flight_watch", task=task)
+    response = claim(api, ["flight_watch"], worker_id="flights-1")
+    assert response.json() == {
+        "id": run_id,
+        "url": task,
+        "kind": "flight_watch",
+        "lease_seconds": response.json()["lease_seconds"],
+    }
+    return run_id
+
+
+def test_a_flight_watch_is_claimed_by_the_kind_and_carries_its_task(bot_api, clean_db):
+    run_id = claimed_flight_watch(bot_api, clean_db, task="weekly")
+
+    with psycopg.connect(clean_db) as conn:
+        row = conn.execute(
+            "SELECT status, claimed_by FROM runs WHERE id = %s", (run_id,)
+        ).fetchone()
+    assert row == ("running", "flights-1")
+
+
+def test_flight_watch_result_message_sent_to_telegram(bot_api, clean_db, fake_telegram):
+    run_id = claimed_flight_watch(bot_api, clean_db)
+
+    response = post_result(bot_api, run_id, result=ALERT, worker_id="flights-1")
+
+    assert response.status_code == 200
+    assert run_state(clean_db, run_id) == ("succeeded", 0, True)
+    assert fake_telegram.sent() == [
+        {
+            "chat_id": CHAT,
+            "text": "<b>Tokyo</b> from $612",
+            "parse_mode": "HTML",
+            "link_preview_options": {"is_disabled": True},
+            "disable_notification": True,
+        }
+    ]
+
+
+def test_flight_watch_empty_message_sends_nothing(bot_api, clean_db, fake_telegram):
+    run_id = claimed_flight_watch(bot_api, clean_db)
+
+    response = post_result(
+        bot_api, run_id, result={**ALERT, "message": "", "plain": ""}, worker_id="flights-1"
+    )
+
+    assert response.status_code == 200
+    assert run_state(clean_db, run_id) == ("succeeded", 0, True)
+    assert fake_telegram.sent() == []
+
+
+def test_flight_watch_html_telegram_cannot_parse_is_sent_again_as_plain_text(
+    bot_api, clean_db, fake_telegram
+):
+    run_id = claimed_flight_watch(bot_api, clean_db)
+    fake_telegram.fail_next = {
+        "error_code": 400,
+        "description": "Bad Request: can't parse entities: unsupported start tag",
+    }
+
+    response = post_result(bot_api, run_id, result=ALERT, worker_id="flights-1")
+
+    assert response.status_code == 200
+    sent = fake_telegram.sent()
+    assert len(sent) == 2
+    assert sent[1] == {
+        "chat_id": CHAT,
+        "text": "Tokyo from $612",
+        "link_preview_options": {"is_disabled": True},
+        "disable_notification": True,
+    }
+
+
+def test_flight_watch_result_still_closes_when_telegram_refuses(bot_api, clean_db, fake_telegram):
+    """The run is closed before the send, so a refused send is logged, not
+    answered with an error the worker would retry into a 409."""
+    run_id = claimed_flight_watch(bot_api, clean_db)
+    fake_telegram.fail_next = {"error_code": 400, "description": "Bad Request: chat not found"}
+
+    response = post_result(bot_api, run_id, result=ALERT, worker_id="flights-1")
+
+    assert response.status_code == 200
+    assert run_state(clean_db, run_id) == ("succeeded", 0, True)
+    assert len(fake_telegram.sent()) == 1
+
+
+def test_a_lighthouse_result_sends_no_flight_alert(bot_api, clean_db, fake_telegram):
+    """Only a flight_watch result is sent, even one that carries a message."""
+    run_id = insert_run(clean_db)
+    claim(bot_api, ["lighthouse"])
+
+    post_result(bot_api, run_id, result={**LIGHTHOUSE_RESULT, "message": "hello"})
+
+    assert fake_telegram.sent() == []

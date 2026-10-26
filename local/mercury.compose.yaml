@@ -25,6 +25,12 @@ portfolio:
     - name: thomas-whitley/mercury-fixture
       test_command: python -m unittest -v
       auto_approve: true
+    # The Astro chores (evals/chores/astro_*.yaml): a made up site shaped like
+    # ludo-electrical, run the way ludo-electrical's chores are.
+    - name: thomas-whitley/mercury-astro-fixture
+      test_command: npm ci && npm run check && npm test && npm run build
+      test_timeout_seconds: 900
+      auto_approve: true
     # A bank fork (decision 32 of docs/build-brief-evals.md): its chores are
     # graded, closed and deleted by bank/run.py, so nothing waits for Approve.
     # The test command is bank/libraries.yaml's, exactly.

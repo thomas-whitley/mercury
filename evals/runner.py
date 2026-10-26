@@ -35,6 +35,7 @@ import httpx2
 import yaml
 
 from app.config import PROVIDERS
+from evals.astro_grade import grade_astro
 
 OPEN = {"pending", "running", "awaiting_approval"}
 # Final statuses a hint might fix: a wrong pull request, an escalation, or a
@@ -276,6 +277,36 @@ def grade_branch(
         return grade_dir(work, grade_source, base_ids, timeout_seconds)
 
 
+def grade_astro_branch(
+    clone_url: str,
+    branch: str,
+    checks: list[dict],
+    token: str | None = None,
+    timeout_seconds: float = 900,
+) -> tuple[bool, str]:
+    """Clone the branch, take its diff against the default branch, and grade
+    it as an Astro chore (evals/astro_grade.py)."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
+        work = Path(home) / "work"
+        env = _env(home, token)
+        try:
+            error = clone(clone_url, branch, work, token, timeout_seconds)
+            if error:
+                return False, error
+            fetched = subprocess.run(
+                ["git", "fetch", "-q", "--depth", "1", "origin", "HEAD"],
+                cwd=work, env=env, timeout=timeout_seconds, **_TEXT,
+            )  # fmt: skip
+            if fetched.returncode != 0:
+                return False, "fetching the default branch failed: " + fetched.stderr[-1000:]
+            diff = subprocess.run(
+                ["git", "diff", "FETCH_HEAD", "HEAD"], cwd=work, env=env, **_TEXT
+            ).stdout
+        except subprocess.TimeoutExpired:
+            return False, f"clone timed out after {timeout_seconds:.0f} s"
+        return grade_astro(work, checks, diff, timeout_seconds)
+
+
 def close_pull_and_branch(github, repo: str, branch: str) -> None:
     owner = repo.split("/")[0]
     pulls = github.get(
@@ -397,8 +428,9 @@ def run_delegate(
             error = clone(clone_url, "main", work, None, 120)
             if error:
                 return row("refused", False, None, error)
+            astro = task.kind == "astro"
             try:
-                base_ids = test_ids(work)
+                base_ids = None if astro else test_ids(work)
             except DiscoveryFailed as crash:
                 return row("error", False, None, f"test discovery failed on main: {crash}")
             start = clock()
@@ -418,6 +450,12 @@ def run_delegate(
             if not [line for line in changed.stdout.splitlines() if "__pycache__" not in line]:
                 return row("failed", False, seconds, "no change")
             diff = _staged_diff(work, home)
+            if astro:
+                graded, detail = grade_astro(work, task.grade, diff)
+                # A red install, check, test or build is the repo's own tests
+                # failing, so Mercury would not have opened a pull request.
+                red = detail.startswith(("npm ", "weakened tests"))
+                return row("failed" if red else "succeeded", graded, seconds, detail, diff)
             # Mercury opens a pull request only when the repo's own tests pass.
             tests = subprocess.run(REPO_TESTS, cwd=work, env=_env(home, None), timeout=600, **_TEXT)
             if tests.returncode not in (0, NO_TESTS_RAN):
@@ -541,6 +579,8 @@ def follow(
             graded, detail = (
                 grade(branch)
                 if grade
+                else grade_astro_branch(f"{clone_base}/{task.repo}.git", branch, task.grade, token)
+                if task.kind == "astro"
                 else grade_branch(f"{clone_base}/{task.repo}.git", branch, task.grade, token)
             )
         else:

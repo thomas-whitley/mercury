@@ -9,6 +9,8 @@ export MSYS_NO_PATHCONV=1
 
 env_file="$(cd "$(dirname "$0")/.." && pwd)/.env"
 touch "$env_file"
+# A last line with no newline would swallow the first key added below.
+if [ -s "$env_file" ] && [ -n "$(tail -c1 "$env_file")" ]; then echo >> "$env_file"; fi
 
 # KEY app secret-name
 secrets="

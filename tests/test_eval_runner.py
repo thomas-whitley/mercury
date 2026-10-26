@@ -19,9 +19,11 @@ from evals.runner import (
     _call_delegate_script,
     _delegate_env,
     _run_tree,
+    clone_url,
     close_pull_and_branch,
     contained,
     grade_branch,
+    labelled,
     load_tasks,
     run_delegate,
     run_one,
@@ -920,3 +922,39 @@ def test_an_eval_chore_is_still_posted_as_eval_with_no_base(monkeypatch):
 
     assert api.posted[0]["source"] == "eval"
     assert "base" not in api.posted[0]["inputs"]
+
+
+def test_load_tasks_defaults_kind_to_unittest(tmp_path):
+    (tmp_path / "a.yaml").write_text("repo: o/r\ninstruction: x\ngrade: 'import unittest'\n")
+
+    assert load_tasks(tmp_path)[0].kind == "unittest"
+
+
+def test_load_tasks_reads_astro_checks(tmp_path):
+    (tmp_path / "b.yaml").write_text(
+        "repo: o/r\nkind: astro\ninstruction: x\ngrade:\n  - page: index.html\n    contains: [Hi]\n"
+    )
+
+    task = load_tasks(tmp_path)[0]
+
+    assert task.kind == "astro"
+    assert task.grade == [{"page": "index.html", "contains": ["Hi"]}]
+
+
+def test_clone_url_uses_the_task_repo():
+    assert clone_url(EvalTask("t", "o/r", "x", "")) == "https://github.com/o/r.git"
+
+
+def test_label_suffixes_column():
+    assert labelled("ollama", "beam") == "ollama@beam"
+    assert labelled("ollama", None) == "ollama"
+
+
+def test_a_labelled_row_answered_by_its_own_provider_did_not_fall_back():
+    own = EvalRow("t1", "ollama@beam", "ollama", "id", "succeeded", True, 1000, 30.0, 0.0)
+    other = EvalRow("t2", "ollama@beam", "gemini", "id", "succeeded", True, 1000, 30.0, 0.0)
+
+    table = summarise([own, other])
+
+    row = "| ollama@beam | 2 of 2 | n/a | 100% | 2 of 2 | 2 of 2 | 1000 | 30 | 0.0000 | 1 |"
+    assert row in table

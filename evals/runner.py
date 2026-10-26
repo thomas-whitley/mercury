@@ -85,7 +85,20 @@ class EvalTask:
     id: str
     repo: str
     instruction: str
-    grade: str
+    # A unittest module for kind unittest, or a list of page checks for kind
+    # astro (evals/astro_grade.py).
+    grade: str | list[dict]
+    kind: str = "unittest"
+
+
+def clone_url(task: EvalTask) -> str:
+    return f"https://github.com/{task.repo}.git"
+
+
+def labelled(column: str, label: str | None) -> str:
+    """A Mercury column run with OLLAMA_MODEL or LOCAL_MODEL set names its
+    tag, so two tags on one provider stay apart in the summary."""
+    return f"{column}@{label}" if label else column
 
 
 @dataclass
@@ -137,6 +150,7 @@ def load_tasks(directory: Path) -> list[EvalTask]:
                 repo=data["repo"],
                 instruction=data["instruction"].strip(),
                 grade=data["grade"],
+                kind=data.get("kind", "unittest"),
             )
         )
     return tasks
@@ -628,7 +642,8 @@ def summarise(rows: list[EvalRow]) -> str:
             f"| {f'{statistics.median(tokens):.0f}' if tokens else 'n/a'} "
             f"| {f'{statistics.median(seconds):.0f}' if seconds else 'n/a'} "
             f"| {sum(r.usd for r in mine):.4f} "
-            f"| {sum(r.answered_by not in (None, r.provider) for r in mine)} "
+            # A label (labelled) names the tag, not another provider.
+            f"| {sum(r.answered_by not in (None, r.provider.split('@')[0]) for r in mine)} "
             # Chores Mercury's test guard escalated (app/test_guard.py).
             f"| {sum(r.detail == 'weakened tests' for r in mine)} "
             f"| {sum(r.unusable or 0 for r in mine)} |"
@@ -671,13 +686,19 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives the
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--only", default="", help="comma separated task ids")
     parser.add_argument("--timeout", type=float, default=900.0)
+    parser.add_argument(
+        "--label", default=None, help="the model tag behind the one column, kept in its rows"
+    )
+    parser.add_argument("--tasks-dir", type=Path, default=HERE / "chores")
     args = parser.parse_args(argv)
 
     columns = [c for c in args.columns.split(",") if c]
     unknown = [c for c in columns if c not in PROVIDERS and not c.startswith("delegate:")]
     if unknown:
         parser.error(f"unknown column {unknown[0]}; providers: {', '.join(PROVIDERS)}")
-    tasks = load_tasks(HERE / "chores")
+    if args.label and len(columns) != 1:
+        parser.error("--label names one model, so it takes exactly one column")
+    tasks = load_tasks(args.tasks_dir)
     if args.only:
         wanted = set(args.only.split(","))
         tasks = [t for t in tasks if t.id in wanted]
@@ -707,6 +728,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives the
                         token,
                     )
                     row.repeat = repeat
+                    row.provider = labelled(row.provider, args.label)
                     rows.append(row)
                     print(
                         f"{task.id} {column}->{row.answered_by} {row.status} "
@@ -725,7 +747,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives the
 
 def _run_column(column, task, api, github, token, timeout) -> EvalRow:  # pragma: no cover
     if column.startswith("delegate:"):
-        return run_delegate(task, column.split(":", 1)[1], FIXTURE_URL, timeout_seconds=timeout)
+        return run_delegate(task, column.split(":", 1)[1], clone_url(task), timeout_seconds=timeout)
     return run_one(
         api,
         github,

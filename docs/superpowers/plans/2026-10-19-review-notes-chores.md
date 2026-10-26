@@ -55,11 +55,13 @@
 
 Thomas's steps are marked. This task changes no Mercury code unless the trial finds a bug, which then gets its own failing test first.
 
-- [ ] **Step 1 (Thomas): give the GitHub token the site repo.** The fine grained `MERCURY_GITHUB_TOKEN` needs Contents and Pull requests read and write on `thomas-whitley/ludo-electrical`.
-- [ ] **Step 2: Add the site repo to the private config.** In `mercury-config`'s `mercury.yaml`, under `portfolio.repos`, add the repo with `test_command: npm ci && npm run check && npm test && npm run build` and `test_timeout_seconds: 900`. Bump `PUBLIC_SHA` to Task 1's commit once its Publish workflow is green. Pushing `mercury-config` deploys, so ask Thomas first.
-- [ ] **Step 3: Queue one chore by hand** through MCP `create_run` on the site repo, with an instruction that changes one word of copy in `src/pages/about.astro`. Approve it on Telegram.
-- [ ] **Step 4: Check the result.** Expected: a pull request whose diff is that one word, and a done step with all of `npm ci`, `astro check`, vitest and `astro build` green. Read the worker's peak memory and the test step's duration from the Logs workflow (`gh workflow run logs.yml -R thomas-whitley/mercury-config -f query='<KQL>'`) and write them down for the README in Task 8. Close the pull request and delete its branch.
-- [ ] **Step 5: If it ran out of memory or time,** stop and bring the numbers to Thomas before any further task. The spec's worker size is his decision.
+- [x] **Step 1 (Thomas): give the GitHub token the site repo.** The fine grained `MERCURY_GITHUB_TOKEN` needs Contents and Pull requests read and write on `thomas-whitley/ludo-electrical`.
+- [x] **Step 2: Add the site repo to the private config.** In `mercury-config`'s `mercury.yaml`, under `portfolio.repos`, add the repo with `test_command: npm ci && npm run check && npm test && npm run build` and `test_timeout_seconds: 900`. Bump `PUBLIC_SHA` to Task 1's commit once its Publish workflow is green. Pushing `mercury-config` deploys, so ask Thomas first.
+- [x] **Step 3: Queue one chore by hand** through MCP `create_run` on the site repo, with an instruction that changes one word of copy in `src/pages/about.astro`. Approve it on Telegram.
+- [x] **Step 4: Check the result.** Expected: a pull request whose diff is that one word, and a done step with all of `npm ci`, `astro check`, vitest and `astro build` green. Read the worker's peak memory and the test step's duration from the Logs workflow (`gh workflow run logs.yml -R thomas-whitley/mercury-config -f query='<KQL>'`) and write them down for the README in Task 8. Close the pull request and delete its branch.
+- [x] **Step 5: If it ran out of memory or time,** stop and bring the numbers to Thomas before any further task. The spec's worker size is his decision.
+
+**Result (2026-10-26, run 54ef4b79, ludo-electrical PR #4, closed).** The test command passed on the first attempt: `npm ci`, `astro check`, vitest and `astro build`. Worker peak memory 1,053 MiB of 2 GiB; the test step about 2.5 minutes of the 900 s timeout; the run 219 s end to end on gemini. The diff carried the one word plus a reformat of the `.map(...)` block in the At a glance panel, because a hand queued chore rewrites whole files; note chores use search and replace edits (Task 5), so this is not a bug in the note path.
 
 ### Task 3: CI on the site repo
 

@@ -417,3 +417,32 @@ def test_flight_watch_weekly_waits_while_an_earlier_weekly_is_unfinished(
 
     assert len(created) == 1
     assert len(_flight_watches(migrated_db, "weekly")) == 2
+
+
+def test_flight_watch_daily_is_made_once_a_day_even_after_it_closes(
+    start_server, migrated_db, monkeypatch
+):
+    """The same day dedupe on its own: a closed daily holds nothing back, so
+    only the check for one created since 07:30 stops a second one today."""
+    monkeypatch.setenv("MERCURY_BEARER_TOKEN", BEARER_TOKEN)
+    api = start_server()
+    assert len(_schedule_flight_watch(migrated_db, api, _at(8, 0))) == 2
+    migrated_db.execute(
+        "UPDATE runs SET status = 'succeeded', finished_at = now() WHERE task = 'daily'"
+    )
+
+    assert _schedule_flight_watch(migrated_db, api, _at(9, 0)) == []
+    assert _schedule_flight_watch(migrated_db, api, _at(23, 0)) == []
+    assert len(_flight_watches(migrated_db, "daily")) == 1
+
+
+def test_a_pending_flight_watch_is_not_closed_as_an_orphan(start_server, migrated_db, monkeypatch):
+    """The home PC can sleep for hours, and its checks wait for it."""
+    monkeypatch.setenv("MERCURY_BEARER_TOKEN", BEARER_TOKEN)
+    base_url = start_server()
+    pending = _orphan(migrated_db, minutes_old=600, kind="flight_watch")
+
+    run_due_checks(migrated_db, (), base_url, BEARER_TOKEN)
+
+    status = migrated_db.execute("SELECT status FROM runs WHERE id = %s", (pending,)).fetchone()
+    assert status == ("pending",)

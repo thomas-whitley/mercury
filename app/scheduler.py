@@ -453,9 +453,10 @@ SELECT EXISTS (
 """
 
 # A flight watch still pending or claimed holds back the next of its task, so
-# a PC asleep for a week wakes to one daily, not seven run back to back. A
-# claim whose lease lapsed is claimable again (app/check_claims.py), so a
-# worker that died does not hold the schedule for ever.
+# a PC asleep for a week wakes to at most two dailies (the stale one, then
+# today's), not seven run back to back. A claim a dead worker left holds the
+# schedule until its lease lapses and a worker claims it again
+# (app/check_claims.py).
 _FLIGHT_WATCH_UNFINISHED = """
 SELECT EXISTS (
     SELECT 1 FROM runs

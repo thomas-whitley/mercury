@@ -67,12 +67,16 @@ def configure_task_types(tasks: "dict[str, TaskSettings]") -> None:
 # a repo's workflow runs from GitHub, and dependency_audit reads a repo's lock
 # files. Neither worker claims them. lighthouse and broken_links need a
 # browser, so only the self hosted checks worker runs them, through the claim
-# endpoints.
+# endpoints, once a week for each page. flight_watch is claimed through the
+# same endpoints by the flight-finder worker on the home PC. Its task is
+# "daily" or "weekly", not a page, and its result's message goes to Telegram.
 SCHEDULER_CHECK_KINDS = ("uptime", "ci_watch", "dependency_audit")
-SELF_HOSTED_CHECK_KINDS = ("lighthouse", "broken_links")
+PAGE_CHECK_KINDS = ("lighthouse", "broken_links")
+SELF_HOSTED_CHECK_KINDS = PAGE_CHECK_KINDS + ("flight_watch",)
 CHECK_KINDS = SCHEDULER_CHECK_KINDS + SELF_HOSTED_CHECK_KINDS
 DEFAULT_CHECK_KIND = "uptime"
 # The kinds the cloud takes over when no self hosted worker claims them in the
 # window. PageSpeed Insights runs Lighthouse but cannot crawl, and the crawl
-# lives only in checks/, so broken_links waits for the self hosted worker.
+# lives only in checks/, so broken_links waits for the self hosted worker,
+# and so does flight_watch, since only the home PC searches fares.
 CLOUD_FALLBACK_CHECK_KINDS = ("lighthouse",)

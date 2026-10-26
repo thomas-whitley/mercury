@@ -14,7 +14,10 @@ writes and sends (app/digest.py).
 
 The weekly lighthouse and broken_links checks are only created here. The
 self hosted checks worker claims them, and a lighthouse check nobody claims
-within the window falls back to PageSpeed on the Python worker.
+within the window falls back to PageSpeed on the Python worker. The daily
+and weekly flight_watch checks are only created here too. The flight-finder
+worker on the home PC claims them, and the api sends its alert to Telegram
+(app/check_claims.py).
 """
 
 import json
@@ -42,7 +45,7 @@ from app.outage import retry_outages
 from app.review_notes import advance_waiting, open_notes, settle_notes, start_note_chores
 from app.runs import finish_run, record_step
 from app.schedule_state import SUSPEND_AFTER, is_suspended, record_failure, record_success
-from app.tasks import SCHEDULER_CHECK_KINDS, SELF_HOSTED_CHECK_KINDS, configure_task_types
+from app.tasks import PAGE_CHECK_KINDS, SCHEDULER_CHECK_KINDS, configure_task_types
 from app.telegram import TelegramClient, TelegramError, telegram_client
 from app.telemetry import configure_telemetry
 
@@ -206,7 +209,7 @@ def schedule_weekly_checks(
     created: list[str] = []
 
     for url in pages:
-        for kind in SELF_HOSTED_CHECK_KINDS:
+        for kind in PAGE_CHECK_KINDS:
             recent = conn.execute(_LAST_CHECK_IS_RECENT, (kind, url, WEEKLY_INTERVAL)).fetchone()[0]
             if recent:
                 continue
@@ -437,6 +440,67 @@ def schedule_digest(
     return run_id
 
 
+# The daily flight watch is due at this local time, the digest's, so the
+# hourly Job creates both on the same tick, 08:00 local.
+FLIGHT_WATCH_LOCAL_TIME = time(7, 30)
+
+_FLIGHT_WATCH_SINCE = """
+SELECT EXISTS (
+    SELECT 1 FROM runs
+    WHERE type = 'site_check' AND check_kind = 'flight_watch' AND task = 'daily'
+      AND created_at >= %s
+)
+"""
+
+# A flight watch still pending or claimed holds back the next of its task, so
+# a PC asleep for a week wakes to at most two dailies (the stale one, then
+# today's), not seven run back to back. A claim a dead worker left holds the
+# schedule until its lease lapses and a worker claims it again
+# (app/check_claims.py).
+_FLIGHT_WATCH_UNFINISHED = """
+SELECT EXISTS (
+    SELECT 1 FROM runs
+    WHERE type = 'site_check' AND check_kind = 'flight_watch' AND task = %s
+      AND finished_at IS NULL
+)
+"""
+
+
+def schedule_flight_watch(
+    conn: psycopg.Connection,
+    api_base_url: str,
+    bearer_token: str,
+    timezone: str,
+    *,
+    now: datetime | None = None,
+) -> list[str]:
+    """Create today's daily flight_watch check once it is due and none has
+    been created since today's due time, and a weekly one when none was
+    created in WEEKLY_INTERVAL. Neither is created while an earlier one of
+    its task is unfinished. Both are left pending for the flight-finder
+    worker. Returns the ids of the runs created."""
+    created: list[str] = []
+    zone = ZoneInfo(timezone)
+    local = (now or datetime.now(zone)).astimezone(zone)
+    due = datetime.combine(local.date(), FLIGHT_WATCH_LOCAL_TIME, tzinfo=zone)
+    daily = local >= due and not conn.execute(_FLIGHT_WATCH_SINCE, (due,)).fetchone()[0]
+    weekly = not conn.execute(
+        _LAST_CHECK_IS_RECENT, ("flight_watch", "weekly", WEEKLY_INTERVAL)
+    ).fetchone()[0]
+    for task, is_due in (("daily", daily), ("weekly", weekly)):
+        if not is_due or conn.execute(_FLIGHT_WATCH_UNFINISHED, (task,)).fetchone()[0]:
+            continue
+        try:
+            run_id = _create_run(api_base_url, bearer_token, task, kind="flight_watch")
+        except OSError:
+            # The next hourly tick tries again.
+            logger.exception("could not create the %s flight watch", task)
+            continue
+        logger.info("scheduled the %s flight watch %s", task, run_id, extra={"run_id": run_id})
+        created.append(run_id)
+    return created
+
+
 PREVIEW_TIMEOUT_SECONDS = 10.0
 
 
@@ -591,6 +655,9 @@ def main() -> None:  # pragma: no cover - the process entry point
             conn, settings.api_base_url, settings.mercury_bearer_token, config.timezone
         )
         created += [digest] if digest else []
+        created += schedule_flight_watch(
+            conn, settings.api_base_url, settings.mercury_bearer_token, config.timezone
+        )
         run_cleanup(conn, config.event_bodies_days, config.runs_days)
 
     logger.info("scheduler run complete, %s check(s) created", len(created))

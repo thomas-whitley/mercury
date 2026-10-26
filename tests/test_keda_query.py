@@ -118,7 +118,7 @@ def test_a_lapsed_laptop_lease_wakes_it_only_after_the_window(migrated_db, minut
     assert pending_work(migrated_db) == expected
 
 
-@pytest.mark.parametrize("kind", ["uptime", "broken_links"])
+@pytest.mark.parametrize("kind", ["uptime", "broken_links", "flight_watch"])
 def test_checks_the_cloud_never_runs_never_wake_it(migrated_db, kind):
     add_check(migrated_db, kind=kind, age="1 day")
 

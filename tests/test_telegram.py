@@ -24,6 +24,38 @@ def test_send_message_returns_the_new_message_id(fake):
     assert fake.tokens == ["123:abc", "123:abc"]
 
 
+def test_send_message_can_ask_for_html_no_link_preview_and_no_sound(fake):
+    client = TelegramClient("123:abc", base_url=fake.url)
+
+    client.send_message(
+        42,
+        "<b>hello</b>",
+        parse_mode="HTML",
+        disable_link_preview=True,
+        disable_notification=True,
+    )
+
+    assert fake.sent() == [
+        {
+            "chat_id": 42,
+            "text": "<b>hello</b>",
+            "parse_mode": "HTML",
+            "link_preview_options": {"is_disabled": True},
+            "disable_notification": True,
+        }
+    ]
+
+
+def test_a_refused_call_carries_telegrams_status(fake):
+    client = TelegramClient("123:abc", base_url=fake.url)
+    fake.fail_next = {"error_code": 400, "description": "Bad Request: can't parse entities"}
+
+    with pytest.raises(TelegramError) as raised:
+        client.send_message(42, "<b>hello", parse_mode="HTML")
+
+    assert raised.value.status == 400
+
+
 def test_edit_message_text_edits_in_place(fake):
     client = TelegramClient("123:abc", base_url=fake.url)
 

@@ -48,6 +48,7 @@ Every run records its `source`, the thing that asked for it, which is `telegram`
 | A run is one trace across the API and the worker, with the context carried on the run row | `tests/test_loop.py::test_the_loop_writes_step_spans_as_children_of_the_stored_trace_context` | green |
 | A scheduled task runs with no client connected | `tests/test_scheduler.py`, and the live Job's log line and run row below | green |
 | A weekly check runs on a self hosted worker and falls back to the cloud path when it is offline | `tests/test_checks_integration.py` in CI's compose job, and `tests/test_scheduler.py` for the weekly schedule | green |
+| A daily and a weekly flight watch are created for the home PC to claim, and its alert reaches Telegram silently, falling back to plain text when Telegram cannot parse the HTML | `tests/test_scheduler.py`, `tests/test_claim_endpoints.py` and `tests/test_telegram.py`, against the fake Telegram | green |
 | A budget trip ends a run with one event and one message | `tests/test_budget.py`, against the fake Telegram in `tests/telegram_fake.py` | green |
 | The webhook cold start is measured and stated | `tests/test_telegram_webhook.py::test_each_answer_logs_how_long_after_the_message_was_sent`, and the live log line below | green, 19.0 s from zero replicas |
 | A Telegram message opens a PR on a named repo | `tests/test_repo_chore_github.py`, against the real `thomas-whitley/mercury-fixture` | green when run with a GitHub token, output below. CI has no token, so it skips there |
@@ -425,6 +426,12 @@ tests/test_scheduler.py::test_schedule_weekly_checks_creates_the_next_once_the_w
 tests/test_scheduler.py::test_schedule_weekly_checks_is_due_per_kind PASSED
 tests/test_scheduler.py::test_schedule_weekly_checks_logs_and_carries_on_when_the_api_refuses PASSED
 ```
+
+## A flight watch on the home PC, sent to Telegram
+
+`flight_watch` is a third self hosted check kind, claimed by a separate flight-finder worker on my PC rather than by `checks/`. The hourly scheduler Job creates a `flight_watch` check with the task `daily` once a day, due at 07:30 local and so made on the 08:00 tick with the digest, and one with the task `weekly` whenever none was created in the last 7 days. Neither is created while an earlier one of the same task is still pending or claimed, so a PC asleep for a week wakes to at most two dailies, the stale one and then that day's, rather than seven. A claim left by a worker that died holds the schedule until its lease lapses and a worker claims it again. Both are left pending. The worker claims them with `POST /checks/claim` and `{"kinds": ["flight_watch"]}`, gets the task back in the `url` field, and posts `{"mode", "trips", "message", "plain", "blocked"}` as the result.
+
+When that result's `message` is not empty, the api sends it to the configured chat as Telegram HTML, with the link preview off and no notification sound. If Telegram answers 400 because it cannot parse the HTML, the same alert goes once more as `plain` with no parse mode. An empty `message` sends nothing. The run is closed before the send, so a refused send is logged and the worker still gets its 200. A `flight_watch` never falls back to the cloud, since only the home PC searches fares, so a check made while the PC sleeps waits for it.
 
 ## Telegram, and its cold start
 

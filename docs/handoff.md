@@ -809,11 +809,23 @@ IPv4 only.
 
 ## Cost position
 
-$0 a month idle is holding. The api and worker scale to zero. The Job runs hourly
-for a few seconds at 0.25 vCPU, roughly 5,400 vCPU seconds a month against a free
-grant of 180,000. Log Analytics is capped at 0.1 GB a day. Supabase, GHCR and
-Actions are free. The Azure trial spending limit is on and the `five-dollar-cap`
-budget alert exists. Do not upgrade the subscription to pay as you go.
+The subscription is pay as you go with no spending limit, and the `five-dollar-cap`
+budget only sends email. $0 idle did not hold in October 2026. After each deploy
+the new revision's first replica never scaled in and lived until the next deploy
+(24.5 h for revision 59, 25.4 h for revision 60, and revisions 62 to 64 until each
+was replaced), although it served only short requests 12 to 27 minutes apart.
+Revision 61 was the exception, with replicas that lived about 6 minutes an hour.
+The system log shows KEDA stop watching revision 60 on 21 October and start
+watching revision 61 on 24 October, while every other revision's watch started
+within a minute of its first replica. The free grant ran
+out on 19 October, and October cost A$4.73 by the 26th, A$4.40 of it the api.
+
+On 2026-10-26 the api and worker were stopped and the scheduler Job suspended.
+Mercury moves to the home desktop with `local/compose.home.yml`, against the same
+Supabase database (`local/README.md`). It has not been run there yet. Do not run the config repo's deploy, which
+would start the apps again. Before Azure comes back, find why a deploy's replica
+does not scale in. A stateless `GET /mcp` also holds a replica, because the SDK
+keeps that SSE stream open forever, and should answer 405.
 
 ## Verification commands
 

@@ -304,7 +304,11 @@ def test_flight_watch_daily_the_next_day_gets_its_own(start_server, migrated_db,
     monkeypatch.setenv("MERCURY_BEARER_TOKEN", BEARER_TOKEN)
     api = start_server()
     _schedule_flight_watch(migrated_db, api, _at(8, 0))
-    migrated_db.execute("UPDATE runs SET created_at = %s WHERE task = 'daily'", (_at(8, 0),))
+    migrated_db.execute(
+        "UPDATE runs SET created_at = %s, status = 'succeeded', finished_at = now() "
+        "WHERE task = 'daily'",
+        (_at(8, 0),),
+    )
 
     created = _schedule_flight_watch(migrated_db, api, _at(8, 0, day=2))
 
@@ -324,7 +328,10 @@ def test_flight_watch_weekly_created_when_none_in_7_days(start_server, migrated_
     migrated_db.execute("UPDATE runs SET created_at = now() - interval '6 days 23 hours'")
     assert _schedule_flight_watch(migrated_db, api, _at(6, 0)) == []
 
-    migrated_db.execute("UPDATE runs SET created_at = now() - interval '7 days 1 minute'")
+    migrated_db.execute(
+        "UPDATE runs SET created_at = now() - interval '7 days 1 minute', "
+        "status = 'succeeded', finished_at = now()"
+    )
     created = _schedule_flight_watch(migrated_db, api, _at(6, 0))
 
     assert len(created) == 1
@@ -356,3 +363,57 @@ def test_the_weekly_page_checks_never_create_a_flight_watch(start_server, migrat
         "SELECT count(*) FROM runs WHERE check_kind = 'flight_watch'"
     ).fetchone()[0]
     assert count == 0
+
+
+def test_flight_watch_daily_waits_while_an_earlier_daily_is_unfinished(
+    start_server, migrated_db, monkeypatch
+):
+    """A PC asleep for a week must wake to one daily, not seven run back to back."""
+    monkeypatch.setenv("MERCURY_BEARER_TOKEN", BEARER_TOKEN)
+    api = start_server()
+    _schedule_flight_watch(migrated_db, api, _at(8, 0))
+    migrated_db.execute("UPDATE runs SET created_at = %s WHERE task = 'daily'", (_at(8, 0),))
+
+    assert _schedule_flight_watch(migrated_db, api, _at(7, 30, day=2)) == []
+
+    migrated_db.execute(
+        "UPDATE runs SET status = 'succeeded', finished_at = now() WHERE task = 'daily'"
+    )
+    created = _schedule_flight_watch(migrated_db, api, _at(8, 0, day=2))
+
+    assert len(created) == 1
+    assert len(_flight_watches(migrated_db, "daily")) == 2
+
+
+def test_flight_watch_daily_waits_while_an_earlier_daily_is_claimed(
+    start_server, migrated_db, monkeypatch
+):
+    monkeypatch.setenv("MERCURY_BEARER_TOKEN", BEARER_TOKEN)
+    api = start_server()
+    _schedule_flight_watch(migrated_db, api, _at(8, 0))
+    migrated_db.execute(
+        "UPDATE runs SET created_at = %s, claimed_by = 'flights-1', status = 'running' "
+        "WHERE task = 'daily'",
+        (_at(8, 0),),
+    )
+
+    assert _schedule_flight_watch(migrated_db, api, _at(8, 0, day=2)) == []
+
+
+def test_flight_watch_weekly_waits_while_an_earlier_weekly_is_unfinished(
+    start_server, migrated_db, monkeypatch
+):
+    monkeypatch.setenv("MERCURY_BEARER_TOKEN", BEARER_TOKEN)
+    api = start_server()
+    _schedule_flight_watch(migrated_db, api, _at(6, 0))
+    migrated_db.execute("UPDATE runs SET created_at = now() - interval '8 days'")
+
+    assert _schedule_flight_watch(migrated_db, api, _at(6, 0)) == []
+
+    migrated_db.execute(
+        "UPDATE runs SET status = 'succeeded', finished_at = now() WHERE task = 'weekly'"
+    )
+    created = _schedule_flight_watch(migrated_db, api, _at(6, 0))
+
+    assert len(created) == 1
+    assert len(_flight_watches(migrated_db, "weekly")) == 2

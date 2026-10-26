@@ -452,6 +452,18 @@ SELECT EXISTS (
 )
 """
 
+# A flight watch still pending or claimed holds back the next of its task, so
+# a PC asleep for a week wakes to one daily, not seven run back to back. A
+# claim whose lease lapsed is claimable again (app/check_claims.py), so a
+# worker that died does not hold the schedule for ever.
+_FLIGHT_WATCH_UNFINISHED = """
+SELECT EXISTS (
+    SELECT 1 FROM runs
+    WHERE type = 'site_check' AND check_kind = 'flight_watch' AND task = %s
+      AND finished_at IS NULL
+)
+"""
+
 
 def schedule_flight_watch(
     conn: psycopg.Connection,
@@ -463,7 +475,8 @@ def schedule_flight_watch(
 ) -> list[str]:
     """Create today's daily flight_watch check once it is due and none has
     been created since today's due time, and a weekly one when none was
-    created in WEEKLY_INTERVAL. Both are left pending for the flight-finder
+    created in WEEKLY_INTERVAL. Neither is created while an earlier one of
+    its task is unfinished. Both are left pending for the flight-finder
     worker. Returns the ids of the runs created."""
     created: list[str] = []
     zone = ZoneInfo(timezone)
@@ -474,7 +487,7 @@ def schedule_flight_watch(
         _LAST_CHECK_IS_RECENT, ("flight_watch", "weekly", WEEKLY_INTERVAL)
     ).fetchone()[0]
     for task, is_due in (("daily", daily), ("weekly", weekly)):
-        if not is_due:
+        if not is_due or conn.execute(_FLIGHT_WATCH_UNFINISHED, (task,)).fetchone()[0]:
             continue
         try:
             run_id = _create_run(api_base_url, bearer_token, task, kind="flight_watch")

@@ -1,0 +1,11 @@
+repo: thomas-whitley/mercury-astro-fixture
+kind: astro
+instruction: |
+  In src/pages/index.astro, change the hero heading from "Plumbing for Wattle Flat&rsquo;s older
+  homes" to "Plumbing for Wattle Flat&rsquo;s older homes and new builds". Keep the apostrophe
+  written as the &rsquo; entity, and change nothing else.
+grade:
+  - page: index.html
+    contains: ["<h1>Plumbing for Wattle Flat&rsquo;s older homes and new builds</h1>"]
+  - page: services/index.html
+    contains: ["<h2>Blocked drains</h2>"]

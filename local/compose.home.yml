@@ -1,0 +1,97 @@
+# Runs Mercury on the home PC instead of Azure, layered over
+# docker-compose.yml so CI's compose job is unchanged:
+#
+#   docker compose -f docker-compose.yml -f local/compose.home.yml up -d --build api proxy worker scheduler
+#
+# Every service restarts with Docker, so with Docker Desktop set to start at
+# sign in, Mercury is up whenever the PC is on and off when it is not. The
+# database is the same Supabase project the Azure deploy used, so no data
+# moves. Nothing on the internet reaches this stack: Telegram messages go out,
+# but the webhook, claude.ai and the runs page are only reachable from the PC.
+#
+# Secrets come from the repo's .env, which is gitignored. mercury.yaml is the
+# file the private config repo deploys, copied to local/mercury.home.yaml
+# (also gitignored) or named with MERCURY_HOME_CONFIG.
+services:
+  api:
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env to the Supabase session pooler string}
+      MAX_RUNS_PER_DAY: ${MAX_RUNS_PER_DAY:-20}
+      MERCURY_CONFIG_PATH: /config/mercury.yaml
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+    volumes:
+      - ${MERCURY_HOME_CONFIG:-./local/mercury.home.yaml}:/config/mercury.yaml:ro
+    # One replica is enough for one person, and the local db is not used.
+    deploy:
+      replicas: 1
+    depends_on: !reset {}
+
+  # compose.local.yml notes a second Docker engine holding 8000 on the
+  # desktop, so the port can move with MERCURY_HOME_PORT.
+  proxy:
+    restart: unless-stopped
+    ports: !override
+      - "${MERCURY_HOME_PORT:-8000}:8000"
+
+  worker:
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env to the Supabase session pooler string}
+      MODEL: ${MODEL:-stub}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+      MERCURY_GITHUB_TOKEN: ${MERCURY_GITHUB_TOKEN:-}
+      MERCURY_CONFIG_PATH: /config/mercury.yaml
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      API_BASE_URL: http://proxy:8000
+      # The compose default of 0.5 s is for CI. Each poll is a query to
+      # Supabase over the internet, so the home worker asks every 5 s.
+      POLL_SECONDS: ${POLL_SECONDS:-5}
+    volumes:
+      - ${MERCURY_HOME_CONFIG:-./local/mercury.home.yaml}:/config/mercury.yaml:ro
+    depends_on: !reset {}
+
+  # The Azure Job ran once an hour at minute 0. Here one container runs the
+  # same pass, sleeps an hour and repeats, so a PC that was off catches up on
+  # its first pass after start. Each pass decides what is due from the
+  # database, so the drift from minute 0 does not matter.
+  # depends_on only holds for `up`: after a reboot or `restart` every container
+  # starts at once, so each pass first waits for the api's /health.
+  scheduler:
+    profiles: !reset []
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        while true;
+        do until python -c "import urllib.request; urllib.request.urlopen('http://proxy:8000/health', timeout=5)" 2>/dev/null;
+        do sleep 5; done;
+        /usr/local/bin/entrypoint.sh; sleep 3600;
+        done
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env to the Supabase session pooler string}
+      MAX_RUNS_PER_DAY: ${MAX_RUNS_PER_DAY:-20}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      MERCURY_GITHUB_TOKEN: ${MERCURY_GITHUB_TOKEN:-}
+      CLOUDFLARE_D1_TOKEN: ${CLOUDFLARE_D1_TOKEN:-}
+    volumes: !override
+      - ${MERCURY_HOME_CONFIG:-./local/mercury.home.yaml}:/config/mercury.yaml:ro
+    depends_on: !override
+      proxy:
+        condition: service_healthy
+
+  # Telegram cannot push to a webhook on this PC, so this pulls updates with
+  # getUpdates and posts each to the api's /telegram with the webhook's
+  # secret (app/telegram_poll.py). Starting it deletes the Azure webhook.
+  telegram:
+    build: .
+    restart: unless-stopped
+    environment:
+      ROLE: telegram
+      API_BASE_URL: http://proxy:8000
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN in .env}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:?set TELEGRAM_WEBHOOK_SECRET in .env}
+    depends_on:
+      proxy:
+        condition: service_healthy

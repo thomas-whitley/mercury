@@ -35,6 +35,7 @@ import httpx2
 import yaml
 
 from app.config import PROVIDERS
+from evals.astro_grade import grade_astro
 
 OPEN = {"pending", "running", "awaiting_approval"}
 # Final statuses a hint might fix: a wrong pull request, an escalation, or a
@@ -85,7 +86,20 @@ class EvalTask:
     id: str
     repo: str
     instruction: str
-    grade: str
+    # A unittest module for kind unittest, or a list of page checks for kind
+    # astro (evals/astro_grade.py).
+    grade: str | list[dict]
+    kind: str = "unittest"
+
+
+def clone_url(task: EvalTask) -> str:
+    return f"https://github.com/{task.repo}.git"
+
+
+def labelled(column: str, label: str | None) -> str:
+    """A Mercury column run with OLLAMA_MODEL or LOCAL_MODEL set names its
+    tag, so two tags on one provider stay apart in the summary."""
+    return f"{column}@{label}" if label else column
 
 
 @dataclass
@@ -137,6 +151,7 @@ def load_tasks(directory: Path) -> list[EvalTask]:
                 repo=data["repo"],
                 instruction=data["instruction"].strip(),
                 grade=data["grade"],
+                kind=data.get("kind", "unittest"),
             )
         )
     return tasks
@@ -262,6 +277,36 @@ def grade_branch(
         return grade_dir(work, grade_source, base_ids, timeout_seconds)
 
 
+def grade_astro_branch(
+    clone_url: str,
+    branch: str,
+    checks: list[dict],
+    token: str | None = None,
+    timeout_seconds: float = 900,
+) -> tuple[bool, str]:
+    """Clone the branch, take its diff against the default branch, and grade
+    it as an Astro chore (evals/astro_grade.py)."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
+        work = Path(home) / "work"
+        env = _env(home, token)
+        try:
+            error = clone(clone_url, branch, work, token, timeout_seconds)
+            if error:
+                return False, error
+            fetched = subprocess.run(
+                ["git", "fetch", "-q", "--depth", "1", "origin", "HEAD"],
+                cwd=work, env=env, timeout=timeout_seconds, **_TEXT,
+            )  # fmt: skip
+            if fetched.returncode != 0:
+                return False, "fetching the default branch failed: " + fetched.stderr[-1000:]
+            diff = subprocess.run(
+                ["git", "diff", "FETCH_HEAD", "HEAD"], cwd=work, env=env, **_TEXT
+            ).stdout
+        except subprocess.TimeoutExpired:
+            return False, f"clone timed out after {timeout_seconds:.0f} s"
+        return grade_astro(work, checks, diff, timeout_seconds)
+
+
 def close_pull_and_branch(github, repo: str, branch: str) -> None:
     owner = repo.split("/")[0]
     pulls = github.get(
@@ -383,8 +428,9 @@ def run_delegate(
             error = clone(clone_url, "main", work, None, 120)
             if error:
                 return row("refused", False, None, error)
+            astro = task.kind == "astro"
             try:
-                base_ids = test_ids(work)
+                base_ids = None if astro else test_ids(work)
             except DiscoveryFailed as crash:
                 return row("error", False, None, f"test discovery failed on main: {crash}")
             start = clock()
@@ -404,6 +450,12 @@ def run_delegate(
             if not [line for line in changed.stdout.splitlines() if "__pycache__" not in line]:
                 return row("failed", False, seconds, "no change")
             diff = _staged_diff(work, home)
+            if astro:
+                graded, detail = grade_astro(work, task.grade, diff)
+                # A red install, check, test or build is the repo's own tests
+                # failing, so Mercury would not have opened a pull request.
+                red = detail.startswith(("npm ", "weakened tests"))
+                return row("failed" if red else "succeeded", graded, seconds, detail, diff)
             # Mercury opens a pull request only when the repo's own tests pass.
             tests = subprocess.run(REPO_TESTS, cwd=work, env=_env(home, None), timeout=600, **_TEXT)
             if tests.returncode not in (0, NO_TESTS_RAN):
@@ -527,6 +579,8 @@ def follow(
             graded, detail = (
                 grade(branch)
                 if grade
+                else grade_astro_branch(f"{clone_base}/{task.repo}.git", branch, task.grade, token)
+                if task.kind == "astro"
                 else grade_branch(f"{clone_base}/{task.repo}.git", branch, task.grade, token)
             )
         else:
@@ -628,7 +682,8 @@ def summarise(rows: list[EvalRow]) -> str:
             f"| {f'{statistics.median(tokens):.0f}' if tokens else 'n/a'} "
             f"| {f'{statistics.median(seconds):.0f}' if seconds else 'n/a'} "
             f"| {sum(r.usd for r in mine):.4f} "
-            f"| {sum(r.answered_by not in (None, r.provider) for r in mine)} "
+            # A label (labelled) names the tag, not another provider.
+            f"| {sum(r.answered_by not in (None, r.provider.split('@')[0]) for r in mine)} "
             # Chores Mercury's test guard escalated (app/test_guard.py).
             f"| {sum(r.detail == 'weakened tests' for r in mine)} "
             f"| {sum(r.unusable or 0 for r in mine)} |"
@@ -671,13 +726,19 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives the
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--only", default="", help="comma separated task ids")
     parser.add_argument("--timeout", type=float, default=900.0)
+    parser.add_argument(
+        "--label", default=None, help="the model tag behind the one column, kept in its rows"
+    )
+    parser.add_argument("--tasks-dir", type=Path, default=HERE / "chores")
     args = parser.parse_args(argv)
 
     columns = [c for c in args.columns.split(",") if c]
     unknown = [c for c in columns if c not in PROVIDERS and not c.startswith("delegate:")]
     if unknown:
         parser.error(f"unknown column {unknown[0]}; providers: {', '.join(PROVIDERS)}")
-    tasks = load_tasks(HERE / "chores")
+    if args.label and len(columns) != 1:
+        parser.error("--label names one model, so it takes exactly one column")
+    tasks = load_tasks(args.tasks_dir)
     if args.only:
         wanted = set(args.only.split(","))
         tasks = [t for t in tasks if t.id in wanted]
@@ -707,6 +768,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives the
                         token,
                     )
                     row.repeat = repeat
+                    row.provider = labelled(row.provider, args.label)
                     rows.append(row)
                     print(
                         f"{task.id} {column}->{row.answered_by} {row.status} "
@@ -725,7 +787,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - drives the
 
 def _run_column(column, task, api, github, token, timeout) -> EvalRow:  # pragma: no cover
     if column.startswith("delegate:"):
-        return run_delegate(task, column.split(":", 1)[1], FIXTURE_URL, timeout_seconds=timeout)
+        return run_delegate(task, column.split(":", 1)[1], clone_url(task), timeout_seconds=timeout)
     return run_one(
         api,
         github,

@@ -73,6 +73,12 @@ PROVIDERS: dict[str, ProviderConfig] = {
         model="gpt-oss:120b",
         # The free tier, one request at a time, which the single worker keeps to.
         usd_per_million_tokens=0.0,
+        # OLLAMA_MODEL picks another free tag, which the model search evals
+        # use to run each candidate through this rung.
+        model_env="OLLAMA_MODEL",
+        # No timeout_seconds: live chat tries this rung first, so it keeps
+        # MODEL_TIMEOUT_SECONDS. The eval stack sets 180 in compose.local.yml.
+        timeout_env="OLLAMA_TIMEOUT_SECONDS",
         max_tokens=8192,
     ),
     "local": ProviderConfig(

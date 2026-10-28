@@ -1,0 +1,13 @@
+repo: thomas-whitley/mercury-astro-fixture
+kind: astro
+instruction: |
+  In src/data/services.ts, add a fourth service after "Leaking taps", with the title "Gas
+  fitting" and the blurb "Cooktops, heaters and gas leaks checked by a licensed gasfitter." Keep
+  the three existing services as they are.
+grade:
+  - page: services/index.html
+    contains:
+      - "<h2>Gas fitting</h2>"
+      - "<p>Cooktops, heaters and gas leaks checked by a licensed gasfitter.</p>"
+      - "<h2>Blocked drains</h2>"
+      - "<h2>Leaking taps</h2>"

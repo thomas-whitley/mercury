@@ -74,7 +74,20 @@ class TelegramClient:
             if "message is not modified" not in str(error):
                 raise
 
-    def _call(self, method: str, payload: dict) -> dict:
+    def get_updates(self, offset: int | None, timeout: int) -> list[dict]:
+        """Updates from offset on, holding the request open up to timeout
+        seconds for one to arrive. Telegram refuses this while a webhook is set."""
+        payload: dict = {"timeout": timeout, "allowed_updates": ["message", "callback_query"]}
+        if offset is not None:
+            payload["offset"] = offset
+        return self._call("getUpdates", payload, timeout=timeout + TIMEOUT_SECONDS)
+
+    def delete_webhook(self) -> None:
+        """Stop Telegram pushing to a webhook, so getUpdates may pull. Pending
+        updates are kept for the first poll."""
+        self._call("deleteWebhook", {"drop_pending_updates": False})
+
+    def _call(self, method: str, payload: dict, timeout: float = TIMEOUT_SECONDS) -> dict:
         request = urllib.request.Request(
             f"{self._base_url}/bot{self._token}/{method}",
             data=json.dumps(payload).encode(),
@@ -82,7 +95,7 @@ class TelegramClient:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 body = json.loads(response.read())
         except urllib.error.HTTPError as error:
             body = _json_or_empty(error.read())

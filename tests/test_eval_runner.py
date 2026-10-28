@@ -19,9 +19,12 @@ from evals.runner import (
     _call_delegate_script,
     _delegate_env,
     _run_tree,
+    clone_url,
     close_pull_and_branch,
     contained,
+    grade_astro_branch,
     grade_branch,
+    labelled,
     load_tasks,
     run_delegate,
     run_one,
@@ -920,3 +923,114 @@ def test_an_eval_chore_is_still_posted_as_eval_with_no_base(monkeypatch):
 
     assert api.posted[0]["source"] == "eval"
     assert "base" not in api.posted[0]["inputs"]
+
+
+def test_load_tasks_defaults_kind_to_unittest(tmp_path):
+    (tmp_path / "a.yaml").write_text("repo: o/r\ninstruction: x\ngrade: 'import unittest'\n")
+
+    assert load_tasks(tmp_path)[0].kind == "unittest"
+
+
+def test_load_tasks_reads_astro_checks(tmp_path):
+    (tmp_path / "b.yaml").write_text(
+        "repo: o/r\nkind: astro\ninstruction: x\ngrade:\n  - page: index.html\n    contains: [Hi]\n"
+    )
+
+    task = load_tasks(tmp_path)[0]
+
+    assert task.kind == "astro"
+    assert task.grade == [{"page": "index.html", "contains": ["Hi"]}]
+
+
+def test_clone_url_uses_the_task_repo():
+    assert clone_url(EvalTask("t", "o/r", "x", "")) == "https://github.com/o/r.git"
+
+
+def test_label_suffixes_column():
+    assert labelled("ollama", "beam") == "ollama@beam"
+    assert labelled("ollama", None) == "ollama"
+
+
+def test_a_labelled_row_answered_by_its_own_provider_did_not_fall_back():
+    own = EvalRow("t1", "ollama@beam", "ollama", "id", "succeeded", True, 1000, 30.0, 0.0)
+    other = EvalRow("t2", "ollama@beam", "gemini", "id", "succeeded", True, 1000, 30.0, 0.0)
+
+    table = summarise([own, other])
+
+    row = "| ollama@beam | 2 of 2 | n/a | 100% | 2 of 2 | 2 of 2 | 1000 | 30 | 0.0000 | 1 |"
+    assert row in table
+
+
+ASTRO_CHECKS = [{"page": "index.html", "contains": ["Hi"]}]
+ASTRO_TASK = EvalTask("astro_copy", "o/site", "Change the hero.", ASTRO_CHECKS, kind="astro")
+
+
+def _grading_astro(seen: dict, answer=(True, "built")):
+    def grade(work, checks, diff, timeout_seconds=900, run=None):
+        seen.update(work=work, checks=checks, diff=diff)
+        return answer
+
+    return grade
+
+
+def test_an_astro_delegate_change_is_graded_on_its_build(tmp_path, monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(runner, "grade_astro", _grading_astro(seen))
+
+    row = run_delegate(
+        ASTRO_TASK, "local", remote(tmp_path), delegate=_delegate_writing({"site.txt": "new"})
+    )
+
+    assert (row.status, row.graded, row.detail) == ("succeeded", True, "built")
+    assert seen["checks"] == ASTRO_CHECKS
+    assert "site.txt" in seen["diff"]
+
+
+def test_an_astro_delegate_with_no_change_fails_without_grading(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "grade_astro", pytest.fail)
+
+    row = run_delegate(ASTRO_TASK, "local", remote(tmp_path), delegate=_delegate_writing({}))
+
+    assert (row.status, row.graded, row.detail) == ("failed", False, "no change")
+
+
+def test_an_astro_branch_is_graded_on_its_diff_against_main(tmp_path, monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(runner, "grade_astro", _grading_astro(seen, (False, "absent")))
+    url = remote(tmp_path, on_branch={"site.txt": "new"})
+
+    graded = grade_astro_branch(url, "agent/run-1", ASTRO_CHECKS)
+
+    assert graded == (False, "absent")
+    assert "+new" in seen["diff"]
+    assert "calc.py" not in seen["diff"]
+
+
+def test_a_mercury_astro_chore_is_graded_by_its_branch(monkeypatch):
+    monkeypatch.setattr(runner, "grade_branch", pytest.fail)
+    calls = []
+    monkeypatch.setattr(
+        runner, "grade_astro_branch", lambda *a, **k: calls.append(a) or (True, "built")
+    )
+    api = _Api(PENDING, [DONE])
+
+    row = run_one(
+        api, _GitHub(), ASTRO_TASK, "gemini", "https://example.test", None,
+        timeout_seconds=900, poll_seconds=0, sleep=lambda s: None,
+    )  # fmt: skip
+
+    assert row.graded
+    assert calls == [("https://example.test/o/site.git", "agent/run-1", ASTRO_CHECKS, None)]
+
+
+def test_an_astro_delegate_change_that_breaks_the_build_failed(tmp_path, monkeypatch):
+    # The same rule as a Python repo: Mercury would not open a pull request.
+    broken = (False, "npm run build failed: error")
+    monkeypatch.setattr(runner, "grade_astro", _grading_astro({}, broken))
+
+    row = run_delegate(
+        ASTRO_TASK, "local", remote(tmp_path), delegate=_delegate_writing({"site.txt": "new"})
+    )
+
+    assert (row.status, row.graded) == ("failed", False)
+    assert "site.txt" in row.diff

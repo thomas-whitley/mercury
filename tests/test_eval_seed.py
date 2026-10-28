@@ -10,7 +10,9 @@ import pytest
 from evals.runner import REPO_TESTS, grade_dir, load_tasks
 
 SEED = Path("evals/fixture-seed")
-TASKS = load_tasks(Path("evals/chores"))
+ALL_TASKS = load_tasks(Path("evals/chores"))
+# The Astro chores live on their own repo and grade by build, not by this seed.
+TASKS = [t for t in ALL_TASKS if t.kind == "unittest"]
 
 
 @pytest.fixture
@@ -28,6 +30,12 @@ def test_the_seed_s_own_tests_pass(seeded):
 def test_there_are_eleven_tasks_all_on_the_fixture():
     assert len(TASKS) == 11
     assert {t.repo for t in TASKS} == {"thomas-whitley/mercury-fixture"}
+
+
+def test_the_other_tasks_are_three_astro_chores_on_their_own_repo():
+    astro = [t for t in ALL_TASKS if t.kind != "unittest"]
+    assert len(astro) == 3
+    assert {(t.kind, t.repo) for t in astro} == {("astro", "thomas-whitley/mercury-astro-fixture")}
 
 
 @pytest.mark.parametrize("task", TASKS, ids=[t.id for t in TASKS])

@@ -17,6 +17,8 @@ class FakeTelegram:
         self._lock = threading.Lock()
         # Set to make the next call fail the way Telegram does.
         self.fail_next: dict | None = None
+        # What getUpdates returns, filtered by its offset as Telegram does.
+        self.updates: list[dict] = []
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -52,6 +54,9 @@ class FakeTelegram:
                 message_id = self._next_message_id
                 self._next_message_id += 1
                 return {"ok": True, "result": {"message_id": message_id, "text": payload["text"]}}
+            if method == "getUpdates":
+                offset = payload.get("offset", 0)
+                return {"ok": True, "result": [u for u in self.updates if u["update_id"] >= offset]}
             if method == "editMessageText":
                 return {"ok": True, "result": {"message_id": payload["message_id"]}}
             return {"ok": True, "result": True}

@@ -1,0 +1,11 @@
+repo: thomas-whitley/mercury-astro-fixture
+kind: astro
+instruction: |
+  The phone number in the header is too small on phones. In src/styles/global.css, inside the
+  existing @media (max-width: 640px) block, add a rule that sets .header-phone to font-size:
+  1.25rem. Leave the .header-phone rule outside the media block as it is.
+grade:
+  - page: index.html
+    contains:
+      - ".header-phone{font-size:1.25rem}"
+      - ".header-phone{margin-left:auto;font-weight:700}"

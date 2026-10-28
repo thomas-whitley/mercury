@@ -30,6 +30,11 @@ services:
       LOCAL_MODEL: ${LOCAL_MODEL:-mercury-local:base}
       LOCAL_MODEL_TIMEOUT_SECONDS: ${LOCAL_MODEL_TIMEOUT_SECONDS:-}
       MAX_LOCAL_RUNS_PER_DAY: ${MAX_LOCAL_RUNS_PER_DAY:-200}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gpt-oss:120b}
+      # Quality over speed: nemotron-3-ultra took 23 seconds for one small
+      # edit on 2026-10-26, and a chore prompt is many times bigger.
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-180}
     volumes:
       - ./local/mercury.compose.yaml:/config/mercury.yaml:ro
     extra_hosts:

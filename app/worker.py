@@ -551,6 +551,11 @@ def main() -> None:  # pragma: no cover - the process entry point
                     review_notes=mercury.review_notes,
                 )
             except Exception:
+                # A closed connection never reopens, so carrying on would fail
+                # every poll forever. Exit and let the container restart reconnect.
+                if conn.closed:
+                    logger.exception("worker lost its database connection, exiting")
+                    raise
                 # run_agent_loop already closes a run it could not finish. This
                 # catches everything outside it, so the worker outlives a blip.
                 logger.exception("worker loop error, carrying on")

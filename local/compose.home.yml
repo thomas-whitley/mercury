@@ -55,10 +55,20 @@ services:
   # same pass, sleeps an hour and repeats, so a PC that was off catches up on
   # its first pass after start. Each pass decides what is due from the
   # database, so the drift from minute 0 does not matter.
+  # depends_on only holds for `up`: after a reboot or `restart` every container
+  # starts at once, so each pass first waits for the api's /health.
   scheduler:
     profiles: !reset []
     restart: unless-stopped
-    entrypoint: ["/bin/sh", "-c", "while true; do /usr/local/bin/entrypoint.sh; sleep 3600; done"]
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        while true;
+        do until python -c "import urllib.request; urllib.request.urlopen('http://proxy:8000/health', timeout=5)" 2>/dev/null;
+        do sleep 5; done;
+        /usr/local/bin/entrypoint.sh; sleep 3600;
+        done
     environment:
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env to the Supabase session pooler string}
       MAX_RUNS_PER_DAY: ${MAX_RUNS_PER_DAY:-20}

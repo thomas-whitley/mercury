@@ -82,7 +82,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "https://agent-runs-api.grayriver-8b441372.australiaeast.azurecontainerapps.io/runs",
+        "url": "http://host.docker.internal:8000/runs",
         "options": {},
         "authentication": "genericCredentialType",
         "genericAuthType": "httpBearerAuth",
@@ -134,7 +134,7 @@
       ],
       "parameters": {
         "method": "GET",
-        "url": "=https://agent-runs-api.grayriver-8b441372.australiaeast.azurecontainerapps.io/runs/{{ $json.run_id }}",
+        "url": "=http://host.docker.internal:8000/runs/{{ $json.run_id }}",
         "options": {
           "response": {
             "response": {
@@ -168,7 +168,7 @@
       ],
       "parameters": {
         "method": "GET",
-        "url": "=https://agent-runs-api.grayriver-8b441372.australiaeast.azurecontainerapps.io/runs/{{ $json.run_id }}/events",
+        "url": "=http://host.docker.internal:8000/runs/{{ $json.run_id }}/events",
         "options": {
           "response": {
             "response": {

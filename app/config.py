@@ -76,9 +76,8 @@ PROVIDERS: dict[str, ProviderConfig] = {
         # OLLAMA_MODEL picks another free tag, which the model search evals
         # use to run each candidate through this rung.
         model_env="OLLAMA_MODEL",
-        # Quality over speed: nemotron-3-ultra took 23 seconds for one small
-        # edit on 2026-10-26, and a chore prompt is many times bigger.
-        timeout_seconds=180.0,
+        # No timeout_seconds: live chat tries this rung first, so it keeps
+        # MODEL_TIMEOUT_SECONDS. The eval stack sets 180 in compose.local.yml.
         timeout_env="OLLAMA_TIMEOUT_SECONDS",
         max_tokens=8192,
     ),

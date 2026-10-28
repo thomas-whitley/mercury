@@ -1,5 +1,7 @@
 """Claiming pending runs, and the guard that stops a public URL burning the key."""
 
+from pathlib import Path
+
 import pytest
 
 from app.config import PROVIDERS, Settings
@@ -294,15 +296,23 @@ def test_free_cloud_providers_have_room_for_a_whole_file_reply(provider):
     assert PROVIDERS[provider].max_tokens == 8192
 
 
-def test_the_ollama_rung_waits_180_seconds(monkeypatch):
-    # A quality first model is slow: nemotron-3-ultra took 23 seconds for one
-    # small edit on 2026-10-26, and a chore prompt is many times bigger.
+def test_the_ollama_rung_keeps_the_model_timeout_when_its_env_is_unset(monkeypatch):
+    # Live chat tries ollama first, and the SDK retries a timeout twice, so a
+    # longer default here would make a stalled reply wait minutes.
     monkeypatch.setenv("OLLAMA_API_KEY", "k" * 32)
     monkeypatch.delenv("OLLAMA_TIMEOUT_SECONDS", raising=False)
 
     model = build_model(settings_with(model="gemini-3.5-flash-lite"), "ollama")
 
-    assert model._client.timeout == 180.0
+    assert model._client.timeout == 25.0
+
+
+def test_the_eval_stack_gives_the_ollama_rung_180_seconds():
+    # A quality first model is slow: nemotron-3-ultra took 23 seconds for one
+    # small edit on 2026-10-26, and a chore prompt is many times bigger.
+    compose = (Path(__file__).parent.parent / "local" / "compose.local.yml").read_text()
+
+    assert "OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-180}" in compose
 
 
 def test_build_model_reads_the_ollama_tag_and_timeout_from_the_environment(monkeypatch):

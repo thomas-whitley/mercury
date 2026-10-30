@@ -183,6 +183,7 @@ def test_the_facts_cover_the_last_day_and_the_latest_weekly_checks(migrated_db):
             "pages_checked": 12,
             "broken_count": 1,
             "broken": [{"url": f"{PAGE}gone", "status": 404, "found_on": PAGE}],
+            "age_days": 0,
         }
     ]
     assert facts["ci"] == [
@@ -211,6 +212,7 @@ def test_the_facts_cover_the_last_day_and_the_latest_weekly_checks(migrated_db):
                     "summary": "RecursionError DoS",
                 }
             ],
+            "age_days": 2,  # audited 50 hours ago
         }
     ]
     assert facts["suspended"] == ["site_uptime:https://down.example"]
@@ -476,3 +478,77 @@ def test_the_digest_says_when_notes_wait(migrated_db):
 
     lines = render_facts(gather_facts(migrated_db)).splitlines()
     assert lines.count("Review notes: 2 waiting on you.") == 1
+
+
+def test_weekly_result_carries_age_days(migrated_db):
+    """A weekly check run 3 days ago has age_days 3."""
+    three_days_ago = 72
+    _check(
+        migrated_db,
+        "lighthouse",
+        PAGE,
+        {"scores": {"performance": 0.9}, "lcp_ms": 1800, "failed_audits": []},
+        hours_ago=three_days_ago,
+    )
+
+    facts = gather_facts(migrated_db)
+
+    [entry] = facts["lighthouse"]
+    assert entry["age_days"] == 3
+
+
+def test_fallback_renderer_shows_age_for_weekly_checks(migrated_db):
+    """The plain text fallback includes '(3 days ago)' for a 3-day-old weekly result."""
+    _check(
+        migrated_db,
+        "lighthouse",
+        PAGE,
+        {"scores": {"performance": 0.9}, "lcp_ms": 1800, "failed_audits": []},
+        hours_ago=72,
+    )
+    _check(
+        migrated_db,
+        "broken_links",
+        PAGE,
+        {"pages_checked": 5, "broken_count": 0, "broken": []},
+        hours_ago=72,
+    )
+    _check(
+        migrated_db,
+        "dependency_audit",
+        REPO,
+        {
+            "vulnerable_count": 1,
+            "vulnerable": [{"package": "lodash", "version": "4.17.20", "ids": ["GHSA-1"]}],
+            "advisories": {"GHSA-1": {"severity": "high", "summary": "Prototype pollution"}},
+        },
+        hours_ago=72,
+    )
+
+    lines = render_facts(gather_facts(migrated_db)).splitlines()
+
+    for prefix in ("Lighthouse ", "Broken links ", "Dependencies "):
+        [line] = [line for line in lines if line.startswith(prefix)]
+        assert "(3 days ago)" in line
+
+
+def test_fallback_renderer_shows_today_for_same_day_weekly_checks(migrated_db):
+    """A weekly check run today shows '(today)' in the fallback text."""
+    _check(
+        migrated_db,
+        "lighthouse",
+        PAGE,
+        {"scores": {"performance": 0.9}, "lcp_ms": 1800, "failed_audits": []},
+        hours_ago=1,
+    )
+
+    facts = gather_facts(migrated_db)
+    text = render_facts(facts)
+
+    assert "(today)" in text
+
+
+def test_a_one_day_old_result_says_day_not_days(migrated_db):
+    _check(migrated_db, "lighthouse", PAGE, {"scores": {"performance": 0.9}}, hours_ago=30)
+
+    assert "(1 day ago)" in render_facts(gather_facts(migrated_db))

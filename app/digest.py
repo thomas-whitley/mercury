@@ -11,6 +11,7 @@ the digest, beside the one before it for a week over week comparison.
 
 import json
 import logging
+from datetime import UTC, datetime
 
 import psycopg
 
@@ -39,7 +40,8 @@ number, a name or a cause. Lead with anything that needs attention: a site that 
 check, a Lighthouse score that dropped since the previous run, broken links, failing CI, \
 vulnerable dependencies, a suspended schedule, a check that errored, repo chores waiting \
 for a hint or for a Claude session, review notes waiting on the owner. \
-Then say in one line what was fine. Plain text, no markdown, at most 1,200 characters."""
+Then say in one line what was fine. Plain text, no markdown, at most 1,200 characters. \
+When a weekly result has age_days of 1 or more, say how many days old it is."""
 
 # A run counts as a check only when step 1 holds a check's result. One the
 # scheduler closed as an orphan never checked the site, so it is counted as
@@ -61,8 +63,8 @@ GROUP BY r.task ORDER BY r.task
 # The newest finished results of one kind per task, newest first, two each,
 # so the latest can sit beside the one before it.
 _LATEST = """
-SELECT task, output, rank FROM (
-    SELECT r.task, s.output,
+SELECT task, output, created_at, rank FROM (
+    SELECT r.task, s.output, r.created_at,
            row_number() OVER (PARTITION BY r.task ORDER BY r.created_at DESC) AS rank
     FROM runs r JOIN steps s ON s.run_id = r.id AND s.seq = 1
     WHERE r.type = 'site_check' AND r.check_kind = %s
@@ -87,14 +89,22 @@ GROUP BY type, status ORDER BY type, status
 
 
 def _latest(conn: psycopg.Connection, kind: str, interval: str) -> dict[str, list[dict]]:
+    """Each result carries its run's start time under "_checked_at", a key no check writes."""
     found: dict[str, list[dict]] = {}
-    for task, output, _ in conn.execute(_LATEST, (kind, interval)):
-        found.setdefault(task, []).append(output or {})
+    for task, output, created_at, _ in conn.execute(_LATEST, (kind, interval)):
+        found.setdefault(task, []).append({**(output or {}), "_checked_at": created_at})
     return found
+
+
+def _when(result: dict, now: datetime) -> dict:
+    """How old a weekly result is, so an old one is not read as today's. Whole days, not a
+    date: a UTC date is a day behind Melbourne when the digest goes out."""
+    return {"age_days": (now - result["_checked_at"]).days}
 
 
 def gather_facts(conn: psycopg.Connection) -> dict:
     """What the digest says, as JSON safe data with every list bounded."""
+    now = datetime.now(UTC)
     uptime = [
         {
             "site": site,
@@ -109,8 +119,15 @@ def gather_facts(conn: psycopg.Connection) -> dict:
 
     lighthouse = []
     for page, (latest, *previous) in _latest(conn, "lighthouse", WEEK).items():
+        when = _when(latest, now)
         if "error" in latest:
-            lighthouse.append({"page": page, "error": latest["error"]})
+            lighthouse.append(
+                {
+                    "page": page,
+                    "error": latest["error"],
+                    **when,
+                }
+            )
             continue
         before = previous[0] if previous and "error" not in previous[0] else {}
         lighthouse.append(
@@ -121,13 +138,21 @@ def gather_facts(conn: psycopg.Connection) -> dict:
                 "lcp_ms": latest.get("lcp_ms"),
                 "previous_lcp_ms": before.get("lcp_ms"),
                 "failed_audits": (latest.get("failed_audits") or [])[:MAX_LISTED],
+                **when,
             }
         )
 
     broken_links = []
     for page, (latest, *_) in _latest(conn, "broken_links", WEEK).items():
+        when = _when(latest, now)
         if "error" in latest:
-            broken_links.append({"page": page, "error": latest["error"]})
+            broken_links.append(
+                {
+                    "page": page,
+                    "error": latest["error"],
+                    **when,
+                }
+            )
             continue
         broken_links.append(
             {
@@ -135,6 +160,7 @@ def gather_facts(conn: psycopg.Connection) -> dict:
                 "pages_checked": latest.get("pages_checked"),
                 "broken_count": latest.get("broken_count"),
                 "broken": (latest.get("broken") or [])[:MAX_LISTED],
+                **when,
             }
         )
 
@@ -153,8 +179,15 @@ def gather_facts(conn: psycopg.Connection) -> dict:
 
     dependencies = []
     for repo, (latest, *_) in _latest(conn, "dependency_audit", WEEK).items():
+        when = _when(latest, now)
         if "error" in latest:
-            dependencies.append({"repo": repo, "error": latest["error"]})
+            dependencies.append(
+                {
+                    "repo": repo,
+                    "error": latest["error"],
+                    **when,
+                }
+            )
             continue
         advisories = latest.get("advisories", {})
         listed = [
@@ -172,6 +205,7 @@ def gather_facts(conn: psycopg.Connection) -> dict:
                 "repo": repo,
                 "vulnerable_count": latest.get("vulnerable_count", 0),
                 "advisories": listed[:MAX_LISTED],
+                **when,
             }
         )
 
@@ -209,6 +243,13 @@ def _waiting_line(waiting: int, claude: int) -> str | None:
     return " and ".join(parts) + "; see the report." if parts else None
 
 
+def _age_suffix(result: dict) -> str:
+    age = result["age_days"]
+    if age == 0:
+        return " (today)"
+    return f" ({age} day{'s' if age > 1 else ''} ago)"
+
+
 def render_facts(facts: dict) -> str:
     """The facts as plain text, sent when the model does not answer."""
     lines = ["Mercury digest"]
@@ -224,21 +265,23 @@ def render_facts(facts: dict) -> str:
             )
         )
     for page in facts["lighthouse"]:
+        suffix = _age_suffix(page)
         if "error" in page:
-            lines.append(f"Lighthouse {page['page']}: the check errored, {page['error']}")
+            lines.append(f"Lighthouse {page['page']}: the check errored, {page['error']}{suffix}")
             continue
         line = f"Lighthouse {page['page']}: {_scores(page['scores'])}"
         if page["previous_scores"]:
             line += f" (previous run {_scores(page['previous_scores'])})"
-        lines.append(line + ".")
+        lines.append(line + suffix + ".")
     for page in facts["broken_links"]:
+        suffix = _age_suffix(page)
         if "error" in page:
-            lines.append(f"Broken links {page['page']}: the check errored, {page['error']}")
+            lines.append(f"Broken links {page['page']}: the check errored, {page['error']}{suffix}")
             continue
         urls = ", ".join(f"{b['url']} ({b['status']})" for b in page["broken"])
         lines.append(
             f"Broken links {page['page']}: {page['broken_count']} in "
-            f"{page['pages_checked']} pages" + (f": {urls}" if urls else ".")
+            f"{page['pages_checked']} pages" + (f": {urls}" if urls else "") + suffix + "."
         )
     for repo in facts["ci"]:
         if "error" in repo:
@@ -247,13 +290,14 @@ def render_facts(facts: dict) -> str:
         for f in repo["failing"]:
             lines.append(f"CI {repo['repo']}: {f['workflow']} {f['conclusion']} at {f['sha']}.")
     for repo in facts["dependencies"]:
+        suffix = _age_suffix(repo)
         if "error" in repo:
-            lines.append(f"Dependencies {repo['repo']}: the audit errored, {repo['error']}")
+            lines.append(f"Dependencies {repo['repo']}: the audit errored, {repo['error']}{suffix}")
             continue
         for a in repo["advisories"]:
             lines.append(
                 f"Dependencies {repo['repo']}: {a['package']} has {a['id']} "
-                f"({a['severity'] or 'no severity'}), {a['summary']}"
+                f"({a['severity'] or 'no severity'}), {a['summary']}{suffix}"
             )
     for name in facts["suspended"]:
         lines.append(f"Suspended: {name}.")

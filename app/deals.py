@@ -403,6 +403,55 @@ def button_ratings(conn: psycopg.Connection) -> int:
     return conn.execute(_BUTTON_RATINGS).fetchone()[0]
 
 
+_WOULD_ALERT = """
+INSERT INTO deal_would_alert (node_id, first_at, total) VALUES (%s, %s, %s)
+ON CONFLICT (node_id) DO UPDATE SET total = greatest(deal_would_alert.total, excluded.total)
+"""
+
+
+def alert_bar(conn: psycopg.Connection, config: DealsConfig) -> float:
+    """The total an alert must reach. /deals less raises it a step, more lowers it."""
+    bar_offset = conn.execute(_STATE).fetchone()[2]
+    return config.alert_bar + bar_offset * config.bar_step
+
+
+def send_alerts(
+    conn: psycopg.Connection,
+    telegram: TelegramClient,
+    chat_id: int,
+    now: datetime,
+    config: DealsConfig,
+) -> list[int]:
+    """Send each deal seen on the newest tick that clears the alert bar, on
+    its own and notifying. Until alerts_after deals are rated with a button,
+    or while paused, nothing is sent and each is kept in deal_would_alert to
+    set the bar from. Returns the node ids sent."""
+    newest_tick = conn.execute(_NEWEST_TICK).fetchone()[0]
+    if newest_tick is None:
+        return []
+    bar = alert_bar(conn, config)
+    strong = [
+        (node_id, result)
+        for node_id, result in candidates(conn, now, config, seen_at=newest_tick)
+        if result.total >= bar
+    ]
+    paused = conn.execute(_STATE).fetchone()[0]
+    if paused or button_ratings(conn) < config.alerts_after:
+        for node_id, result in strong:
+            conn.execute(_WOULD_ALERT, (node_id, now, result.total))
+        if strong:
+            logger.info("%s deal(s) would have been alerts", len(strong))
+        return []
+    sent = [
+        node_id
+        for node_id, result in strong
+        if _send_deal(conn, telegram, chat_id, node_id, result, now, "alert")
+    ]
+    if sent:
+        logger.info("%s deal alert(s) sent", len(sent))
+    return sent
+
+
 def _send_deal(
     conn: psycopg.Connection,
     telegram: TelegramClient,

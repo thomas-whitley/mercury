@@ -17,6 +17,9 @@ class FakeTelegram:
         self._lock = threading.Lock()
         # Set to make the next call fail the way Telegram does.
         self.fail_next: dict | None = None
+        # sendMessage calls to fail, counted from 1, for a failure part way through.
+        self.fail_sends: set[int] = set()
+        self._sends = 0
         # What getUpdates returns, filtered by its offset as Telegram does.
         self.updates: list[dict] = []
         fake = self
@@ -51,6 +54,9 @@ class FakeTelegram:
                 failure, self.fail_next = self.fail_next, None
                 return {"ok": False, **failure}
             if method == "sendMessage":
+                self._sends += 1
+                if self._sends in self.fail_sends:
+                    return {"ok": False, "error_code": 400, "description": "Bad Request"}
                 message_id = self._next_message_id
                 self._next_message_id += 1
                 return {"ok": True, "result": {"message_id": message_id, "text": payload["text"]}}

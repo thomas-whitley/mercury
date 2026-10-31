@@ -7,13 +7,27 @@ and one already stored that turns up expired is marked so it stops being
 live. When neither feed has loaded for 24 hours one message says so, and
 another says when they load again. Nothing here is a run, and no log line
 carries a title.
+
+The roundup is due at deals.roundup_time on deals.roundup_weekday in the
+chat's timezone, and goes out on the first tick after, so a PC that was off
+on Sunday morning sends it when it starts. It covers deals first seen since
+the last scheduled roundup (7 days for the first), and leaves out any deal
+already sent, blocked, no longer live, or gone from both feeds with a
+sharply worse vote balance. A heading that notifies comes first, then each
+deal as its own quiet message with the four rating buttons. A heading that
+fails records nothing, so the next tick tries again; a deal whose message
+fails is left unsent, and the rest still go.
 """
 
+import json
 import logging
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import psycopg
 
+from app.deal_score import Learned, Rated, Score, Snapshot, learn, score
+from app.mercury_config import DealsConfig
 from app.ozbargain import DROPPED_FLAGS, FRONT_FEED, NEW_FEED, FeedError, FeedItem, fetch_feed
 from app.telegram import TelegramClient, TelegramError
 
@@ -143,4 +157,230 @@ def _tell(telegram: TelegramClient | None, chat_id: int | None, text: str) -> bo
     except TelegramError as error:
         logger.error("could not send the deal feed message: %s", error)
         return False
+    return True
+
+
+RATING_BUTTONS = (
+    ("🔥 Great", "g"),
+    ("👍 Good", "o"),
+    ("👎 Not for me", "n"),
+    ("💸 Overpriced", "p"),
+)
+RATING_NAMES = {letter: label for label, letter in RATING_BUTTONS}
+FIRST_WINDOW = timedelta(days=7)
+# Telegram refuses a message over 4,096 characters.
+MAX_DEAL_CHARS = 4000
+# A deal gone from the newest tick's feeds is left out once its positive
+# share has fallen this far below the best it had.
+DROPPED_SHARE_FALL = 0.15
+DEAL_LINK = "https://www.ozbargain.com.au/node/{}"
+EMPTY_ROUNDUP = "No new deals cleared the bar this week."
+HEADINGS = {"scheduled": "Deals this week: {}", "now": "Deals so far this week: {}"}
+
+_RATINGS = """
+SELECT r.rating, r.silent, r.rated_at, d.category, d.store, d.tags
+FROM deal_ratings r JOIN deals d USING (node_id)
+"""
+_STATE = "SELECT paused, size_offset, bar_offset FROM deal_state"
+_LAST_SCHEDULED = "SELECT max(sent_at) FROM deal_roundups WHERE kind = 'scheduled'"
+_SCHEDULED_SINCE = (
+    "SELECT EXISTS (SELECT 1 FROM deal_roundups WHERE kind = 'scheduled' AND sent_at >= %s)"
+)
+_FIRST_SEEN = "SELECT min(first_seen_at) FROM deals"
+# Live, never sent and not blocked. since and seen_at are each optional.
+_CANDIDATES = """
+SELECT d.node_id, d.posted_at, d.category, d.store, d.tags
+FROM deals d
+WHERE d.flag IS DISTINCT FROM 'expired' AND (d.expires_at IS NULL OR d.expires_at > %(now)s)
+  AND (%(since)s::timestamptz IS NULL OR d.first_seen_at >= %(since)s)
+  AND (%(seen_at)s::timestamptz IS NULL OR d.last_seen_at = %(seen_at)s)
+  AND NOT EXISTS (SELECT 1 FROM deal_sends s WHERE s.node_id = d.node_id)
+  AND NOT EXISTS (
+      SELECT 1 FROM deal_blocks b
+      WHERE b.key = d.category OR b.key = d.store OR b.key = ANY(d.tags)
+  )
+"""
+_SNAPSHOTS = """
+SELECT node_id, seen_at, votes_pos, votes_neg, comments, front_page
+FROM deal_snapshots WHERE node_id = ANY(%s) ORDER BY seen_at
+"""
+_NEWEST_TICK = "SELECT max(seen_at) FROM deal_snapshots"
+_DEAL_FOR_TEXT = """
+SELECT d.title, n.name, s.votes_pos, s.votes_neg
+FROM deals d
+LEFT JOIN deal_feature_names n ON n.key = d.store
+LEFT JOIN LATERAL (
+    SELECT votes_pos, votes_neg FROM deal_snapshots
+    WHERE node_id = d.node_id ORDER BY seen_at DESC LIMIT 1
+) s ON true
+WHERE d.node_id = %s
+"""
+_INSERT_ROUNDUP = """
+INSERT INTO deal_roundups (kind, sent_at, heading_message_id) VALUES (%s, %s, %s) RETURNING id
+"""
+_INSERT_SEND = """
+INSERT INTO deal_sends (node_id, kind, roundup_id, chat_id, message_id, text, score, sent_at)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+"""
+
+
+def buttons(node_id: int) -> list[tuple[str, str]]:
+    """The four rating buttons. deal:<node id>:<letter> is well under
+    Telegram's 64 byte limit on callback data."""
+    return [(label, f"deal:{node_id}:{letter}") for label, letter in RATING_BUTTONS]
+
+
+def learned(conn: psycopg.Connection, now: datetime, config: DealsConfig) -> Learned:
+    ratings = [
+        Rated(rating, silent, rated_at, category, store, tuple(tags))
+        for rating, silent, rated_at, category, store, tags in conn.execute(_RATINGS)
+    ]
+    return learn(ratings, now, config)
+
+
+def roundup_size(conn: psycopg.Connection, config: DealsConfig) -> int:
+    size_offset = conn.execute(_STATE).fetchone()[1]
+    return max(1, config.roundup_size + size_offset * config.size_step)
+
+
+def _share(s: Snapshot) -> float:
+    return s.votes_pos / (s.votes_pos + s.votes_neg) if s.votes_pos + s.votes_neg else 0.0
+
+
+def _dropped(history: list[Snapshot], newest_tick: datetime | None) -> bool:
+    if not history or newest_tick is None or history[-1].seen_at >= newest_tick:
+        return False
+    return _share(history[-1]) < max(_share(s) for s in history) - DROPPED_SHARE_FALL
+
+
+def candidates(
+    conn: psycopg.Connection,
+    now: datetime,
+    config: DealsConfig,
+    *,
+    since: datetime | None = None,
+    seen_at: datetime | None = None,
+) -> list[tuple[int, Score]]:
+    """Deals that may be sent, scored and best first, none scoring 0. since
+    keeps deals first seen from then on; seen_at keeps those seen on that tick."""
+    rows = conn.execute(_CANDIDATES, {"now": now, "since": since, "seen_at": seen_at}).fetchall()
+    if not rows:
+        return []
+    histories: dict[int, list[Snapshot]] = {row[0]: [] for row in rows}
+    for node_id, *values in conn.execute(_SNAPSHOTS, (list(histories),)):
+        histories[node_id].append(Snapshot(*values))
+    newest_tick = conn.execute(_NEWEST_TICK).fetchone()[0]
+    taught = learned(conn, now, config)
+    scored = []
+    for node_id, posted_at, category, store, tags in rows:
+        history = histories[node_id]
+        if _dropped(history, newest_tick):
+            continue
+        result = score(posted_at, history, category, store, tuple(tags), taught, now, config)
+        if result.total > 0:
+            scored.append((node_id, result))
+    scored.sort(key=lambda pair: (-pair[1].total, pair[0]))
+    return scored
+
+
+def window_start(conn: psycopg.Connection, now: datetime) -> datetime:
+    last = conn.execute(_LAST_SCHEDULED).fetchone()[0]
+    return last if last is not None else now - FIRST_WINDOW
+
+
+def ranked(
+    conn: psycopg.Connection, since: datetime, now: datetime, config: DealsConfig
+) -> list[tuple[int, Score]]:
+    return candidates(conn, now, config, since=since)[: roundup_size(conn, config)]
+
+
+def roundup_due(
+    conn: psycopg.Connection, now: datetime, timezone: str, config: DealsConfig
+) -> bool:
+    """Due from the most recent roundup day and time at or before now, until a
+    scheduled roundup is sent. Never due while paused, and never for a due
+    time before the first deal was seen, so turning deals on does not send a
+    roundup of one tick's deals at once."""
+    if conn.execute(_STATE).fetchone()[0]:
+        return False
+    zone = ZoneInfo(timezone)
+    local = now.astimezone(zone)
+    day = local.date() - timedelta(days=(local.weekday() - config.roundup_weekday) % 7)
+    due = datetime.combine(day, config.roundup_time, tzinfo=zone)
+    if due > local:
+        due = datetime.combine(day - timedelta(days=7), config.roundup_time, tzinfo=zone)
+    first_seen = conn.execute(_FIRST_SEEN).fetchone()[0]
+    if first_seen is None or first_seen > due:
+        return False
+    return not conn.execute(_SCHEDULED_SINCE, (due,)).fetchone()[0]
+
+
+def deal_text(conn: psycopg.Connection, node_id: int) -> str:
+    """The title as OzBargain gives it (with the price), the store, the votes
+    and the deal page. Plain text, so nothing in a title needs escaping."""
+    title, store, pos, neg = conn.execute(_DEAL_FOR_TEXT, (node_id,)).fetchone()
+    votes = f"+{pos or 0} −{neg or 0}"
+    tail = f"\n{store} · {votes}" if store else f"\n{votes}"
+    tail += "\n" + DEAL_LINK.format(node_id)
+    room = MAX_DEAL_CHARS - len(tail)
+    if len(title) > room:
+        title = title[: room - 1] + "…"
+    return title + tail
+
+
+def send_roundup(
+    conn: psycopg.Connection,
+    telegram: TelegramClient,
+    chat_id: int,
+    kind: str,
+    now: datetime,
+    config: DealsConfig,
+) -> int | None:
+    """Send a roundup of kind 'scheduled' or 'now'. Returns its id, or None
+    when the heading could not be sent and nothing was recorded."""
+    picked = ranked(conn, window_start(conn, now), now, config)
+    heading = HEADINGS[kind].format(len(picked)) if picked else EMPTY_ROUNDUP
+    try:
+        heading_id = telegram.send_message(chat_id, heading)
+    except TelegramError as error:
+        logger.error("could not send the deal roundup heading: %s", error)
+        return None
+    roundup_id = conn.execute(_INSERT_ROUNDUP, (kind, now, heading_id)).fetchone()[0]
+    sent = sum(
+        _send_deal(conn, telegram, chat_id, node_id, result, now, "roundup", roundup_id)
+        for node_id, result in picked
+    )
+    logger.info("deal roundup %s sent with %s of %s deal(s)", roundup_id, sent, len(picked))
+    return roundup_id
+
+
+def _send_deal(
+    conn: psycopg.Connection,
+    telegram: TelegramClient,
+    chat_id: int,
+    node_id: int,
+    result: Score,
+    now: datetime,
+    kind: str,
+    roundup_id: int | None = None,
+) -> bool:
+    """Send one deal and record it. A roundup's deals are quiet; an alert
+    notifies. A deal that could not be sent is not recorded."""
+    text = deal_text(conn, node_id)
+    try:
+        message_id = telegram.send_message(
+            chat_id,
+            text,
+            buttons(node_id),
+            disable_link_preview=True,
+            disable_notification=kind == "roundup",
+            per_row=2,
+        )
+    except TelegramError as error:
+        logger.error("could not send deal %s: %s", node_id, error)
+        return False
+    conn.execute(
+        _INSERT_SEND,
+        (node_id, kind, roundup_id, chat_id, message_id, text, json.dumps(result.as_json()), now),
+    )
     return True

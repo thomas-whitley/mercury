@@ -95,3 +95,26 @@ services:
     depends_on:
       proxy:
         condition: service_healthy
+
+  # The flight-finder worker (thomas-whitley/flight-finder, cloned beside this
+  # repo in C:\Projects). It claims the scheduler's flight_watch checks, runs
+  # one live Google Flights watch, and posts the result for the api to send
+  # to Telegram. Its baseline (watch/) and seen deals (sourcing/) are volumes.
+  flights:
+    build: ${FLIGHT_FINDER_DIR:-../flight-finder}
+    restart: unless-stopped
+    environment:
+      API_BASE_URL: http://proxy:8000
+      MERCURY_BEARER_TOKEN: ${MERCURY_BEARER_TOKEN:?set MERCURY_BEARER_TOKEN in .env}
+      WORKER_ID: t-buckets-flights
+      SERPAPI_KEY: ${SERPAPI_KEY:-}
+    volumes:
+      - flights_watch:/app/watch
+      - flights_sourcing:/app/sourcing
+    depends_on:
+      proxy:
+        condition: service_healthy
+
+volumes:
+  flights_watch:
+  flights_sourcing:

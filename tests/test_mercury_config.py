@@ -7,6 +7,7 @@ rather than left to say something false.
 """
 
 import re
+from datetime import time
 
 import pytest
 import yaml
@@ -270,3 +271,64 @@ def test_the_diff_flags_and_the_path_guard_read_an_entry_the_same_way(tmp_path):
     for path in ("src/pages", "src/pages/a.astro", "src/pagesx/a", "public", "public/x", "x"):
         for entry in notes.allowed_paths + notes.shared_paths:
             assert _under(path, entry) == _allowed(path, (entry,)), (path, entry)
+
+
+def _deals_config(tmp_path, deals: dict | None):
+    path = tmp_path / "mercury.yaml"
+    path.write_text(yaml.dump({} if deals is None else {"deals": deals}))
+    return load_mercury_config(path).deals
+
+
+def test_deals_default_to_off_with_the_starting_values(tmp_path):
+    deals = _deals_config(tmp_path, None)
+
+    assert deals.enabled is False
+    assert deals.roundup_size == 10
+    assert deals.roundup_weekday == 6
+    assert deals.roundup_time == time(10, 0)
+    assert deals.alerts_after == 30
+    assert deals.silence_days == 7
+    assert deals.size_step == 3
+    assert deals.steps == {"g": 1.0, "o": 0.5, "n": -0.5, "silence": -0.2}
+
+
+def test_deals_reads_every_value(tmp_path):
+    deals = _deals_config(
+        tmp_path,
+        {
+            "enabled": True,
+            "roundup_day": "saturday",
+            "roundup_time": "09:30",
+            "roundup_size": 5,
+            "steps": {"great": 2, "good": 1, "not_for_me": -1, "silence": -0.1},
+            "community": {"front_page": 2},
+        },
+    )
+
+    assert deals.enabled is True
+    assert deals.roundup_weekday == 5
+    assert deals.roundup_time == time(9, 30)
+    assert deals.roundup_size == 5
+    assert deals.steps == {"g": 2.0, "o": 1.0, "n": -1.0, "silence": -0.1}
+    assert deals.community["front_page"] == 2.0
+    assert deals.community["votes_per_hour"] == 2.0
+
+
+def test_deals_reads_a_quoted_true_as_off(tmp_path):
+    assert _deals_config(tmp_path, {"enabled": "true"}).enabled is False
+
+
+@pytest.mark.parametrize(
+    ("deals", "key"),
+    [
+        ({"roundup_day": "someday"}, "deals.roundup_day"),
+        ({"roundup_time": "25:00"}, "deals.roundup_time"),
+        ({"roundup_size": 0}, "deals.roundup_size"),
+        ({"steps": {"great": -1}}, "deals.steps.great"),
+        ({"steps": {"silence": 0.5}}, "deals.steps.silence"),
+        ({"community": {"likes": 1}}, "deals.community.likes"),
+    ],
+)
+def test_deals_refuses_bad_values(tmp_path, deals, key):
+    with pytest.raises(ValueError, match=re.escape(key)):
+        _deals_config(tmp_path, deals)

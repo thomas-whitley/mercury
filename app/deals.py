@@ -21,7 +21,8 @@ fails is left unsent, and the rest still go.
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import psycopg
@@ -30,6 +31,10 @@ from app.deal_score import Learned, Rated, Score, Snapshot, learn, score
 from app.mercury_config import DealsConfig
 from app.ozbargain import DROPPED_FLAGS, FRONT_FEED, NEW_FEED, FeedError, FeedItem, fetch_feed
 from app.telegram import TelegramClient, TelegramError
+
+if TYPE_CHECKING:
+    from app.config import Settings
+    from app.mercury_config import MercuryConfig
 
 logger = logging.getLogger("agent_runs.deals")
 
@@ -450,6 +455,35 @@ def send_alerts(
     if sent:
         logger.info("%s deal alert(s) sent", len(sent))
     return sent
+
+
+def tick(
+    conn: psycopg.Connection,
+    settings: "Settings",
+    config: "MercuryConfig",
+    telegram: TelegramClient | None,
+    now: datetime | None = None,
+) -> None:
+    """The deal finder's part of a scheduler tick: read the feeds, count a
+    week of silence, send the roundup when due, then any alerts. Off unless
+    deals.enabled and a chat are configured. Nothing here may stop the rest
+    of the tick, and only the error's class is logged, since a message can
+    quote a title."""
+    deals_config = config.deals
+    chat_id = config.telegram_chat_id
+    if not deals_config.enabled or chat_id is None:
+        return
+    now = now or datetime.now(UTC)
+    try:
+        fetch_and_ingest(conn, settings.ozbargain_url, now, telegram, chat_id)
+        record_silence(conn, now, deals_config)
+        if telegram is None:
+            return
+        if roundup_due(conn, now, config.timezone, deals_config):
+            send_roundup(conn, telegram, chat_id, "scheduled", now, deals_config)
+        send_alerts(conn, telegram, chat_id, now, deals_config)
+    except Exception as error:  # noqa: BLE001 - nothing here may stop the rest of the tick
+        logger.error("deal finder step failed: %s", type(error).__name__)
 
 
 def _send_deal(

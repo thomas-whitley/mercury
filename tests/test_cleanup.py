@@ -199,3 +199,45 @@ def test_a_finished_notes_words_go_with_the_run_bodies(migrated_db):
     text = _note_text(migrated_db)
     assert [text[i] for i in (1, 2, 3)] == [(None, None, None)] * 3
     assert all(text[i] == ("body", "anchor", "quote") for i in (4, 5, 6, 7))
+
+
+def test_cleanup_drops_old_snapshots_and_unsent_deals_and_keeps_sent_ones(migrated_db):
+    from datetime import UTC, datetime, timedelta
+
+    from tests.deal_seed import record_send, seed_deal, snapshot
+
+    now = datetime.now(UTC)
+    old = now - timedelta(days=40)
+    seed_deal(migrated_db, 1, first_seen=old, seen_at=old)  # never sent, gone
+    seed_deal(migrated_db, 2, first_seen=old, seen_at=old)  # sent and rated, kept
+    snapshot(migrated_db, 2, now - timedelta(days=1), 30)
+    record_send(migrated_db, 2, old)
+    migrated_db.execute("INSERT INTO deal_ratings VALUES (2, 'g', false, %s)", (old,))
+    seed_deal(migrated_db, 3, first_seen=now, seen_at=now)  # new, kept
+
+    run_cleanup(migrated_db)
+
+    kept = [row[0] for row in migrated_db.execute("SELECT node_id FROM deals ORDER BY node_id")]
+    assert kept == [2, 3]
+    snaps = migrated_db.execute("SELECT node_id FROM deal_snapshots ORDER BY node_id").fetchall()
+    assert snaps == [(2,), (3,)]
+    assert migrated_db.execute("SELECT count(*) FROM deal_ratings").fetchone()[0] == 1
+
+
+def test_cleanup_drops_sent_deals_after_the_runs_window(migrated_db):
+    from datetime import UTC, datetime, timedelta
+
+    from tests.deal_seed import record_send, seed_deal
+
+    year_ago = datetime.now(UTC) - timedelta(days=400)
+    seed_deal(migrated_db, 1, first_seen=year_ago, seen_at=year_ago)
+    record_send(migrated_db, 1, year_ago)
+    migrated_db.execute("INSERT INTO deal_ratings VALUES (1, 'n', true, %s)", (year_ago,))
+    migrated_db.execute(
+        "INSERT INTO deal_roundups (kind, sent_at) VALUES ('scheduled', %s)", (year_ago,)
+    )
+
+    run_cleanup(migrated_db)
+
+    for table in ("deals", "deal_sends", "deal_ratings", "deal_roundups"):
+        assert migrated_db.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0

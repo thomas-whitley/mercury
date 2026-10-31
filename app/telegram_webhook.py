@@ -5,7 +5,8 @@ secret is configured. Then the chat id is checked against the allowlist of
 one; any other sender gets a 200 and no reply at all. A reply to a chore's
 escalation message is a hint for it (app/advice.py), and so is /hint <text>,
 which goes to the newest chore waiting for one. /status, /runs and
-/cancel are answered here with no model call. Anything else becomes a chat
+/cancel are answered here with no model call, and so are /deals and the
+deal rating buttons (app/deal_commands.py). Anything else becomes a chat
 run for the worker (app/chat.py).
 
 Every update the check lets through is answered with 200, even when the
@@ -17,7 +18,7 @@ import hmac
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Request
 from psycopg import connect
@@ -26,6 +27,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app import approvals
 from app.advice import AdviceRefused, advise
+from app.deal_commands import answer_deals, on_deal_button
 from app.runs import CANCEL_RUN, CANCELLED, DONE_EVENT, DONE_STEP, NEXT_EVENT_SEQ
 from app.schedule_state import RESUME
 from app.tasks import TASK_TYPES
@@ -226,6 +228,17 @@ async def _answer(request: Request, text: str) -> str | None:
         return await cancel_by_prefix(pool, argument.strip().lower())
     if command == "/resume":
         return await _resume(pool, argument.strip())
+    if command == "/deals":
+        state = request.app.state
+        return await run_in_threadpool(
+            answer_deals,
+            state.settings.database_url,
+            _client(request),
+            state.mercury.telegram_chat_id,
+            argument,
+            state.mercury.deals,
+            datetime.now(UTC),
+        )
     return None
 
 
@@ -325,13 +338,26 @@ async def _resume(pool, site: str) -> str:
 
 
 async def _on_button(request: Request, callback: dict) -> None:
-    """A press on an approval's button. Only the allowed chat's presses count,
-    and a question already answered or past its expiry changes nothing more."""
+    """A press on a deal's rating button (app/deal_commands.py) or an
+    approval's button. Only the allowed chat's presses count, and a question
+    already answered or past its expiry changes nothing more."""
     chat_id = ((callback.get("message") or {}).get("chat") or {}).get("id")
     if chat_id != request.app.state.mercury.telegram_chat_id:
         logger.info("ignored a button press from a chat not on the allowlist")
         return
-    match = _BUTTON.match(callback.get("data") or "")
+    data = callback.get("data") or ""
+    if data.startswith("deal:"):
+        await run_in_threadpool(
+            on_deal_button,
+            request.app.state.settings.database_url,
+            _client(request),
+            chat_id,
+            callback.get("id", ""),
+            data,
+            datetime.now(UTC),
+        )
+        return
+    match = _BUTTON.match(data)
     if match is None:
         return
     approval_id, choice = int(match[1]), match[2]

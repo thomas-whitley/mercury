@@ -8,7 +8,7 @@ import pytest
 from app.deals import alert_bar, send_alerts, send_roundup
 from app.mercury_config import DealsConfig
 from app.telegram import TelegramClient
-from tests.deal_seed import CHAT, SUNDAY, seed_deal
+from tests.deal_seed import CHAT, SUNDAY, seed_deal, snapshot
 
 CONFIG = DealsConfig(enabled=True)
 TICK = SUNDAY - timedelta(hours=1)
@@ -63,13 +63,19 @@ def test_alerts_switch_on_at_thirty_distinct_deals(migrated_db, telegram, fake_t
     assert send_alerts(migrated_db, telegram, CHAT, SUNDAY, CONFIG) == []
 
     rate_deals(migrated_db, 1, first=2000)
+    later = SUNDAY + timedelta(hours=1)
+    seed_deal(migrated_db, 2, pos=400, first_seen=later - timedelta(hours=1), seen_at=later)
+    # Deal 1 is still in the feed on the new tick.
+    snapshot(migrated_db, 1, later, 450)
+    migrated_db.execute("UPDATE deals SET last_seen_at = %s WHERE node_id = 1", (later,))
 
-    assert send_alerts(migrated_db, telegram, CHAT, SUNDAY, CONFIG) == [1]
+    # Deal 1 first cleared the bar while alerts were off, so it is not sent now.
+    assert send_alerts(migrated_db, telegram, CHAT, later, CONFIG) == [2]
     [alert] = fake_telegram.sent()
     assert "disable_notification" not in alert
-    assert alert["text"].endswith("/node/1")
+    assert alert["text"].endswith("/node/2")
     assert len(alert["reply_markup"]["inline_keyboard"]) == 2
-    kind = migrated_db.execute("SELECT kind FROM deal_sends WHERE node_id = 1").fetchone()[0]
+    kind = migrated_db.execute("SELECT kind FROM deal_sends WHERE node_id = 2").fetchone()[0]
     assert kind == "alert"
 
 

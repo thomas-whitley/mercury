@@ -11,6 +11,7 @@ silently drop every vote.
 Nothing here logs a title. FeedError carries the path and the error class.
 """
 
+import http.client
 import re
 import urllib.error
 import urllib.request
@@ -69,7 +70,7 @@ def fetch_feed(base_url: str, path: str) -> list[FeedItem]:
             body = response.read()
     except urllib.error.HTTPError as error:
         raise FeedError(f"{path} answered HTTP {error.code}") from None
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, http.client.HTTPException) as error:
         raise FeedError(f"{path} failed: {type(error).__name__}") from None
     try:
         return parse_feed(body)

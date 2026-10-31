@@ -190,3 +190,15 @@ def test_deals_off_in_config_says_so(
     say(base_url, "/deals more")
 
     assert last_reply(fake_telegram) == "The deal finder is off in mercury.yaml."
+
+
+def test_now_twice_in_ten_minutes_sends_one_roundup(bot, fake_telegram, migrated_db):
+    fresh_deal(migrated_db, 1)
+
+    say(bot, "/deals now")
+    say(bot, "/deals now")
+
+    headings = [m["text"] for m in fake_telegram.sent() if m["text"].startswith("Deals so far")]
+    assert len(headings) == 1
+    assert last_reply(fake_telegram) == "A roundup went out in the last 10 minutes."
+    assert migrated_db.execute("SELECT count(*) FROM deal_roundups").fetchone()[0] == 1

@@ -60,11 +60,15 @@ INSERT INTO deal_snapshots (node_id, seen_at, votes_pos, votes_neg, comments, fr
 VALUES (%s, %s, %s, %s, %s, %s)
 ON CONFLICT (node_id, seen_at) DO NOTHING
 """
+# A deal is live while it carries none of the flags that drop it and its
+# expiry has not passed. now is filled in by each statement that uses it.
+_LIVE = (
+    "coalesce(d.flag, '') NOT IN ("
+    + ", ".join(f"'{flag}'" for flag in sorted(DROPPED_FLAGS))
+    + ") AND (d.expires_at IS NULL OR d.expires_at > {now})"
+)
 _MARK_FLAG = "UPDATE deals SET flag = %s, expires_at = coalesce(%s, expires_at) WHERE node_id = %s"
-_IS_LIVE = """
-SELECT flag IS DISTINCT FROM 'expired' AND (expires_at IS NULL OR expires_at > %s)
-FROM deals WHERE node_id = %s
-"""
+_IS_LIVE = f"SELECT {_LIVE.format(now='%s')} FROM deals d WHERE d.node_id = %s"
 _FEED_STATE = "SELECT coalesce(last_fetch_ok_at, created_at), feed_down_notified FROM deal_state"
 _FETCH_OK = "UPDATE deal_state SET last_fetch_ok_at = %s, feed_down_notified = false"
 _FEED_DOWN_NOTIFIED = "UPDATE deal_state SET feed_down_notified = true"
@@ -117,8 +121,9 @@ def ingest(
 
 
 def is_live(conn: psycopg.Connection, node_id: int, now: datetime) -> bool:
-    """Not marked expired and not past its expiry. A deal that has dropped off
-    both feeds is still live, since most do within a day."""
+    """Not marked expired, targeted or upcoming, and not past its expiry. A
+    deal that has dropped off both feeds is still live, since most do within
+    a day."""
     row = conn.execute(_IS_LIVE, (now, node_id)).fetchone()
     return bool(row and row[0])
 
@@ -193,10 +198,10 @@ _SCHEDULED_SINCE = (
 )
 _FIRST_SEEN = "SELECT min(first_seen_at) FROM deals"
 # Live, never sent and not blocked. since and seen_at are each optional.
-_CANDIDATES = """
+_CANDIDATES = f"""
 SELECT d.node_id, d.posted_at, d.category, d.store, d.tags
 FROM deals d
-WHERE d.flag IS DISTINCT FROM 'expired' AND (d.expires_at IS NULL OR d.expires_at > %(now)s)
+WHERE {_LIVE.format(now="%(now)s")}
   AND (%(since)s::timestamptz IS NULL OR d.first_seen_at >= %(since)s)
   AND (%(seen_at)s::timestamptz IS NULL OR d.last_seen_at = %(seen_at)s)
   AND NOT EXISTS (SELECT 1 FROM deal_sends s WHERE s.node_id = d.node_id)
@@ -370,11 +375,11 @@ ON CONFLICT (node_id) DO UPDATE SET rating = excluded.rating, silent = false,
 """
 # A sent deal still live silence_days after it was first sent, with no
 # rating. One that expired unrated counts for nothing.
-_SILENCE = """
+_SILENCE = f"""
 INSERT INTO deal_ratings (node_id, rating, silent, rated_at)
 SELECT d.node_id, 'n', true, %(now)s
 FROM deals d
-WHERE d.flag IS DISTINCT FROM 'expired' AND (d.expires_at IS NULL OR d.expires_at > %(now)s)
+WHERE {_LIVE.format(now="%(now)s")}
   AND (SELECT min(sent_at) FROM deal_sends s WHERE s.node_id = d.node_id)
       <= %(now)s - make_interval(days => %(days)s)
   AND NOT EXISTS (SELECT 1 FROM deal_ratings r WHERE r.node_id = d.node_id)
@@ -408,6 +413,7 @@ def button_ratings(conn: psycopg.Connection) -> int:
     return conn.execute(_BUTTON_RATINGS).fetchone()[0]
 
 
+_WOULD_HAVE_ALERTED = "SELECT node_id FROM deal_would_alert"
 _WOULD_ALERT = """
 INSERT INTO deal_would_alert (node_id, first_at, total) VALUES (%s, %s, %s)
 ON CONFLICT (node_id) DO UPDATE SET total = greatest(deal_would_alert.total, excluded.total)
@@ -430,7 +436,9 @@ def send_alerts(
     """Send each deal seen on the newest tick that clears the alert bar, on
     its own and notifying. Until alerts_after deals are rated with a button,
     or while paused, nothing is sent and each is kept in deal_would_alert to
-    set the bar from. Returns the node ids sent."""
+    set the bar from. A deal kept there first cleared the bar on an earlier
+    tick, so it is never sent later, and switching alerts on sends no burst.
+    Returns the node ids sent."""
     newest_tick = conn.execute(_NEWEST_TICK).fetchone()[0]
     if newest_tick is None:
         return []
@@ -447,10 +455,12 @@ def send_alerts(
         if strong:
             logger.info("%s deal(s) would have been alerts", len(strong))
         return []
+    held = {row[0] for row in conn.execute(_WOULD_HAVE_ALERTED)}
     sent = [
         node_id
         for node_id, result in strong
-        if _send_deal(conn, telegram, chat_id, node_id, result, now, "alert")
+        if node_id not in held
+        and _send_deal(conn, telegram, chat_id, node_id, result, now, "alert")
     ]
     if sent:
         logger.info("%s deal alert(s) sent", len(sent))

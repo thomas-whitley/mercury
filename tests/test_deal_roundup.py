@@ -219,3 +219,12 @@ def test_times_are_compared_in_utc(migrated_db):
     seed_deal(migrated_db, 1)
     # The due time is a Melbourne wall clock time; now may arrive in UTC.
     assert roundup_due(migrated_db, SUNDAY.astimezone(UTC), TZ, CONFIG)
+
+
+def test_a_deal_that_turned_targeted_is_left_out(migrated_db, telegram):
+    seed_deal(migrated_db, 1)
+    seed_deal(migrated_db, 2, flag="targeted")
+
+    send_roundup(migrated_db, telegram, CHAT, "scheduled", SUNDAY, CONFIG)
+
+    assert sent_nodes(migrated_db) == [1]

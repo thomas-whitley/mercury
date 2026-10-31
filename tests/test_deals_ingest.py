@@ -145,3 +145,33 @@ def test_a_day_without_a_fetch_sends_one_message_then_one_when_it_works(
     assert len(fake_telegram.sent()) == 2
     notified = migrated_db.execute("SELECT feed_down_notified FROM deal_state").fetchone()[0]
     assert notified is False
+
+
+@pytest.mark.parametrize("flag", ["targeted", "upcoming"])
+def test_a_stored_deal_that_turns_targeted_or_upcoming_stops_being_live(migrated_db, flag):
+    ingest(migrated_db, items(item_xml(10, "Invented deal")), [], NOW)
+
+    ingest(
+        migrated_db, items(item_xml(10, "Invented deal", flag=flag)), [], NOW + timedelta(hours=1)
+    )
+
+    assert not is_live(migrated_db, 10, NOW + timedelta(hours=1))
+
+
+def test_a_truncated_response_on_one_feed_still_reads_the_other(
+    migrated_db, fake_ozbargain, monkeypatch
+):
+    import http.client
+    import urllib.request
+
+    fake_ozbargain.front_items = [item_xml(11, "Invented deal")]
+    real = urllib.request.urlopen
+
+    def flaky(request, *args, **kwargs):
+        if request.full_url.endswith("/deals/feed"):
+            raise http.client.IncompleteRead(b"")
+        return real(request, *args, **kwargs)
+
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+
+    assert fetch_and_ingest(migrated_db, fake_ozbargain.url, NOW, None, None) == 1

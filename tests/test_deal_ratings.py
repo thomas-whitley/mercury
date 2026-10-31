@@ -143,3 +143,18 @@ def test_a_press_after_silence_replaces_it(bot, fake_telegram, migrated_db):
 
     assert ratings(migrated_db) == [(1, "g", False)]
     assert button_ratings(migrated_db) == 1
+
+
+def test_the_rating_stays_out_of_the_log(migrated_db, clean_db, caplog):
+    from datetime import UTC, datetime
+
+    from app.deal_commands import on_deal_button
+
+    sent_deal(migrated_db)
+    caplog.set_level("INFO", logger="agent_runs.deals")
+
+    on_deal_button(clean_db, None, CHAT, "cb1", "deal:1:p", datetime.now(UTC))
+
+    assert ratings(migrated_db) == [(1, "p", False)]
+    messages = [record.getMessage() for record in caplog.records]
+    assert messages == ["deal 1 rated"]

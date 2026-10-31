@@ -120,3 +120,16 @@ def test_edit_without_buttons_sends_no_reply_markup(fake):
     TelegramClient("123:abc", base_url=fake.url).edit_message_text(42, 7, "hi")
 
     assert fake.sent("editMessageText") == [{"chat_id": 42, "message_id": 7, "text": "hi"}]
+
+
+def test_a_truncated_answer_is_a_telegram_error(fake, monkeypatch):
+    import http.client
+    import urllib.request
+
+    def truncated(*args, **kwargs):
+        raise http.client.IncompleteRead(b"")
+
+    monkeypatch.setattr(urllib.request, "urlopen", truncated)
+
+    with pytest.raises(TelegramError, match="IncompleteRead"):
+        TelegramClient("123:abc", base_url=fake.url).send_message(42, "hi")

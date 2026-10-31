@@ -4,6 +4,7 @@ The token is part of every request path, so nothing here puts a URL in an
 exception or a log line. Errors carry Telegram's own description only.
 """
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -108,7 +109,8 @@ class TelegramClient:
             body = _json_or_empty(error.read())
             description = body.get("description", f"HTTP {error.code}")
             raise TelegramError(f"{method} refused: {description}", error.code) from None
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, http.client.HTTPException) as error:
+            # A truncated answer raises IncompleteRead, which is not an OSError.
             # str(URLError) can carry the URL, and the URL carries the token.
             raise TelegramError(f"{method} failed: {type(error).__name__}") from None
         if not body.get("ok"):

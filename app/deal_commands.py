@@ -17,7 +17,7 @@ why explains the last deal sent from the score kept when it was sent.
 import difflib
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import psycopg
 
@@ -56,7 +56,8 @@ def on_deal_button(
     if sent is None:
         logger.info("a press on deal %s, which was not sent to this chat", node_id)
     else:
-        logger.info("deal %s rated %s", node_id, rating)
+        # The rating itself stays out of the log.
+        logger.info("deal %s rated", node_id)
     if telegram is None:
         return
     name = RATING_NAMES[rating]
@@ -75,6 +76,12 @@ USAGE = "Usage: /deals more | less | never <name> | allow <name> | why | now | o
 DISABLED = "The deal finder is off in mercury.yaml."
 KIND_NAMES = {"cat": "category", "store": "store", "tag": "tag"}
 CLOSEST = 5
+# The Telegram poller posts an update again when the api takes over 30
+# seconds to answer, and a slow roundup can. A second /deals now inside this
+# window is refused rather than sending the next ten deals.
+NOW_COOLDOWN = timedelta(minutes=10)
+NOW_TOO_SOON = "A roundup went out in the last 10 minutes."
+_RECENT_NOW = "SELECT EXISTS (SELECT 1 FROM deal_roundups WHERE kind = 'now' AND sent_at > %s)"
 
 _MORE = "UPDATE deal_state SET size_offset = size_offset + 1, bar_offset = bar_offset - 1"
 _LESS = "UPDATE deal_state SET size_offset = size_offset - %s, bar_offset = bar_offset + 1"
@@ -118,6 +125,8 @@ def answer_deals(
         if word == "now":
             if telegram is None:
                 return "No Telegram token, so the roundup cannot be sent."
+            if conn.execute(_RECENT_NOW, (now - NOW_COOLDOWN,)).fetchone()[0]:
+                return NOW_TOO_SOON
             sent = send_roundup(conn, telegram, chat_id, "now", now, config)
             return None if sent is not None else "Could not send the roundup."
         if word in ("off", "on"):

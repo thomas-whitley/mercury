@@ -354,6 +354,55 @@ def send_roundup(
     return roundup_id
 
 
+_NEWEST_SEND = """
+SELECT message_id, text FROM deal_sends WHERE node_id = %s AND chat_id = %s
+ORDER BY sent_at DESC, id DESC LIMIT 1
+"""
+_RATE = """
+INSERT INTO deal_ratings (node_id, rating, silent, rated_at) VALUES (%s, %s, false, %s)
+ON CONFLICT (node_id) DO UPDATE SET rating = excluded.rating, silent = false,
+    rated_at = excluded.rated_at
+"""
+# A sent deal still live silence_days after it was first sent, with no
+# rating. One that expired unrated counts for nothing.
+_SILENCE = """
+INSERT INTO deal_ratings (node_id, rating, silent, rated_at)
+SELECT d.node_id, 'n', true, %(now)s
+FROM deals d
+WHERE d.flag IS DISTINCT FROM 'expired' AND (d.expires_at IS NULL OR d.expires_at > %(now)s)
+  AND (SELECT min(sent_at) FROM deal_sends s WHERE s.node_id = d.node_id)
+      <= %(now)s - make_interval(days => %(days)s)
+  AND NOT EXISTS (SELECT 1 FROM deal_ratings r WHERE r.node_id = d.node_id)
+"""
+_BUTTON_RATINGS = "SELECT count(*) FROM deal_ratings WHERE NOT silent"
+
+
+def record_rating(
+    conn: psycopg.Connection, node_id: int, chat_id: int, rating: str, now: datetime
+) -> tuple[int, str] | None:
+    """Record a press, replacing any earlier rating of the deal, silent or
+    not. Returns the message id and text of the deal's newest message to the
+    chat, or None, recording nothing, when it was never sent there."""
+    sent = conn.execute(_NEWEST_SEND, (node_id, chat_id)).fetchone()
+    if sent is None:
+        return None
+    conn.execute(_RATE, (node_id, rating, now))
+    return sent[0], sent[1]
+
+
+def record_silence(conn: psycopg.Connection, now: datetime, config: DealsConfig) -> int:
+    """Count each sent deal left unrated for silence_days as a weak Not for me."""
+    added = conn.execute(_SILENCE, {"now": now, "days": config.silence_days}).rowcount
+    if added:
+        logger.info("%s unrated deal(s) counted as silence", added)
+    return added
+
+
+def button_ratings(conn: psycopg.Connection) -> int:
+    """Distinct deals rated with a button. Silence never counts."""
+    return conn.execute(_BUTTON_RATINGS).fetchone()[0]
+
+
 def _send_deal(
     conn: psycopg.Connection,
     telegram: TelegramClient,

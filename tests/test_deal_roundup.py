@@ -2,67 +2,17 @@
 notifies, the best live deals since the last scheduled roundup, sent once
 on the first tick after Sunday 10:00 Melbourne time."""
 
-from datetime import UTC, datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import UTC, timedelta
 
 import pytest
 
 from app.deals import MAX_DEAL_CHARS, deal_text, roundup_due, send_roundup, window_start
 from app.mercury_config import DealsConfig
 from app.telegram import TelegramClient
+from tests.deal_seed import CHAT, SUNDAY, seed_deal, snapshot
 
-MELBOURNE = ZoneInfo("Australia/Melbourne")
-# Sunday 1 November 2026, 10:00 in Melbourne.
-SUNDAY = datetime(2026, 11, 1, 10, 0, tzinfo=MELBOURNE)
-CHAT = 42
 CONFIG = DealsConfig(enabled=True)
 TZ = "Australia/Melbourne"
-
-
-def seed_deal(
-    conn,
-    node_id: int,
-    *,
-    title: str | None = None,
-    pos: int = 20,
-    neg: int = 0,
-    first_seen: datetime = SUNDAY - timedelta(days=2),
-    seen_at: datetime | None = None,
-    category: str | None = "cat:x",
-    store: str | None = "store:s",
-    tags: tuple[str, ...] = (),
-    flag: str | None = None,
-    expires_at: datetime | None = None,
-) -> None:
-    seen_at = seen_at or SUNDAY - timedelta(hours=1)
-    conn.execute(
-        "INSERT INTO deals (node_id, title, posted_at, expires_at, flag, category, store, tags, "
-        "first_seen_at, last_seen_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-        (
-            node_id,
-            title or f"Invented deal {node_id}",
-            first_seen - timedelta(hours=1),
-            expires_at,
-            flag,
-            category,
-            store,
-            list(tags),
-            first_seen,
-            seen_at,
-        ),
-    )
-    conn.execute(
-        "INSERT INTO deal_feature_names (key, name) VALUES ('store:s', 'Invented Store') "
-        "ON CONFLICT DO NOTHING"
-    )
-    snapshot(conn, node_id, seen_at, pos, neg)
-
-
-def snapshot(conn, node_id, seen_at, pos, neg=0, front=False):
-    conn.execute(
-        "INSERT INTO deal_snapshots VALUES (%s, %s, %s, %s, 0, %s)",
-        (node_id, seen_at, pos, neg, front),
-    )
 
 
 @pytest.fixture

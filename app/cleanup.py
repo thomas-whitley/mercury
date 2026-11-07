@@ -11,6 +11,11 @@ finished (merged, closed or gone) loses the reviewer's words copied onto its
 row at the same age, counted from when it finished. A run older than runs_days
 goes, steps, events and model calls with it.
 
+The deal finder's vote snapshots go at event_bodies_days, and so does a
+deal never sent once it has not been seen for as long. A deal that was sent
+keeps its row, its messages and its rating, which the learning reads, until
+its last message is runs_days old.
+
 Both statements only touch rows that still have something to remove, so a
 second pass in the same hour finds nothing.
 """
@@ -87,6 +92,31 @@ WHERE state IN ('merged', 'closed', 'gone')
 """
 
 
+_DROP_DEAL_SNAPSHOTS = """
+DELETE FROM deal_snapshots WHERE seen_at < now() - make_interval(days => %s)
+"""
+_DROP_UNSENT_DEALS = """
+DELETE FROM deals d
+WHERE d.last_seen_at < now() - make_interval(days => %s)
+  AND NOT EXISTS (SELECT 1 FROM deal_sends s WHERE s.node_id = d.node_id)
+  AND NOT EXISTS (SELECT 1 FROM deal_ratings r WHERE r.node_id = d.node_id)
+"""
+# A sent deal goes once its last message passes the runs window: its rating,
+# its messages, then the deal, then roundups no message points at.
+_OLD_SENT_DEALS = """
+SELECT node_id FROM deal_sends GROUP BY node_id
+HAVING max(sent_at) < now() - make_interval(days => %s)
+"""
+_DROP_DEAL_RATINGS = "DELETE FROM deal_ratings WHERE node_id = ANY(%s)"
+_DROP_DEAL_SENDS = "DELETE FROM deal_sends WHERE node_id = ANY(%s)"
+_DROP_DEALS = "DELETE FROM deals WHERE node_id = ANY(%s)"
+_DROP_DEAL_ROUNDUPS = """
+DELETE FROM deal_roundups r
+WHERE r.sent_at < now() - make_interval(days => %s)
+  AND NOT EXISTS (SELECT 1 FROM deal_sends s WHERE s.roundup_id = r.id)
+"""
+
+
 @dataclass(frozen=True)
 class CleanupResult:
     runs_stripped: int
@@ -106,6 +136,13 @@ def run_cleanup(
         conn.execute(_DROP_CALLS, (event_bodies_days,))
         conn.execute(_STRIP_NOTES, (event_bodies_days,))
         deleted = conn.execute(_DELETE_RUNS, (runs_days,)).rowcount
+        conn.execute(_DROP_DEAL_SNAPSHOTS, (event_bodies_days,))
+        conn.execute(_DROP_UNSENT_DEALS, (event_bodies_days,))
+        old_deals = [row[0] for row in conn.execute(_OLD_SENT_DEALS, (runs_days,))]
+        if old_deals:
+            for statement in (_DROP_DEAL_RATINGS, _DROP_DEAL_SENDS, _DROP_DEALS):
+                conn.execute(statement, (old_deals,))
+        conn.execute(_DROP_DEAL_ROUNDUPS, (runs_days,))
 
     result = CleanupResult(runs_stripped=len(stripped), runs_deleted=deleted)
     if stripped or deleted:

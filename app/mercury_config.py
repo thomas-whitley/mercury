@@ -10,6 +10,7 @@ refused at startup rather than left to state something false.
 """
 
 from dataclasses import dataclass, field
+from datetime import time
 from pathlib import Path
 
 import yaml
@@ -92,6 +93,40 @@ class ReviewNotesConfig:
             object.__setattr__(self, name, entries)
 
 
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+# The YAML names of the rating steps, and the letter each is kept under. The
+# letters are the ones the rating buttons send back (app/deals.py).
+STEP_KEYS = {"great": "g", "good": "o", "not_for_me": "n", "silence": "silence"}
+DEFAULT_STEPS = {"g": 1.0, "o": 0.5, "n": -0.5, "silence": -0.2}
+# The parts of a deal's community score and what each is multiplied by
+# (app/deal_score.py states the formula).
+DEFAULT_COMMUNITY = {"votes_per_hour": 2.0, "net": 1.0, "comments": 0.3, "front_page": 1.0}
+
+
+@dataclass(frozen=True)
+class DealsConfig:
+    """The deals: section. Every number is a starting value Thomas can tune.
+    roundup_weekday counts Monday as 0, and roundup_time is read in
+    telegram.timezone. A rating's weight halves every half_life_days.
+    overpriced_step is how far one Overpriced raises its category's bar on
+    community score. alert_bar is the total an alert must reach, moved by
+    bar_step per /deals more or less."""
+
+    enabled: bool = False
+    roundup_weekday: int = 6
+    roundup_time: time = time(10, 0)
+    roundup_size: int = 10
+    size_step: int = 3
+    alerts_after: int = 30
+    alert_bar: float = 6.0
+    bar_step: float = 1.0
+    silence_days: int = 7
+    half_life_days: float = 90.0
+    overpriced_step: float = 0.5
+    steps: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_STEPS))
+    community: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_COMMUNITY))
+
+
 @dataclass(frozen=True)
 class MercuryConfig:
     sites: tuple[str, ...]
@@ -105,6 +140,7 @@ class MercuryConfig:
     runs_days: int = RUNS_DAYS
     tasks: dict[str, TaskSettings] = field(default_factory=dict)
     review_notes: ReviewNotesConfig | None = None
+    deals: DealsConfig = field(default_factory=DealsConfig)
 
 
 def load_mercury_config(path: str | Path) -> MercuryConfig:
@@ -133,6 +169,68 @@ def load_mercury_config(path: str | Path) -> MercuryConfig:
         timezone=telegram.get("timezone") or "Australia/Melbourne",
         tasks=_tasks(data.get("tasks") or {}),
         review_notes=_review_notes(data.get("review_notes"), repos),
+        deals=_deals(data.get("deals")),
+    )
+
+
+def _deals(section: object) -> DealsConfig:
+    if section is None:
+        return DealsConfig()
+    if not isinstance(section, dict):
+        raise ValueError("mercury.yaml: deals: must be a mapping")
+    defaults = DealsConfig()
+
+    def number(key: str, *, whole: bool = False) -> float:
+        value = section.get(key, getattr(defaults, key))
+        ok = isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+        if not ok or (whole and not isinstance(value, int)):
+            kind = "a positive whole number" if whole else "a positive number"
+            raise ValueError(f"mercury.yaml: deals.{key} must be {kind}")
+        return value
+
+    day = str(section.get("roundup_day", "sunday")).strip().lower()
+    if day not in WEEKDAYS:
+        raise ValueError("mercury.yaml: deals.roundup_day must be a day of the week")
+    try:
+        roundup_time = time.fromisoformat(str(section.get("roundup_time", "10:00")))
+    except ValueError:
+        raise ValueError("mercury.yaml: deals.roundup_time must be HH:MM") from None
+
+    steps = dict(DEFAULT_STEPS)
+    for name, value in (section.get("steps") or {}).items():
+        if name not in STEP_KEYS:
+            raise ValueError(f"mercury.yaml: deals.steps.{name} is not a rating step")
+        # Great and Good raise a weight, Not for me and silence lower it.
+        rising = name in ("great", "good")
+        numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
+        if not numeric or (value <= 0 if rising else value >= 0):
+            sign = "positive" if rising else "negative"
+            raise ValueError(f"mercury.yaml: deals.steps.{name} must be a {sign} number")
+        steps[STEP_KEYS[name]] = float(value)
+
+    community = dict(DEFAULT_COMMUNITY)
+    for name, value in (section.get("community") or {}).items():
+        if name not in DEFAULT_COMMUNITY:
+            raise ValueError(f"mercury.yaml: deals.community.{name} is not a part of the score")
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"mercury.yaml: deals.community.{name} must be 0 or more")
+        community[name] = float(value)
+
+    return DealsConfig(
+        # Only a YAML boolean true. A quoted "true" keeps deals off.
+        enabled=section.get("enabled") is True,
+        roundup_weekday=WEEKDAYS.index(day),
+        roundup_time=roundup_time,
+        roundup_size=int(number("roundup_size", whole=True)),
+        size_step=int(number("size_step", whole=True)),
+        alerts_after=int(number("alerts_after", whole=True)),
+        alert_bar=float(number("alert_bar")),
+        bar_step=float(number("bar_step")),
+        silence_days=int(number("silence_days", whole=True)),
+        half_life_days=float(number("half_life_days")),
+        overpriced_step=float(number("overpriced_step")),
+        steps=steps,
+        community=community,
     )
 
 

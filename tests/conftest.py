@@ -178,3 +178,12 @@ def restore_task_types():
     yield
     TASK_TYPES.clear()
     TASK_TYPES.update(saved)
+
+
+@pytest.fixture
+def fake_ozbargain():
+    from tests.ozbargain_fake import FakeOzBargain
+
+    server = FakeOzBargain()
+    yield server
+    server.close()

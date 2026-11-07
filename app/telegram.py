@@ -4,6 +4,7 @@ The token is part of every request path, so nothing here puts a URL in an
 exception or a log line. Errors carry Telegram's own description only.
 """
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -38,11 +39,13 @@ class TelegramClient:
         parse_mode: str | None = None,
         disable_link_preview: bool = False,
         disable_notification: bool = False,
+        per_row: int | None = None,
     ) -> int:
         """Send text to the chat and return the new message's id. Each button
         is a label and the callback data Telegram sends back when it is pressed.
         parse_mode "HTML" has Telegram read the text's tags. A key is sent only
-        when its option is set, so a plain call sends what it always did."""
+        when its option is set, so a plain call sends what it always did.
+        Buttons go in one row unless per_row says how many fit on each."""
         payload: dict = {"chat_id": chat_id, "text": text}
         if parse_mode is not None:
             payload["parse_mode"] = parse_mode
@@ -51,11 +54,7 @@ class TelegramClient:
         if disable_notification:
             payload["disable_notification"] = True
         if buttons:
-            payload["reply_markup"] = {
-                "inline_keyboard": [
-                    [{"text": label, "callback_data": data} for label, data in buttons]
-                ]
-            }
+            payload["reply_markup"] = _keyboard(buttons, per_row)
         result = self._call("sendMessage", payload)
         return result["message_id"]
 
@@ -63,13 +62,22 @@ class TelegramClient:
         """Stop the pressed button's spinner and show a short notice."""
         self._call("answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text})
 
-    def edit_message_text(self, chat_id: int, message_id: int, text: str) -> None:
-        """Replace a message's text. Any buttons it had are removed, since the
-        edit sends no reply_markup. Unchanged text is not an error."""
+    def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        buttons: list[tuple[str, str]] | None = None,
+        *,
+        per_row: int | None = None,
+    ) -> None:
+        """Replace a message's text. Any buttons it had are removed unless
+        they are passed again. Unchanged text is not an error."""
+        payload: dict = {"chat_id": chat_id, "message_id": message_id, "text": text}
+        if buttons:
+            payload["reply_markup"] = _keyboard(buttons, per_row)
         try:
-            self._call(
-                "editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": text}
-            )
+            self._call("editMessageText", payload)
         except TelegramError as error:
             if "message is not modified" not in str(error):
                 raise
@@ -101,12 +109,20 @@ class TelegramClient:
             body = _json_or_empty(error.read())
             description = body.get("description", f"HTTP {error.code}")
             raise TelegramError(f"{method} refused: {description}", error.code) from None
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, http.client.HTTPException) as error:
+            # A truncated answer raises IncompleteRead, which is not an OSError.
             # str(URLError) can carry the URL, and the URL carries the token.
             raise TelegramError(f"{method} failed: {type(error).__name__}") from None
         if not body.get("ok"):
             raise TelegramError(f"{method} refused: {body.get('description', 'no description')}")
         return body["result"]
+
+
+def _keyboard(buttons: list[tuple[str, str]], per_row: int | None) -> dict:
+    """Each button is a label and the callback data Telegram sends back."""
+    row = per_row or len(buttons)
+    keys = [{"text": label, "callback_data": data} for label, data in buttons]
+    return {"inline_keyboard": [keys[i : i + row] for i in range(0, len(keys), row)]}
 
 
 def _json_or_empty(raw: bytes) -> dict:

@@ -18,6 +18,9 @@ within the window falls back to PageSpeed on the Python worker. The daily
 and weekly flight_watch checks are only created here too. The flight-finder
 worker on the home PC claims them, and the api sends its alert to Telegram
 (app/check_claims.py).
+
+When deals.enabled is set, every tick also reads OzBargain's two feeds and
+sends the weekly deal roundup when due, and any instant alerts (app/deals.py).
 """
 
 import json
@@ -31,6 +34,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 from opentelemetry import trace
 
+from app import deals
 from app.approvals import ask, expire_due
 from app.audit import OSVClient, OSVError, audit_repo
 from app.checks import check_site
@@ -658,6 +662,7 @@ def main() -> None:  # pragma: no cover - the process entry point
         created += schedule_flight_watch(
             conn, settings.api_base_url, settings.mercury_bearer_token, config.timezone
         )
+        deals.tick(conn, settings, config, telegram)
         run_cleanup(conn, config.event_bodies_days, config.runs_days)
 
     logger.info("scheduler run complete, %s check(s) created", len(created))

@@ -51,6 +51,25 @@ portfolio:
 #   sensitive_files: [src/site.config.ts]
 #   daily_cap: 10                   # note chores started in any 24 hours
 
+# Optional. OzBargain's new deals and front page feeds are read on every scheduler tick,
+# and a weekly roundup goes to the chat above with four rating buttons per deal. Every
+# number is a starting value. Ratings and settings changed from Telegram live in the
+# database, never here.
+# deals:
+#   enabled: false            # only a YAML true reads the feeds
+#   roundup_day: sunday
+#   roundup_time: "10:00"     # in telegram.timezone
+#   roundup_size: 10          # deals per roundup; /deals more and less move it by size_step
+#   size_step: 3
+#   alerts_after: 30          # instant alerts switch on after this many deals rated with a button
+#   alert_bar: 6.0            # the total score an alert must reach
+#   bar_step: 1.0             # how far /deals more and less move the alert bar
+#   silence_days: 7           # a sent deal still live and unrated this long counts as a weak Not for me
+#   half_life_days: 90        # a rating counts half as much after this many days
+#   overpriced_step: 0.5      # how far one Overpriced raises its category's bar
+#   steps: {great: 1.0, good: 0.5, not_for_me: -0.5, silence: -0.2}
+#   community: {votes_per_hour: 2.0, net: 1.0, comments: 0.3, front_page: 1.0}
+
 # The scheduler Job fires once an hour, on the hour in UTC, and nothing reads
 # a cron line here (app/scheduler.py). On each tick it checks every site for
 # uptime, watches every repo's CI through the GitHub Actions API, and applies

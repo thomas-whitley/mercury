@@ -93,3 +93,43 @@ def test_an_unreachable_api_raises_without_the_token_in_the_message():
         client.send_message(42, "hello")
 
     assert "secret-token" not in str(raised.value)
+
+
+FOUR = [("A", "a"), ("B", "b"), ("C", "c"), ("D", "d")]
+TWO_ROWS = {
+    "inline_keyboard": [
+        [{"text": "A", "callback_data": "a"}, {"text": "B", "callback_data": "b"}],
+        [{"text": "C", "callback_data": "c"}, {"text": "D", "callback_data": "d"}],
+    ]
+}
+
+
+def test_send_message_puts_buttons_two_per_row(fake):
+    TelegramClient("123:abc", base_url=fake.url).send_message(42, "hi", FOUR, per_row=2)
+
+    assert fake.sent()[0]["reply_markup"] == TWO_ROWS
+
+
+def test_edit_with_buttons_keeps_the_keyboard(fake):
+    TelegramClient("123:abc", base_url=fake.url).edit_message_text(42, 7, "hi", FOUR, per_row=2)
+
+    assert fake.sent("editMessageText")[0]["reply_markup"] == TWO_ROWS
+
+
+def test_edit_without_buttons_sends_no_reply_markup(fake):
+    TelegramClient("123:abc", base_url=fake.url).edit_message_text(42, 7, "hi")
+
+    assert fake.sent("editMessageText") == [{"chat_id": 42, "message_id": 7, "text": "hi"}]
+
+
+def test_a_truncated_answer_is_a_telegram_error(fake, monkeypatch):
+    import http.client
+    import urllib.request
+
+    def truncated(*args, **kwargs):
+        raise http.client.IncompleteRead(b"")
+
+    monkeypatch.setattr(urllib.request, "urlopen", truncated)
+
+    with pytest.raises(TelegramError, match="IncompleteRead"):
+        TelegramClient("123:abc", base_url=fake.url).send_message(42, "hi")

@@ -40,6 +40,14 @@ services:
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env to the Supabase session pooler string}
       MODEL: ${MODEL:-stub}
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+      # The local rung, Ollama on Windows (decision 46), wired as in
+      # compose.local.yml. Ollama's cloud free tier became pay as you go on
+      # 2026-11-09, so the home ladders fall back to this instead of `ollama`.
+      LOCAL_MODEL_URL: ${LOCAL_MODEL_URL:-http://host.docker.internal:11434/v1}
+      LOCAL_MODEL_TOKEN: ${LOCAL_MODEL_TOKEN:-unused-by-ollama-but-the-provider-needs-one}
+      LOCAL_MODEL: ${LOCAL_MODEL:-mercury-local:base}
+      LOCAL_MODEL_TIMEOUT_SECONDS: ${LOCAL_MODEL_TIMEOUT_SECONDS:-}
+      MAX_LOCAL_RUNS_PER_DAY: ${MAX_LOCAL_RUNS_PER_DAY:-200}
       MERCURY_GITHUB_TOKEN: ${MERCURY_GITHUB_TOKEN:-}
       MERCURY_CONFIG_PATH: /config/mercury.yaml
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
@@ -49,6 +57,8 @@ services:
       POLL_SECONDS: ${POLL_SECONDS:-5}
     volumes:
       - ${MERCURY_HOME_CONFIG:-./local/mercury.home.yaml}:/config/mercury.yaml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on: !reset {}
 
   # The Azure Job ran once an hour at minute 0. Here one container runs the

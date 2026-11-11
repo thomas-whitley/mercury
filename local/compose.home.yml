@@ -43,7 +43,7 @@ services:
       # The local rung, Ollama on Windows (decision 46), wired as in
       # compose.local.yml. Ollama's cloud free tier became pay as you go on
       # 2026-11-09, so the home ladders fall back to this instead of `ollama`.
-      LOCAL_MODEL_URL: ${LOCAL_MODEL_URL:-http://host.docker.internal:11434/v1}
+      LOCAL_MODEL_URL: ${LOCAL_MODEL_URL:-http://host.docker.internal:11435/v1}
       LOCAL_MODEL_TOKEN: ${LOCAL_MODEL_TOKEN:-unused-by-ollama-but-the-provider-needs-one}
       LOCAL_MODEL: ${LOCAL_MODEL:-mercury-local:base}
       LOCAL_MODEL_TIMEOUT_SECONDS: ${LOCAL_MODEL_TIMEOUT_SECONDS:-}
@@ -59,7 +59,20 @@ services:
       - ${MERCURY_HOME_CONFIG:-./local/mercury.home.yaml}:/config/mercury.yaml:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    depends_on: !reset {}
+    depends_on: !override
+      - ollama-bridge
+
+  # Ollama runs on Windows and listens on 127.0.0.1 only. WSL's mirrored
+  # networking lets WSL itself reach that, but containers can't, so this
+  # forwards port 11435 on the Docker bridge address host.docker.internal
+  # points at (172.17.0.1) to it. Not 11434: mirrored networking reserves
+  # ports Windows already listens on. Ollama stays off the LAN and needs no
+  # Windows firewall rule.
+  ollama-bridge:
+    image: alpine/socat:1.8.1.1
+    network_mode: host
+    restart: unless-stopped
+    command: ["TCP-LISTEN:11435,bind=172.17.0.1,fork,reuseaddr", "TCP:127.0.0.1:11434"]
 
   # The Azure Job ran once an hour at minute 0. Here one container runs the
   # same pass, sleeps an hour and repeats, so a PC that was off catches up on

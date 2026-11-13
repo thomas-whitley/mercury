@@ -552,3 +552,48 @@ def test_a_one_day_old_result_says_day_not_days(migrated_db):
     _check(migrated_db, "lighthouse", PAGE, {"scores": {"performance": 0.9}}, hours_ago=30)
 
     assert "(1 day ago)" in render_facts(gather_facts(migrated_db))
+
+
+def _waiting_note(conn, note_id: int, state: str, body: str, hours_ago: int) -> None:
+    conn.execute(
+        "INSERT INTO review_notes (note_id, host, page, note_updated_at, state, note_body, "
+        "updated_at) VALUES (%s, 'h', '/', 't', %s, %s, now() - make_interval(hours => %s))",
+        (note_id, state, body, hours_ago),
+    )
+
+
+def test_notes_waiting_lines(migrated_db):
+    from datetime import UTC
+
+    from app.report import notes_waiting_lines
+
+    _waiting_note(migrated_db, 1, "asked", "Should we get a beer this weekend", 49)
+    _waiting_note(migrated_db, 2, "question", "Fix   the\nphone", 25)
+    _waiting_note(migrated_db, 3, "reported", "x", 2)
+    _waiting_note(migrated_db, 4, "merged", "done already", 2)
+
+    lines = notes_waiting_lines(migrated_db, "Luke", datetime.now(UTC))
+
+    assert lines == [
+        'Luke\'s note on / ("Should we get a beer this w…"), waiting 2 days',
+        'Luke\'s note on / ("Fix the phone"), waiting 1 day',
+        'Luke\'s note on / ("x"), waiting today',
+    ]
+
+
+def test_digest_lists_waiting_notes(migrated_db, fake_telegram):
+    _waiting_note(migrated_db, 1, "asked", "Should we get a beer this weekend", 49)
+    run_id = _digest_run(migrated_db)
+    model = StubModel(replies=["All quiet."])
+
+    run_digest(
+        migrated_db, run_id, model, TelegramClient("1:a", fake_telegram.url), CHAT_ID,
+        retry_backoff_seconds=0, reviewer_name="Luke",
+    )  # fmt: skip
+
+    [sent] = fake_telegram.sent()
+    assert sent["text"] == (
+        'All quiet.\n\nLuke\'s note on / ("Should we get a beer this w…"), waiting 2 days'
+    )
+    assert "beer" not in model.prompts[0]  # the model sees the count, never the words
+    assert '"review_notes_waiting": 1' in model.prompts[0]

@@ -335,8 +335,9 @@ def _process_run(
 
     if task_type_name == "digest":
         tokens = run_digest(
-            conn, run_id, model, telegram, owner_chat_id, worker_id=settings.worker_id
-        )
+            conn, run_id, model, telegram, owner_chat_id, worker_id=settings.worker_id,
+            reviewer_name=review_notes.reviewer_name if review_notes else "The reviewer",
+        )  # fmt: skip
         return LoopResult(status="succeeded", attempts=1, tokens_used=tokens)
 
     if task_type_name == "chat":

@@ -68,8 +68,14 @@ SELECT note_id, page, state, pr_url, edited FROM review_notes
 WHERE state NOT IN ('merged', 'closed', 'gone') OR updated_at >= %s
 ORDER BY note_id
 """
-# A note on the owner: a question to answer, or a pull request to merge.
-_NOTES_WAITING = "SELECT count(*) FROM review_notes WHERE state IN ('question', 'reported')"
+# A note on the owner: a card to answer, a question to answer, or a pull request to merge.
+_WAITING_STATES = ("asked", "question", "reported")
+_NOTES_WAITING = "SELECT count(*) FROM review_notes WHERE state = ANY(%s)"
+_NOTES_WAITING_WORDS = """
+SELECT page, coalesce(note_body, ''), updated_at FROM review_notes
+WHERE state = ANY(%s) ORDER BY updated_at, note_id
+"""
+QUOTE_CHARS = 27
 
 
 def notes_section(conn: psycopg.Connection, since: datetime | date) -> list[str]:
@@ -91,7 +97,22 @@ def notes_section(conn: psycopg.Connection, since: datetime | date) -> list[str]
 
 def notes_waiting(conn: psycopg.Connection) -> int:
     """Review notes waiting on the owner: a question, or a pull request to merge."""
-    return conn.execute(_NOTES_WAITING).fetchone()[0]
+    return conn.execute(_NOTES_WAITING, (list(_WAITING_STATES),)).fetchone()[0]
+
+
+def notes_waiting_lines(conn: psycopg.Connection, reviewer_name: str, now: datetime) -> list[str]:
+    """One line per note waiting on the owner, built here rather than by a
+    model, so the note's words never enter a prompt: who, which page, the
+    note's first words and how long it has waited."""
+    lines = []
+    for page, body, since in conn.execute(_NOTES_WAITING_WORDS, (list(_WAITING_STATES),)):
+        words = " ".join(body.split())
+        quote = words[:QUOTE_CHARS] + ("…" if len(words) > QUOTE_CHARS else "")
+        shown = page if valid_page(page) else "(not a site path)"
+        days = (now - since).days
+        waited = "today" if days < 1 else f"{days} day{'s' if days != 1 else ''}"
+        lines.append(f'{reviewer_name}\'s note on {shown} ("{quote}"), waiting {waited}')
+    return lines
 
 
 def waiting_counts(conn: psycopg.Connection) -> tuple[int, int]:

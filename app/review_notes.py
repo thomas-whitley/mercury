@@ -13,6 +13,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 import psycopg
@@ -26,6 +27,7 @@ from app.d1 import D1Client, D1Error
 from app.escalation import MESSAGE_LIMIT, _fit
 from app.github import FAILED_CONCLUSIONS, GitHubClient, GitHubError
 from app.mercury_config import RepoConfig, ReviewNotesConfig, path_entry_covers
+from app.note_card import age_line, card_buttons, card_text
 from app.tasks import TASK_TYPES
 from app.telegram import TelegramClient, TelegramError
 
@@ -975,7 +977,7 @@ def _post_score_comments(conn: psycopg.Connection, tick: _Tick) -> None:
 
 _SETTLE_ROWS = """
 SELECT note_id, state, run_id, note_updated_at FROM review_notes
-WHERE state NOT IN ('merged', 'closed', 'gone') ORDER BY note_id
+WHERE state NOT IN ('merged', 'closed', 'gone', 'dismiss', 'dismissed') ORDER BY note_id
 """
 _MARK_EDITED = """
 UPDATE review_notes SET edited = true, note_updated_at = %s, updated_at = now()
@@ -985,7 +987,9 @@ _MARK_DONE_IN_D1 = (
     "UPDATE review_comments SET status = 'done', updated_at = datetime('now') "
     "WHERE id = ? AND status = 'open'"
 )
-_TRACKED_BY_PR = ("chore", "question", "waiting", "reported")
+# The rows an edit is flagged on. A note still being sorted or asked about is
+# looked at too, so a card for words since edited can be told apart.
+_TRACKED_BY_PR = ("chore", "question", "waiting", "reported", "asked", "sorting")
 # The rows whose pull request is looked up: a merge marks the note done.
 _SETTLED_BY_PR = ("question", "waiting", "reported")
 
@@ -1065,3 +1069,63 @@ def _settle_row(
     elif pull == "none" and state != "question":
         # A question has no pull request until someone opens one.
         logger.warning("review note %s: no pull request found for its branch", note_id)
+
+
+# ---- Dismissals and cards for questions escalated before cards existed ----
+
+_DISMISSING = "SELECT note_id FROM review_notes WHERE state = 'dismiss' ORDER BY note_id"
+_UNCARDED_QUESTIONS = """
+SELECT note_id, page, note_updated_at, note_body, note_anchor, note_quote, created_at,
+       held_by_page
+FROM review_notes WHERE state = 'question' AND card_message_id IS NULL ORDER BY note_id
+"""
+_SET_CARD = """
+UPDATE review_notes SET card_message_id = %s, card_updated_at = %s, updated_at = now()
+WHERE note_id = %s
+"""
+
+
+def finish_dismissals(conn: psycopg.Connection, d1: D1Client) -> int:
+    """Mark each note Thomas dismissed done in D1, which takes it off the
+    reviewer's page, then mark the row dismissed. A D1 write that fails leaves
+    the row as dismiss for the next tick. Returns how many finished."""
+    finished = 0
+    for (note_id,) in conn.execute(_DISMISSING).fetchall():
+        try:
+            d1.query(_MARK_DONE_IN_D1, [note_id])
+        except D1Error as error:
+            logger.error("review note %s: dismissal not written to D1: %s", note_id, error)
+            continue
+        conn.execute(_SET_STATE, ("dismissed", note_id))
+        logger.info("review note %s dismissed and marked done", note_id)
+        finished += 1
+    return finished
+
+
+def card_for_old_questions(
+    conn: psycopg.Connection,
+    telegram: TelegramClient | None,
+    chat_id: int | None,
+    reviewer_name: str,
+) -> int:
+    """One card, with Dismiss, for each question with none: a chore escalated
+    before cards existed, or one whose escalation message was not sent. A send
+    that fails leaves the row for the next tick. Returns how many were sent."""
+    if telegram is None or chat_id is None:
+        return 0
+    sent = 0
+    now = datetime.now(UTC)
+    for row in conn.execute(_UNCARDED_QUESTIONS).fetchall():
+        note_id, page, written, body, anchor, quote, picked_up, held = row
+        text = card_text(
+            reviewer_name, page, body or "", anchor, quote,
+            age_line(written, picked_up, now, held), None,
+        )  # fmt: skip
+        try:
+            message_id = telegram.send_message(chat_id, text, card_buttons(note_id, False))
+        except TelegramError as error:
+            logger.error("review note %s: card not sent: %s", note_id, error)
+            continue
+        conn.execute(_SET_CARD, (message_id, written, note_id))
+        sent += 1
+    return sent

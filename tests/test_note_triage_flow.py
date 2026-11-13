@@ -1,3 +1,4 @@
+# ruff: noqa: F811 - pytest fixtures imported from test_review_notes are parameters here
 """Every new review note is sorted first (app/note_sort.py), whatever its page
 or the day's limits. tests/test_review_notes.py stands in a "change" verdict
 for its older chore tests; this file uses the real queue_sort."""
@@ -121,3 +122,131 @@ def test_sort_rolls_back_on_error(migrated_db, monkeypatch):
     monkeypatch.setattr("app.review_notes.start_chore", broken)
     start_note_chores(migrated_db, [note(1)], make_config(), REPO)
     assert state_of(migrated_db, 1) == "sorting"  # sorting never touches start_chore
+
+
+# ---- The scheduler's part: D1 "done" for dismissals, cards for old questions,
+# edits and deletions of notes still being sorted or asked about ----
+
+from app.d1 import D1Client  # noqa: E402
+from app.review_notes import card_for_old_questions, finish_dismissals  # noqa: E402
+from app.telegram import TelegramClient  # noqa: E402
+from tests.test_review_notes import (  # noqa: E402, F401 - fixtures used by name
+    DONE_SQL,
+    cloudflare,
+    d1_for,
+    d1_writes,
+    github,
+    settle,
+)
+
+
+def seed_row(conn, state: str, **cols) -> None:
+    conn.execute(
+        "INSERT INTO review_notes (note_id, host, page, note_updated_at, state, note_body) "
+        "VALUES (1, 'live.example.com', '/about/', '2026-10-19 01:00:00', %s, 'hello')",
+        (state,),
+    )
+    for column, value in cols.items():
+        conn.execute(f"UPDATE review_notes SET {column} = %s WHERE note_id = 1", (value,))
+
+
+def test_dismiss_marks_d1_done(migrated_db, cloudflare):
+    cloudflare.add_note(1)
+    seed_row(migrated_db, "dismiss")
+
+    assert finish_dismissals(migrated_db, d1_for(cloudflare)) == 1
+
+    assert d1_writes(cloudflare) == [{"sql": DONE_SQL, "params": [1]}]
+    assert state_of(migrated_db, 1) == "dismissed"
+
+
+def test_dismiss_d1_down_retries(migrated_db):
+    seed_row(migrated_db, "dismiss")
+    unreachable = D1Client("t", "acct", "db", "http://127.0.0.1:9")
+    assert finish_dismissals(migrated_db, unreachable) == 0
+    assert state_of(migrated_db, 1) == "dismiss"
+
+
+def test_dismissed_note_is_not_marked_gone(migrated_db, cloudflare, github):
+    cloudflare.add_note(1, status="done")
+    seed_row(migrated_db, "dismissed")
+    settle(migrated_db, cloudflare, github)
+    assert state_of(migrated_db, 1) == "dismissed"
+
+
+def test_asked_edit_flagged(migrated_db, cloudflare, github):
+    cloudflare.add_note(1, updated_at="2026-11-01 00:00:00")
+    seed_row(migrated_db, "asked")
+    settle(migrated_db, cloudflare, github)
+    written = migrated_db.execute("SELECT note_updated_at FROM review_notes").fetchone()[0]
+    assert written == "2026-11-01 00:00:00"
+    assert state_of(migrated_db, 1) == "asked"
+
+
+def test_asked_gone(migrated_db, cloudflare, github):
+    seed_row(migrated_db, "asked")
+    settle(migrated_db, cloudflare, github)
+    assert state_of(migrated_db, 1) == "gone"
+
+
+def test_sorting_gone(migrated_db, cloudflare, github):
+    seed_row(migrated_db, "sorting")
+    settle(migrated_db, cloudflare, github)
+    assert state_of(migrated_db, 1) == "gone"
+
+
+def test_old_question_gets_one_card(migrated_db, fake_telegram):
+    seed_row(migrated_db, "question")
+    client = TelegramClient("123:abc", base_url=fake_telegram.url)
+
+    assert card_for_old_questions(migrated_db, client, 42, "Luke") == 1
+    assert card_for_old_questions(migrated_db, client, 42, "Luke") == 0
+
+    [sent] = fake_telegram.sent()
+    assert sent["text"].startswith("Luke left a note on /about/:")
+    assert "note:1:dismiss" in str(sent["reply_markup"])
+    assert "note:1:change" not in str(sent["reply_markup"])
+    card, written = migrated_db.execute(
+        "SELECT card_message_id, card_updated_at FROM review_notes"
+    ).fetchone()
+    assert (card, written) == (1, "2026-10-19 01:00:00")
+
+
+def test_old_question_card_waits_for_telegram(migrated_db):
+    seed_row(migrated_db, "question")
+    client = TelegramClient("123:abc", base_url="http://127.0.0.1:9")
+    assert card_for_old_questions(migrated_db, client, 42, "Luke") == 0
+    card = migrated_db.execute("SELECT card_message_id FROM review_notes").fetchone()[0]
+    assert card is None
+
+
+def test_scheduler_tick_finishes_dismissals_and_cards_old_questions(
+    migrated_db, cloudflare, github, fake_telegram
+):
+    import dataclasses
+
+    from app.github import GitHubClient
+    from app.scheduler import advance_review_notes
+    from tests.test_review_notes import mercury_config, settings_for
+
+    cloudflare.add_note(1)
+    cloudflare.add_note(2, page="/contact/")
+    seed_row(migrated_db, "dismiss")
+    migrated_db.execute(
+        "INSERT INTO review_notes (note_id, host, page, note_updated_at, state, note_body) "
+        "VALUES (2, 'live.example.com', '/contact/', '2026-10-19 01:00:00', 'question', 'hi')"
+    )
+    config = dataclasses.replace(
+        mercury_config(make_config(live_hosts=("live.example.com",))), telegram_chat_id=42
+    )
+    client = TelegramClient("123:abc", base_url=fake_telegram.url)
+
+    advance_review_notes(
+        migrated_db, settings_for(cloudflare), config, client, GitHubClient("t", github.url)
+    )
+
+    assert state_of(migrated_db, 1) == "dismissed"
+    assert cloudflare.notes[0]["status"] == "done"
+    assert migrated_db.execute(
+        "SELECT card_message_id IS NOT NULL FROM review_notes WHERE note_id = 2"
+    ).fetchone() == (True,)

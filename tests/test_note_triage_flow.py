@@ -55,7 +55,8 @@ def test_failed_sort_is_requeued(migrated_db):
     assert len(runs_of(migrated_db, "note_sort")) == 1
 
     migrated_db.execute(
-        "UPDATE runs SET status = 'error', finished_at = now() WHERE id = %s", (first,)
+        "UPDATE runs SET status = 'error', finished_at = now() - interval '2 hours' WHERE id = %s",
+        (first,),
     )
     start_note_chores(migrated_db, [note(1)], make_config(), REPO)
 
@@ -69,7 +70,9 @@ def test_refused_sort_is_requeued(migrated_db):
     start_note_chores(migrated_db, [note(1)], make_config(), REPO)
     [(first, _)] = runs_of(migrated_db, "note_sort")
     migrated_db.execute(
-        "UPDATE runs SET status = 'refused', finished_at = now() WHERE id = %s", (first,)
+        "UPDATE runs SET status = 'refused', finished_at = now() - interval '2 hours' "
+        "WHERE id = %s",
+        (first,),
     )
     start_note_chores(migrated_db, [note(1)], make_config(), REPO)
     assert len(runs_of(migrated_db, "note_sort")) == 2
@@ -250,3 +253,105 @@ def test_scheduler_tick_finishes_dismissals_and_cards_old_questions(
     assert migrated_db.execute(
         "SELECT card_message_id IS NOT NULL FROM review_notes WHERE note_id = 2"
     ).fetchone() == (True,)
+
+
+def test_sort_runs_do_not_use_the_daily_cap(migrated_db):
+    # Review: a note_sort run was counted as a note chore, so chit-chat notes filled the cap.
+    start_note_chores(migrated_db, [note(1)], make_config(daily_cap=1), REPO)
+    migrated_db.execute("UPDATE review_notes SET state = 'asked' WHERE note_id = 1")
+    start_note_chores(migrated_db, [note(2, page="/contact/")], make_config(daily_cap=1), REPO)
+    migrated_db.execute("UPDATE review_notes SET state = 'capped', run_id = NULL WHERE note_id = 2")
+
+    started = start_note_chores(
+        migrated_db, [note(2, page="/contact/")], make_config(daily_cap=1), REPO
+    )
+
+    assert len(started) == 1
+
+
+def test_failed_sort_waits_an_hour(migrated_db):
+    # Review: a failed sort was queued again every tick, spending a model call each time.
+    start_note_chores(migrated_db, [note(1)], make_config(), REPO)
+    [(first, _)] = runs_of(migrated_db, "note_sort")
+    migrated_db.execute(
+        "UPDATE runs SET status = 'error', finished_at = now() - interval '10 minutes' "
+        "WHERE id = %s",
+        (first,),
+    )
+    start_note_chores(migrated_db, [note(1)], make_config(), REPO)
+    assert len(runs_of(migrated_db, "note_sort")) == 1
+
+    migrated_db.execute(
+        "UPDATE runs SET finished_at = now() - interval '61 minutes' WHERE id = %s", (first,)
+    )
+    start_note_chores(migrated_db, [note(1)], make_config(), REPO)
+    assert len(runs_of(migrated_db, "note_sort")) == 2
+
+
+def test_card_carries_the_time_of_the_words_it_shows(
+    migrated_db, cloudflare, github, fake_telegram
+):
+    # Review: an edit stamped on a sorting row made a card of old words look current,
+    # so Dismiss would close words Thomas never saw.
+    from app.config import load_settings
+    from app.mercury_config import MercuryConfig
+    from app.model import StubModel
+    from app.note_buttons import press
+    from app.note_sort import run_note_sort
+
+    cloudflare.add_note(1, updated_at="2026-10-19 01:00:00")
+    start_note_chores(migrated_db, open_notes_of(cloudflare), make_config(), REPO)
+    cloudflare.notes[0]["updated_at"] = "2026-10-20 09:00:00"
+    cloudflare.notes[0]["body"] = "Actually, change the phone number"
+    settle(migrated_db, cloudflare, github)
+
+    [(run_id, _)] = runs_of(migrated_db, "note_sort")
+    client = TelegramClient("123:abc", base_url=fake_telegram.url)
+    run_note_sort(migrated_db, str(run_id), StubModel(['{"kind": "other"}']), client, 42, "Luke")
+
+    card = migrated_db.execute("SELECT card_updated_at FROM review_notes").fetchone()[0]
+    assert card == "2026-10-19 01:00:00"
+    mercury = MercuryConfig(sites=(), repos=(REPO,), review_notes=make_config())
+    answer = press(migrated_db, 1, "dismiss", mercury, load_settings())
+    assert answer.endswith("changed this note since. I'll send the new version.")
+
+
+def test_note_starts_take_one_lock(migrated_db, database_url):
+    # Review: the webhook and the scheduler could both start a chore on one page.
+    import threading
+
+    import psycopg
+
+    from app.review_notes import START_LOCK
+
+    migrated_db.execute(
+        "INSERT INTO review_notes (note_id, host, page, note_updated_at, state, note_body) "
+        "VALUES (1, 'live.example.com', '/about/', '2026-10-19 01:00:00', 'capped', 'x')"
+    )
+    holder = psycopg.connect(database_url)
+    holder.execute("SELECT pg_advisory_xact_lock(%s)", (START_LOCK,))
+    done = threading.Event()
+
+    def start():
+        with psycopg.connect(database_url, autocommit=True) as conn:
+            start_note_chores(
+                conn,
+                [note(1, host="live.example.com")],
+                make_config(live_hosts=("live.example.com",)),
+                REPO,
+            )
+        done.set()
+
+    worker = threading.Thread(target=start)
+    worker.start()
+    assert not done.wait(0.5)  # blocked on the lock
+    holder.rollback()
+    holder.close()
+    assert done.wait(10)
+    worker.join()
+
+
+def open_notes_of(cloudflare):
+    from app.review_notes import open_notes
+
+    return open_notes(d1_for(cloudflare))

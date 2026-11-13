@@ -16,3 +16,6 @@ ALTER TABLE review_notes ADD COLUMN suggestion text;
 ALTER TABLE review_notes ADD COLUMN held_by_page boolean NOT NULL DEFAULT false;
 -- Thomas's hint from a reply to a card, kept until the chore it shapes starts.
 ALTER TABLE review_notes ADD COLUMN hint text;
+-- The note's updated_at when note_body was read. A card records this, not
+-- note_updated_at, which an edit moves on while the stored words stay old.
+ALTER TABLE review_notes ADD COLUMN words_at text;

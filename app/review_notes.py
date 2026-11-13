@@ -70,7 +70,7 @@ RETURNING id
 # the top of the pull request. Capped as the instruction caps them.
 _SET_RUN = """
 UPDATE review_notes SET run_id = %s, note_body = %s, note_anchor = %s, note_quote = %s,
-                        updated_at = now()
+                        words_at = %s, updated_at = now()
 WHERE note_id = %s
 """
 # Another note on the page is still being worked on, or its pull request is
@@ -89,11 +89,11 @@ SELECT EXISTS (
 # error, a refusal) is sorted again with a new run.
 _QUEUE_SORT_ROW = """
 INSERT INTO review_notes (note_id, host, page, note_updated_at, state,
-                          note_body, note_anchor, note_quote)
-VALUES (%s, %s, %s, %s, 'sorting', %s, %s, %s)
+                          note_body, note_anchor, note_quote, words_at)
+VALUES (%s, %s, %s, %s, 'sorting', %s, %s, %s, %s)
 ON CONFLICT (note_id) DO UPDATE SET state = 'sorting', note_updated_at = EXCLUDED.note_updated_at,
     note_body = EXCLUDED.note_body, note_anchor = EXCLUDED.note_anchor,
-    note_quote = EXCLUDED.note_quote, updated_at = now()
+    note_quote = EXCLUDED.note_quote, words_at = EXCLUDED.words_at, updated_at = now()
 """
 _QUEUE_SORT_RUN = """
 INSERT INTO runs (task, type, provider, status, source)
@@ -101,13 +101,15 @@ VALUES (%s, 'note_sort', %s, 'pending', 'review_note') RETURNING id
 """
 _SORT_RUN = "UPDATE review_notes SET run_id = %s, updated_at = now() WHERE note_id = %s"
 _SORT_FAILED = """
-SELECT r.finished_at IS NOT NULL AND r.status <> 'succeeded'
+SELECT r.finished_at < now() - interval '1 hour' AND r.status <> 'succeeded'
 FROM review_notes n LEFT JOIN runs r ON r.id = n.run_id WHERE n.note_id = %s
 """
+# pg_advisory_xact_lock key for starting note chores (any fixed bigint; this one spells "notes").
+START_LOCK = 0x6E6F746573
 _HELD = "UPDATE review_notes SET held_by_page = true, updated_at = now() WHERE note_id = %s"
 _STARTED_TODAY = """
 SELECT count(*) FROM review_notes n JOIN runs r ON r.id = n.run_id
-WHERE r.source = 'review_note' AND n.state <> 'capped'
+WHERE r.source = 'review_note' AND r.type = 'repo_chore' AND n.state <> 'capped'
   AND r.created_at > now() - interval '24 hours'
 """
 
@@ -291,6 +293,7 @@ def queue_sort(conn: psycopg.Connection, note: Note) -> str:
             note.id, note.host, note.page, note.updated_at, note.body[:BODY_LIMIT],
             note.anchor_text[:SNIPPET_LIMIT] if note.anchor_text else None,
             note.quote[:SNIPPET_LIMIT] if note.quote else None,
+            note.updated_at,
         ),
     )  # fmt: skip
     provider = TASK_TYPES["note_sort"].provider
@@ -324,6 +327,9 @@ def _advance_note(
         state = queue_sort(conn, note)
         if state != "capped":
             return None
+    # The scheduler and the webhook (Treat as a change) both start chores. One lock,
+    # held to the end of the transaction, makes the page and cap checks and the start one step.
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", (START_LOCK,))
     if conn.execute(_PAGE_BUSY, (note.page, note.id)).fetchone()[0]:
         conn.execute(_HELD, (note.id,))
         logger.info("review note %s waits for another note on its page", note.id)
@@ -366,6 +372,7 @@ def _advance_note(
             note.body[:BODY_LIMIT],
             note.anchor_text[:SNIPPET_LIMIT] if note.anchor_text else None,
             note.quote[:SNIPPET_LIMIT] if note.quote else None,
+            note.updated_at,
             note.id,
         ),
     )
@@ -1075,8 +1082,8 @@ def _settle_row(
 
 _DISMISSING = "SELECT note_id FROM review_notes WHERE state = 'dismiss' ORDER BY note_id"
 _UNCARDED_QUESTIONS = """
-SELECT note_id, page, note_updated_at, note_body, note_anchor, note_quote, created_at,
-       held_by_page
+SELECT note_id, page, coalesce(words_at, note_updated_at), note_body, note_anchor, note_quote,
+       created_at, held_by_page
 FROM review_notes WHERE state = 'question' AND card_message_id IS NULL ORDER BY note_id
 """
 _SET_CARD = """

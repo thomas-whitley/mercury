@@ -41,8 +41,8 @@ JSON object and nothing else: {"kind": "change" | "other" | "unsure", \
 _OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
 _NOTE = """
-SELECT note_id, page, note_updated_at, note_body, note_anchor, note_quote, created_at,
-       held_by_page
+SELECT note_id, page, coalesce(words_at, note_updated_at), note_body, note_anchor, note_quote,
+       created_at, held_by_page
 FROM review_notes WHERE run_id = %s AND state = 'sorting'
 """
 _TO_CHORE = """

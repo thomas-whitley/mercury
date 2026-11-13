@@ -53,8 +53,8 @@ _DONE = "SELECT output FROM steps WHERE run_id = %s AND kind = 'done'"
 _SET_MESSAGE = "UPDATE runs SET escalation_message_id = %s WHERE id = %s"
 # The review note a note chore's chain is for, and where its card is recorded.
 _NOTE = """
-SELECT note_id, page, note_updated_at, note_body, note_anchor, note_quote, created_at,
-       held_by_page
+SELECT note_id, page, coalesce(words_at, note_updated_at), note_body, note_anchor, note_quote,
+       created_at, held_by_page
 FROM review_notes WHERE run_id = ANY(%s::uuid[]) LIMIT 1
 """
 _SET_CARD = """

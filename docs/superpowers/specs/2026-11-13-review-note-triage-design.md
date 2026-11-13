@@ -42,7 +42,7 @@ When a note needs Thomas, he wants to know at a glance **what it is, how old it 
 
 - The sorting step uses the chat model ladder (currently `[gemini]`). Local's JSON mode only fits chore replies.
 - Sorting doesn't count toward `review_notes.daily_cap`. Only agent runs do.
-- **Sorting runs as soon as a note arrives**, even if its page is busy or the daily cap is full (Thomas, after the builder check). A note sorted as "not a change" goes to Thomas at once and **doesn't hold the page**, because it will never touch the site. Only notes heading to the agent queue for their page, as today. An escalated chore still holds its page until Thomas acts, because its run already touched the page's branch.
+- **Sorting runs as soon as a note arrives**, even if its page is busy or the daily cap is full (Thomas, after the builder check). A note sorted as "not a change" goes to Thomas at once and **doesn't hold the page**, because it will never touch the site. Only notes heading to the agent queue for their page, as today. (Correction found while planning: today's `_PAGE_BUSY` already lets a `question` go, so an escalated chore doesn't hold its page either. The beer note never blocked the homepage. It waited 16 days because note 4's pull request held the page until it was closed.)
 - The existing settle rules still apply: a note that leaves D1 becomes `gone`, and an edited note is flagged, not rerun.
 - Telegram's message limit: reuse `app/escalation.py`'s fitting (`MESSAGE_LIMIT`, `_fit`).
 

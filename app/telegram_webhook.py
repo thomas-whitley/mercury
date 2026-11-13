@@ -28,6 +28,8 @@ from starlette.concurrency import run_in_threadpool
 from app import approvals
 from app.advice import AdviceRefused, advise
 from app.deal_commands import answer_deals, on_deal_button
+from app.note_buttons import hint_on_card, press
+from app.note_card import BUTTON as NOTE_BUTTON
 from app.runs import CANCEL_RUN, CANCELLED, DONE_EVENT, DONE_STEP, NEXT_EVENT_SEQ
 from app.schedule_state import RESUME
 from app.tasks import TASK_TYPES
@@ -121,6 +123,11 @@ async def telegram_webhook(request: Request) -> dict:
         advised = await _advise_from_reply(request, replied_to, text)
         if advised is not None:
             await _send_advice(request, chat_id, advised)
+            return {}
+        # A reply to a review note's card treats the note as a change, with this hint.
+        answer = await run_in_threadpool(_hint_on_card, request.app.state, replied_to, text)
+        if answer is not None:
+            await _send(request, chat_id, answer)
             return {}
     # /hint is the same without the reply: it advises the newest chore waiting.
     command, _, argument = text.partition(" ")
@@ -357,6 +364,10 @@ async def _on_button(request: Request, callback: dict) -> None:
             datetime.now(UTC),
         )
         return
+    note = NOTE_BUTTON.match(data)
+    if note is not None:
+        await _on_note_button(request, callback, chat_id, int(note[1]), note[2])
+        return
     match = _BUTTON.match(data)
     if match is None:
         return
@@ -405,6 +416,43 @@ async def _on_button(request: Request, callback: dict) -> None:
         )
     except TelegramError as error:
         logger.error("could not show the answer in the chat: %s", error)
+
+
+# Answers after which the card's buttons are spent, so the card is edited to say so.
+_CARD_DONE = ("Dismissed.", "Started a chore, ", "Queued.")
+
+
+def _press_note(state, note_id: int, action: str) -> str:
+    with connect(state.settings.database_url, autocommit=True) as conn:
+        return press(conn, note_id, action, state.mercury, state.settings)
+
+
+def _hint_on_card(state, message_id: int, hint: str) -> str | None:
+    with connect(state.settings.database_url, autocommit=True) as conn:
+        return hint_on_card(conn, message_id, hint, state.mercury, state.settings)
+
+
+async def _on_note_button(
+    request: Request, callback: dict, chat_id: int, note_id: int, action: str
+) -> None:
+    """A press on a review note's card (app/note_buttons.py)."""
+    answer = await run_in_threadpool(_press_note, request.app.state, note_id, action)
+    logger.info("note %s button %s: %s", note_id, action, answer)
+    client = _client(request)
+    if client is None:
+        return
+    message = callback.get("message") or {}
+    try:
+        if answer.startswith(_CARD_DONE) and message.get("message_id") and message.get("text"):
+            await run_in_threadpool(
+                client.edit_message_text,
+                chat_id,
+                message["message_id"],
+                f"{message['text']}\n\n{answer}",
+            )
+        await run_in_threadpool(client.answer_callback_query, callback.get("id", ""), answer)
+    except TelegramError as error:
+        logger.error("could not show the note answer in the chat: %s", error)
 
 
 def _client(request: Request) -> TelegramClient | None:

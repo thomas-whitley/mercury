@@ -352,11 +352,11 @@ def _advance_note(
         # The run a limit stopped was a rerun: carry on its chain with its hint.
         resumed = conn.execute(
             _RESUME,
-            (instruction_for(note).strip(), HOME_PROVIDERS, provider, repo.name, limited_run),
+            (_instruction(conn, note).strip(), HOME_PROVIDERS, provider, repo.name, limited_run),
         ).fetchone()
         run_id = str(resumed[0]) if resumed else None
     if run_id is None:
-        run_id = start_chore(conn, repo, instruction_for(note), "review_note", provider)
+        run_id = start_chore(conn, repo, _instruction(conn, note), "review_note", provider)
     conn.execute(
         _SET_RUN,
         (
@@ -368,6 +368,16 @@ def _advance_note(
         ),
     )
     return run_id
+
+
+def _instruction(conn: psycopg.Connection, note: Note) -> str:
+    """The note's instruction, with Thomas's hint from a reply to its card when
+    there is one, fenced as his words."""
+    row = conn.execute("SELECT hint FROM review_notes WHERE note_id = %s", (note.id,)).fetchone()
+    hint = row[0] if row else None
+    if not hint:
+        return instruction_for(note)
+    return instruction_for(note) + "\n\n" + fenced_text("The site owner's hint:", hint)
 
 
 def _day_is_full(conn: psycopg.Connection, settings: Settings | None) -> bool:

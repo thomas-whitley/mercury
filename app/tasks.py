@@ -45,6 +45,9 @@ _TYPES = (
     TaskType(name="repo_chore", tools=(), ladder=("gemini", "ollama"), budget_tokens=50_000),
     TaskType(name="site_check", tools=(), ladder=(), budget_tokens=0),
     TaskType(name="digest", tools=(), ladder=("gemini", "ollama"), budget_tokens=20_000),
+    # One model call to sort a review note (app/note_sort.py). Local's JSON mode only fits
+    # chore replies, so gemini only.
+    TaskType(name="note_sort", tools=(), ladder=("gemini",), budget_tokens=5_000),
 )
 
 TASK_TYPES: dict[str, TaskType] = {task_type.name: task_type for task_type in _TYPES}

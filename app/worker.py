@@ -412,7 +412,10 @@ def _run_chore(
     )
     if result.status == "escalated":
         mark_if_needs_claude(conn, run_id)
-        announce_escalation(conn, telegram, owner_chat_id, run_id, settings.api_base_url)
+        announce_escalation(
+            conn, telegram, owner_chat_id, run_id, settings.api_base_url,
+            reviewer_name=review_notes.reviewer_name if review_notes else "The reviewer",
+        )  # fmt: skip
     return result
 
 

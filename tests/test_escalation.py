@@ -240,3 +240,44 @@ def test_a_short_task_is_sent_whole():
 
     assert "Do it." in text
     assert "cut" not in text
+
+
+def test_note_escalation_has_card_and_dismiss(migrated_db, fake_telegram):
+    first = escalated_chore(
+        migrated_db, NEEDS_THOMAS, source="review_note", diff="", question="Which number?"
+    )
+    migrated_db.execute(
+        "INSERT INTO review_notes (note_id, host, page, note_updated_at, state, run_id, note_body) "
+        "VALUES (5, 'h', '/', '2026-11-13 08:00:00', 'chore', %s, 'Put the phone number up')",
+        (first,),
+    )
+    rerun = advise(migrated_db, first, "the mobile", "mcp", REPOS)
+    migrated_db.execute(
+        "UPDATE runs SET status = 'escalated', escalation_reason = %s WHERE id = %s",
+        (NEEDS_THOMAS, rerun),
+    )
+    migrated_db.execute(
+        "INSERT INTO steps (run_id, seq, kind, output) VALUES (%s, 1, 'done', %s)",
+        (rerun, Jsonb({"status": "escalated", "question": "Which one?"})),
+    )
+
+    message_id = announce_escalation(
+        migrated_db, client(fake_telegram), CHAT, rerun, PAGE, reviewer_name="Luke"
+    )
+
+    [sent] = fake_telegram.sent()
+    text = sent["text"]
+    assert "Luke left a note on /:" in text
+    assert "Put the phone number up" in text
+    assert "Written " in text
+    assert "The model asks:\nWhich one?" in text
+    assert f"{PAGE}/#/runs/{rerun}" in text
+    assert "Reply to this message with a hint" in text
+    assert "Suggestion" not in text
+    assert "A reviewer left a note on one page" not in text  # the raw instruction is gone
+    assert json.dumps(sent["reply_markup"]).count("note:5:") == 1
+    assert "note:5:dismiss" in json.dumps(sent["reply_markup"])
+    card = migrated_db.execute(
+        "SELECT card_message_id, card_updated_at FROM review_notes WHERE note_id = 5"
+    ).fetchone()
+    assert card == (message_id, "2026-11-13 08:00:00")

@@ -1883,3 +1883,18 @@ def test_one_rows_failing_comment_does_not_stop_another_note_or_a_new_one(
     assert row(migrated_db, 2)["state"] == "waiting"
     assert len(started) == 1
     assert other
+
+
+def test_review_notes_accepts_triage_states(migrated_db):
+    for note_id, state in enumerate(("sorting", "asked", "dismiss", "dismissed"), start=900):
+        migrated_db.execute(
+            "INSERT INTO review_notes (note_id, host, page, note_updated_at, state, "
+            "card_message_id, card_updated_at, suggestion, held_by_page) "
+            "VALUES (%s, 'h', '/', 't', %s, 1, 't', 's', true)",
+            (note_id, state),
+        )
+    with pytest.raises(psycopg.errors.CheckViolation):
+        migrated_db.execute(
+            "INSERT INTO review_notes (note_id, host, page, note_updated_at, state) "
+            "VALUES (999, 'h', '/', 't', 'bogus')"
+        )

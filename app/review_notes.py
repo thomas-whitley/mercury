@@ -82,6 +82,27 @@ SELECT EXISTS (
 """
 # Note chores started in the last 24 hours, counted by the runs the notes got. A
 # capped note's run was stopped by a limit and did no work, so it is not counted.
+# A new note is sorted first (app/note_sort.py). Its words go on the row for the
+# sort run, capped as the instruction caps them. A row a sort left behind (an
+# error, a refusal) is sorted again with a new run.
+_QUEUE_SORT_ROW = """
+INSERT INTO review_notes (note_id, host, page, note_updated_at, state,
+                          note_body, note_anchor, note_quote)
+VALUES (%s, %s, %s, %s, 'sorting', %s, %s, %s)
+ON CONFLICT (note_id) DO UPDATE SET state = 'sorting', note_updated_at = EXCLUDED.note_updated_at,
+    note_body = EXCLUDED.note_body, note_anchor = EXCLUDED.note_anchor,
+    note_quote = EXCLUDED.note_quote, updated_at = now()
+"""
+_QUEUE_SORT_RUN = """
+INSERT INTO runs (task, type, provider, status, source)
+VALUES (%s, 'note_sort', %s, 'pending', 'review_note') RETURNING id
+"""
+_SORT_RUN = "UPDATE review_notes SET run_id = %s, updated_at = now() WHERE note_id = %s"
+_SORT_FAILED = """
+SELECT r.finished_at IS NOT NULL AND r.status <> 'succeeded'
+FROM review_notes n LEFT JOIN runs r ON r.id = n.run_id WHERE n.note_id = %s
+"""
+_HELD = "UPDATE review_notes SET held_by_page = true, updated_at = now() WHERE note_id = %s"
 _STARTED_TODAY = """
 SELECT count(*) FROM review_notes n JOIN runs r ON r.id = n.run_id
 WHERE r.source = 'review_note' AND n.state <> 'capped'
@@ -258,6 +279,25 @@ def start_note_chores(
     return started
 
 
+def queue_sort(conn: psycopg.Connection, note: Note) -> str:
+    """Record the note as sorting, with its words, and queue a note_sort run.
+    Returns the row's state afterwards. A sort is outside the daily cap and
+    does not wait for the page: only a chore does."""
+    conn.execute(
+        _QUEUE_SORT_ROW,
+        (
+            note.id, note.host, note.page, note.updated_at, note.body[:BODY_LIMIT],
+            note.anchor_text[:SNIPPET_LIMIT] if note.anchor_text else None,
+            note.quote[:SNIPPET_LIMIT] if note.quote else None,
+        ),
+    )  # fmt: skip
+    provider = TASK_TYPES["note_sort"].provider
+    run_id = conn.execute(_QUEUE_SORT_RUN, (f"sort review note {note.id}", provider)).fetchone()[0]
+    conn.execute(_SORT_RUN, (run_id, note.id))
+    logger.info("review note %s queued for sorting", note.id, extra={"run_id": str(run_id)})
+    return "sorting"
+
+
 def _advance_note(
     conn: psycopg.Connection,
     note: Note,
@@ -267,6 +307,10 @@ def _advance_note(
     settings: Settings | None = None,
 ) -> str | None:
     """Returns the run id when this note started a chore."""
+    if state == "sorting":
+        if conn.execute(_SORT_FAILED, (note.id,)).fetchone()[0]:
+            queue_sort(conn, note)
+        return None
     if state is not None and state != "capped":
         return None
     if note.host not in config.live_hosts:
@@ -274,7 +318,12 @@ def _advance_note(
             _record(conn, note, "preview")
             logger.info("review note %s is on a preview host, not run", note.id)
         return None
+    if state is None:
+        state = queue_sort(conn, note)
+        if state != "capped":
+            return None
     if conn.execute(_PAGE_BUSY, (note.page, note.id)).fetchone()[0]:
+        conn.execute(_HELD, (note.id,))
         logger.info("review note %s waits for another note on its page", note.id)
         return None
     if conn.execute(_STARTED_TODAY).fetchone()[0] >= config.daily_cap:

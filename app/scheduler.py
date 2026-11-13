@@ -584,9 +584,7 @@ def advance_review_notes(
         # A press on a card is done here: Dismiss is written to D1, and a question
         # escalated before cards existed gets one (app/note_card.py).
         finish_dismissals(conn, d1)
-        card_for_old_questions(
-            conn, telegram, config.telegram_chat_id, notes_config.reviewer_name
-        )
+        card_for_old_questions(conn, telegram, config.telegram_chat_id, notes_config.reviewer_name)
         notes = open_notes(d1)
         # A D1 write that failed is counted below, once the new notes have been
         # looked at: the other rows settle and the tick goes on.

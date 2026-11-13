@@ -46,7 +46,14 @@ from app.logging_setup import configure_logging
 from app.mercury_config import MercuryConfig, load_mercury_config
 from app.migrations import apply_migrations
 from app.outage import retry_outages
-from app.review_notes import advance_waiting, open_notes, settle_notes, start_note_chores
+from app.review_notes import (
+    advance_waiting,
+    card_for_old_questions,
+    finish_dismissals,
+    open_notes,
+    settle_notes,
+    start_note_chores,
+)
 from app.runs import finish_run, record_step
 from app.schedule_state import SUSPEND_AFTER, is_suspended, record_failure, record_success
 from app.tasks import PAGE_CHECK_KINDS, SCHEDULER_CHECK_KINDS, configure_task_types
@@ -574,6 +581,10 @@ def advance_review_notes(
             settings.mercury_bearer_token or "",
             http_get,
         )
+        # A press on a card is done here: Dismiss is written to D1, and a question
+        # escalated before cards existed gets one (app/note_card.py).
+        finish_dismissals(conn, d1)
+        card_for_old_questions(conn, telegram, config.telegram_chat_id, notes_config.reviewer_name)
         notes = open_notes(d1)
         # A D1 write that failed is counted below, once the new notes have been
         # looked at: the other rows settle and the tick goes on.

@@ -21,7 +21,7 @@ from app.loop import (
     _complete_with_retry,
 )
 from app.model import Model
-from app.report import notes_waiting, waiting_counts
+from app.report import notes_waiting, notes_waiting_lines, waiting_counts
 from app.runs import finish_run, record_step
 from app.telegram import TelegramClient, TelegramError
 
@@ -323,8 +323,11 @@ def run_digest(
     worker_id: str | None = None,
     retry_attempts: int = DEFAULT_MODEL_RETRY_ATTEMPTS,
     retry_backoff_seconds: float = DEFAULT_MODEL_RETRY_BACKOFF_SECONDS,
+    reviewer_name: str = "The reviewer",
 ) -> int:
-    """Gather, write and send one digest. Returns the tokens it used."""
+    """Gather, write and send one digest. Returns the tokens it used. The
+    review notes waiting on the owner are listed after the message, in code,
+    so the model sees only their count."""
     fields = {"run_id": run_id, "worker_id": worker_id}
     facts = gather_facts(conn)
     record_step(conn, run_id, 1, "gather", output=facts, worker_id=worker_id)
@@ -338,6 +341,9 @@ def run_digest(
         text, source, tokens = "", "facts", 0
     if not text:
         text, source = render_facts(facts), "facts"
+    notes = notes_waiting_lines(conn, reviewer_name, datetime.now(UTC))
+    if notes:
+        text = (text + "\n\n" + "\n".join(notes))[:MAX_MESSAGE_CHARS]
 
     sent, reason = _send(telegram, chat_id, text, run_id, fields)
     output = {"text": text, "source": source, "sent": sent}

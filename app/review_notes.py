@@ -13,6 +13,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 import psycopg
@@ -26,6 +27,7 @@ from app.d1 import D1Client, D1Error
 from app.escalation import MESSAGE_LIMIT, _fit
 from app.github import FAILED_CONCLUSIONS, GitHubClient, GitHubError
 from app.mercury_config import RepoConfig, ReviewNotesConfig, path_entry_covers
+from app.note_card import age_line, card_buttons, card_text
 from app.tasks import TASK_TYPES
 from app.telegram import TelegramClient, TelegramError
 
@@ -68,7 +70,7 @@ RETURNING id
 # the top of the pull request. Capped as the instruction caps them.
 _SET_RUN = """
 UPDATE review_notes SET run_id = %s, note_body = %s, note_anchor = %s, note_quote = %s,
-                        updated_at = now()
+                        words_at = %s, updated_at = now()
 WHERE note_id = %s
 """
 # Another note on the page is still being worked on, or its pull request is
@@ -82,9 +84,32 @@ SELECT EXISTS (
 """
 # Note chores started in the last 24 hours, counted by the runs the notes got. A
 # capped note's run was stopped by a limit and did no work, so it is not counted.
+# A new note is sorted first (app/note_sort.py). Its words go on the row for the
+# sort run, capped as the instruction caps them. A row a sort left behind (an
+# error, a refusal) is sorted again with a new run.
+_QUEUE_SORT_ROW = """
+INSERT INTO review_notes (note_id, host, page, note_updated_at, state,
+                          note_body, note_anchor, note_quote, words_at)
+VALUES (%s, %s, %s, %s, 'sorting', %s, %s, %s, %s)
+ON CONFLICT (note_id) DO UPDATE SET state = 'sorting', note_updated_at = EXCLUDED.note_updated_at,
+    note_body = EXCLUDED.note_body, note_anchor = EXCLUDED.note_anchor,
+    note_quote = EXCLUDED.note_quote, words_at = EXCLUDED.words_at, updated_at = now()
+"""
+_QUEUE_SORT_RUN = """
+INSERT INTO runs (task, type, provider, status, source)
+VALUES (%s, 'note_sort', %s, 'pending', 'review_note') RETURNING id
+"""
+_SORT_RUN = "UPDATE review_notes SET run_id = %s, updated_at = now() WHERE note_id = %s"
+_SORT_FAILED = """
+SELECT r.finished_at < now() - interval '1 hour' AND r.status <> 'succeeded'
+FROM review_notes n LEFT JOIN runs r ON r.id = n.run_id WHERE n.note_id = %s
+"""
+# pg_advisory_xact_lock key for starting note chores (any fixed bigint; this one spells "notes").
+START_LOCK = 0x6E6F746573
+_HELD = "UPDATE review_notes SET held_by_page = true, updated_at = now() WHERE note_id = %s"
 _STARTED_TODAY = """
 SELECT count(*) FROM review_notes n JOIN runs r ON r.id = n.run_id
-WHERE r.source = 'review_note' AND n.state <> 'capped'
+WHERE r.source = 'review_note' AND r.type = 'repo_chore' AND n.state <> 'capped'
   AND r.created_at > now() - interval '24 hours'
 """
 
@@ -258,6 +283,26 @@ def start_note_chores(
     return started
 
 
+def queue_sort(conn: psycopg.Connection, note: Note) -> str:
+    """Record the note as sorting, with its words, and queue a note_sort run.
+    Returns the row's state afterwards. A sort is outside the daily cap and
+    does not wait for the page: only a chore does."""
+    conn.execute(
+        _QUEUE_SORT_ROW,
+        (
+            note.id, note.host, note.page, note.updated_at, note.body[:BODY_LIMIT],
+            note.anchor_text[:SNIPPET_LIMIT] if note.anchor_text else None,
+            note.quote[:SNIPPET_LIMIT] if note.quote else None,
+            note.updated_at,
+        ),
+    )  # fmt: skip
+    provider = TASK_TYPES["note_sort"].provider
+    run_id = conn.execute(_QUEUE_SORT_RUN, (f"sort review note {note.id}", provider)).fetchone()[0]
+    conn.execute(_SORT_RUN, (run_id, note.id))
+    logger.info("review note %s queued for sorting", note.id, extra={"run_id": str(run_id)})
+    return "sorting"
+
+
 def _advance_note(
     conn: psycopg.Connection,
     note: Note,
@@ -267,6 +312,10 @@ def _advance_note(
     settings: Settings | None = None,
 ) -> str | None:
     """Returns the run id when this note started a chore."""
+    if state == "sorting":
+        if conn.execute(_SORT_FAILED, (note.id,)).fetchone()[0]:
+            queue_sort(conn, note)
+        return None
     if state is not None and state != "capped":
         return None
     if note.host not in config.live_hosts:
@@ -274,7 +323,15 @@ def _advance_note(
             _record(conn, note, "preview")
             logger.info("review note %s is on a preview host, not run", note.id)
         return None
+    if state is None:
+        state = queue_sort(conn, note)
+        if state != "capped":
+            return None
+    # The scheduler and the webhook (Treat as a change) both start chores. One lock,
+    # held to the end of the transaction, makes the page and cap checks and the start one step.
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", (START_LOCK,))
     if conn.execute(_PAGE_BUSY, (note.page, note.id)).fetchone()[0]:
+        conn.execute(_HELD, (note.id,))
         logger.info("review note %s waits for another note on its page", note.id)
         return None
     if conn.execute(_STARTED_TODAY).fetchone()[0] >= config.daily_cap:
@@ -303,11 +360,11 @@ def _advance_note(
         # The run a limit stopped was a rerun: carry on its chain with its hint.
         resumed = conn.execute(
             _RESUME,
-            (instruction_for(note).strip(), HOME_PROVIDERS, provider, repo.name, limited_run),
+            (_instruction(conn, note).strip(), HOME_PROVIDERS, provider, repo.name, limited_run),
         ).fetchone()
         run_id = str(resumed[0]) if resumed else None
     if run_id is None:
-        run_id = start_chore(conn, repo, instruction_for(note), "review_note", provider)
+        run_id = start_chore(conn, repo, _instruction(conn, note), "review_note", provider)
     conn.execute(
         _SET_RUN,
         (
@@ -315,10 +372,21 @@ def _advance_note(
             note.body[:BODY_LIMIT],
             note.anchor_text[:SNIPPET_LIMIT] if note.anchor_text else None,
             note.quote[:SNIPPET_LIMIT] if note.quote else None,
+            note.updated_at,
             note.id,
         ),
     )
     return run_id
+
+
+def _instruction(conn: psycopg.Connection, note: Note) -> str:
+    """The note's instruction, with Thomas's hint from a reply to its card when
+    there is one, fenced as his words."""
+    row = conn.execute("SELECT hint FROM review_notes WHERE note_id = %s", (note.id,)).fetchone()
+    hint = row[0] if row else None
+    if not hint:
+        return instruction_for(note)
+    return instruction_for(note) + "\n\n" + fenced_text("The site owner's hint:", hint)
 
 
 def _day_is_full(conn: psycopg.Connection, settings: Settings | None) -> bool:
@@ -916,7 +984,7 @@ def _post_score_comments(conn: psycopg.Connection, tick: _Tick) -> None:
 
 _SETTLE_ROWS = """
 SELECT note_id, state, run_id, note_updated_at FROM review_notes
-WHERE state NOT IN ('merged', 'closed', 'gone') ORDER BY note_id
+WHERE state NOT IN ('merged', 'closed', 'gone', 'dismiss', 'dismissed') ORDER BY note_id
 """
 _MARK_EDITED = """
 UPDATE review_notes SET edited = true, note_updated_at = %s, updated_at = now()
@@ -926,7 +994,9 @@ _MARK_DONE_IN_D1 = (
     "UPDATE review_comments SET status = 'done', updated_at = datetime('now') "
     "WHERE id = ? AND status = 'open'"
 )
-_TRACKED_BY_PR = ("chore", "question", "waiting", "reported")
+# The rows an edit is flagged on. A note still being sorted or asked about is
+# looked at too, so a card for words since edited can be told apart.
+_TRACKED_BY_PR = ("chore", "question", "waiting", "reported", "asked", "sorting")
 # The rows whose pull request is looked up: a merge marks the note done.
 _SETTLED_BY_PR = ("question", "waiting", "reported")
 
@@ -1006,3 +1076,63 @@ def _settle_row(
     elif pull == "none" and state != "question":
         # A question has no pull request until someone opens one.
         logger.warning("review note %s: no pull request found for its branch", note_id)
+
+
+# ---- Dismissals and cards for questions escalated before cards existed ----
+
+_DISMISSING = "SELECT note_id FROM review_notes WHERE state = 'dismiss' ORDER BY note_id"
+_UNCARDED_QUESTIONS = """
+SELECT note_id, page, coalesce(words_at, note_updated_at), note_body, note_anchor, note_quote,
+       created_at, held_by_page
+FROM review_notes WHERE state = 'question' AND card_message_id IS NULL ORDER BY note_id
+"""
+_SET_CARD = """
+UPDATE review_notes SET card_message_id = %s, card_updated_at = %s, updated_at = now()
+WHERE note_id = %s
+"""
+
+
+def finish_dismissals(conn: psycopg.Connection, d1: D1Client) -> int:
+    """Mark each note Thomas dismissed done in D1, which takes it off the
+    reviewer's page, then mark the row dismissed. A D1 write that fails leaves
+    the row as dismiss for the next tick. Returns how many finished."""
+    finished = 0
+    for (note_id,) in conn.execute(_DISMISSING).fetchall():
+        try:
+            d1.query(_MARK_DONE_IN_D1, [note_id])
+        except D1Error as error:
+            logger.error("review note %s: dismissal not written to D1: %s", note_id, error)
+            continue
+        conn.execute(_SET_STATE, ("dismissed", note_id))
+        logger.info("review note %s dismissed and marked done", note_id)
+        finished += 1
+    return finished
+
+
+def card_for_old_questions(
+    conn: psycopg.Connection,
+    telegram: TelegramClient | None,
+    chat_id: int | None,
+    reviewer_name: str,
+) -> int:
+    """One card, with Dismiss, for each question with none: a chore escalated
+    before cards existed, or one whose escalation message was not sent. A send
+    that fails leaves the row for the next tick. Returns how many were sent."""
+    if telegram is None or chat_id is None:
+        return 0
+    sent = 0
+    now = datetime.now(UTC)
+    for row in conn.execute(_UNCARDED_QUESTIONS).fetchall():
+        note_id, page, written, body, anchor, quote, picked_up, held = row
+        text = card_text(
+            reviewer_name, page, body or "", anchor, quote,
+            age_line(written, picked_up, now, held), None,
+        )  # fmt: skip
+        try:
+            message_id = telegram.send_message(chat_id, text, card_buttons(note_id, False))
+        except TelegramError as error:
+            logger.error("review note %s: card not sent: %s", note_id, error)
+            continue
+        conn.execute(_SET_CARD, (message_id, written, note_id))
+        sent += 1
+    return sent

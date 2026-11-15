@@ -12,10 +12,10 @@ from app.tasks import (
     configure_task_types,
 )
 
-EXPECTED_NAMES = {"pytest", "chat", "repo_chore", "site_check", "digest"}
+EXPECTED_NAMES = {"pytest", "chat", "repo_chore", "site_check", "digest", "note_sort"}
 
 
-def test_the_five_task_types_are_registered():
+def test_the_six_task_types_are_registered():
     assert set(TASK_TYPES) == EXPECTED_NAMES
 
 

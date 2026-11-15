@@ -18,6 +18,7 @@ only to the owner's own chat.
 """
 
 import logging
+from datetime import UTC, datetime
 
 import psycopg
 
@@ -50,6 +51,16 @@ SELECT task, repo, source, escalation_reason FROM runs WHERE id = %s
 """
 _DONE = "SELECT output FROM steps WHERE run_id = %s AND kind = 'done'"
 _SET_MESSAGE = "UPDATE runs SET escalation_message_id = %s WHERE id = %s"
+# The review note a note chore's chain is for, and where its card is recorded.
+_NOTE = """
+SELECT note_id, page, coalesce(words_at, note_updated_at), note_body, note_anchor, note_quote,
+       created_at, held_by_page
+FROM review_notes WHERE run_id = ANY(%s::uuid[]) LIMIT 1
+"""
+_SET_CARD = """
+UPDATE review_notes SET card_message_id = %s, card_updated_at = %s, updated_at = now()
+WHERE note_id = %s
+"""
 _SET_MESSAGE_FROM_APPROVAL = """
 UPDATE runs SET escalation_message_id = (SELECT message_id FROM approvals WHERE id = %s)
 WHERE id = %s
@@ -134,9 +145,12 @@ def announce_escalation(
     chat_id: int | None,
     run_id: str,
     page_base_url: str,
+    reviewer_name: str = "The reviewer",
 ) -> int | None:
     """Send the escalation message and return its id, or None when nothing
-    was sent. Never raises for Telegram: the run stays escalated either way."""
+    was sent. Never raises for Telegram: the run stays escalated either way.
+    A note chore's message shows the note's card (who, which page, their
+    words, how old) in place of the raw instruction, with a Dismiss button."""
     if telegram is None or chat_id is None:
         return None
     task, repo, source, reason = conn.execute(_RUN, (run_id,)).fetchone()
@@ -147,6 +161,20 @@ def announce_escalation(
     question = output.get("question") if source == "review_note" else None
     if not question and _already_announced(conn, run_id):
         return None
+    note = (
+        conn.execute(_NOTE, (chain_ids(conn, run_id),)).fetchone()
+        if source == "review_note"
+        else None
+    )
+    buttons = None
+    if note is not None:
+        # Imported here: app.note_card imports this module for its message limit.
+        from app.note_card import age_line, card_buttons, card_text
+
+        note_id, page, written, body, anchor, quote, picked_up, held = note
+        age = age_line(written, picked_up, datetime.now(UTC), held)
+        task = card_text(reviewer_name, page, body or "", anchor, quote, age, None)
+        buttons = card_buttons(note_id, False)
     text = escalation_text(
         run_id, repo, task, reason or output.get("reason", ""), output.get("test_output", ""),
         page_base_url, question if isinstance(question, str) else "",
@@ -161,10 +189,12 @@ def announce_escalation(
                 "escalation of %s sent as message %s", run_id, row[0], extra={"run_id": run_id}
             )
             return row[0]
-        message_id = telegram.send_message(chat_id, text)
+        message_id = telegram.send_message(chat_id, text, buttons)
     except TelegramError as error:
         logger.error("escalation of %s not sent: %s", run_id, error, extra={"run_id": run_id})
         return None
     conn.execute(_SET_MESSAGE, (message_id, run_id))
+    if note is not None:
+        conn.execute(_SET_CARD, (message_id, note[2], note[0]))
     logger.info("escalation of %s sent as message %s", run_id, message_id, extra={"run_id": run_id})
     return message_id

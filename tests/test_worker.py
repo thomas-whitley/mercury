@@ -686,3 +686,30 @@ def test_a_chore_uses_its_repos_timeout_over_the_default(
     )
 
     assert seen["timeout"] == expected
+
+
+def test_process_run_sorts_a_review_note(migrated_db, fake_telegram):
+    from tests.test_review_notes import make_config
+
+    run_id = migrated_db.execute(
+        "INSERT INTO runs (task, type, provider, source) "
+        "VALUES ('sort review note 7', 'note_sort', 'gemini', 'review_note') RETURNING id"
+    ).fetchone()[0]
+    migrated_db.execute(
+        "INSERT INTO review_notes (note_id, host, page, note_updated_at, state, run_id, note_body) "
+        "VALUES (7, 'h', '/', '2026-11-13 08:00:00', 'sorting', %s, 'hello')",
+        (run_id,),
+    )
+    claim_next_run(migrated_db, "worker-test")
+    settings = settings_with(
+        worker_id="worker-test", telegram_bot_token="123:abc", telegram_api_url=fake_telegram.url
+    )
+
+    process_run(
+        migrated_db, run_id, settings, owner_chat_id=42, review_notes=make_config(),
+        model_builder=stub_model_builder('{"kind": "other"}'),
+    )  # fmt: skip
+
+    state = migrated_db.execute("SELECT state FROM review_notes WHERE note_id = 7").fetchone()[0]
+    assert state == "asked"
+    assert fake_telegram.sent()[0]["chat_id"] == 42

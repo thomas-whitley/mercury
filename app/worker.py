@@ -35,6 +35,7 @@ from app.loop import LoopResult, run_agent_loop
 from app.mercury_config import MercuryConfig, RepoConfig, ReviewNotesConfig, load_mercury_config
 from app.migrations import apply_migrations
 from app.model import FallbackModel, Model, StubModel
+from app.note_sort import run_note_sort
 from app.pagespeed import run_pagespeed
 from app.progress import push_progress
 from app.repo_chore import ChoreSetup, run_repo_chore
@@ -50,7 +51,7 @@ logger = logging.getLogger("agent_runs.worker")
 # (app/chat.py). A site_check the worker takes over runs on PageSpeed in
 # run_cloud_check. Every other
 # registered type is refused, closing its stream, until its own step lands.
-_RUNNABLE_TYPES = {"pytest", "chat", "repo_chore", "digest"}
+_RUNNABLE_TYPES = {"pytest", "chat", "repo_chore", "digest", "note_sort"}
 
 # Unclaimed runs, and runs whose worker stopped reporting for longer than the
 # lease. The second case is a worker that was killed outright.
@@ -334,12 +335,20 @@ def _process_run(
 
     if task_type_name == "digest":
         tokens = run_digest(
-            conn, run_id, model, telegram, owner_chat_id, worker_id=settings.worker_id
-        )
+            conn, run_id, model, telegram, owner_chat_id, worker_id=settings.worker_id,
+            reviewer_name=review_notes.reviewer_name if review_notes else "The reviewer",
+        )  # fmt: skip
         return LoopResult(status="succeeded", attempts=1, tokens_used=tokens)
 
     if task_type_name == "chat":
         tokens = run_chat(conn, run_id, model, telegram, worker_id=settings.worker_id, repos=repos)
+        return LoopResult(status="succeeded", attempts=1, tokens_used=tokens)
+
+    if task_type_name == "note_sort":
+        reviewer = review_notes.reviewer_name if review_notes else "The reviewer"
+        tokens = run_note_sort(
+            conn, run_id, model, telegram, owner_chat_id, reviewer, worker_id=settings.worker_id
+        )
         return LoopResult(status="succeeded", attempts=1, tokens_used=tokens)
 
     return run_agent_loop(
@@ -404,7 +413,10 @@ def _run_chore(
     )
     if result.status == "escalated":
         mark_if_needs_claude(conn, run_id)
-        announce_escalation(conn, telegram, owner_chat_id, run_id, settings.api_base_url)
+        announce_escalation(
+            conn, telegram, owner_chat_id, run_id, settings.api_base_url,
+            reviewer_name=review_notes.reviewer_name if review_notes else "The reviewer",
+        )  # fmt: skip
     return result
 
 

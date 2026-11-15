@@ -45,6 +45,21 @@ REPO = RepoConfig(name="owner/site", test_command="npm test")
 TOKEN = "d1-secret-token"
 
 
+@pytest.fixture(autouse=True)
+def _notes_sort_as_changes(monkeypatch):
+    """These tests predate sorting (app/note_sort.py) and follow a note's chore.
+    Here every new note is sorted as a change at once, which is the row a
+    "change" verdict leaves: capped, no run. tests/test_note_triage_flow.py
+    covers the real sort."""
+    from app import review_notes
+
+    def sorted_as_change(conn, new_note):
+        review_notes._record(conn, new_note, "capped")
+        return "capped"
+
+    monkeypatch.setattr(review_notes, "queue_sort", sorted_as_change)
+
+
 def make_config(**changes) -> ReviewNotesConfig:
     values = dict(
         enabled=True,
@@ -167,7 +182,8 @@ def test_a_second_note_on_the_same_page_waits(migrated_db, first_state):
     start_note_chores(migrated_db, notes, make_config(), REPO)
 
     assert run_count(migrated_db) == 1
-    assert states(migrated_db) == {1: "chore"}
+    # Sorted at once (here, as a change), then held for the page as capped.
+    assert states(migrated_db) == {1: "chore", 2: "capped"}
 
     start_note_chores(migrated_db, notes, make_config(), REPO)
     assert run_count(migrated_db) == 1
@@ -187,7 +203,9 @@ def test_a_note_waits_while_the_page_is_busy(migrated_db, busy_state):
     start_note_chores(migrated_db, [note(1), note(2)], make_config(), REPO)
 
     assert run_count(migrated_db) == 1
-    assert 2 not in states(migrated_db)
+    assert states(migrated_db)[2] == "capped"
+    held = migrated_db.execute("SELECT held_by_page FROM review_notes WHERE note_id = 2")
+    assert held.fetchone()[0] is True
 
 
 def test_notes_on_different_pages_run_side_by_side(migrated_db):
@@ -1883,3 +1901,18 @@ def test_one_rows_failing_comment_does_not_stop_another_note_or_a_new_one(
     assert row(migrated_db, 2)["state"] == "waiting"
     assert len(started) == 1
     assert other
+
+
+def test_review_notes_accepts_triage_states(migrated_db):
+    for note_id, state in enumerate(("sorting", "asked", "dismiss", "dismissed"), start=900):
+        migrated_db.execute(
+            "INSERT INTO review_notes (note_id, host, page, note_updated_at, state, "
+            "card_message_id, card_updated_at, suggestion, held_by_page) "
+            "VALUES (%s, 'h', '/', 't', %s, 1, 't', 's', true)",
+            (note_id, state),
+        )
+    with pytest.raises(psycopg.errors.CheckViolation):
+        migrated_db.execute(
+            "INSERT INTO review_notes (note_id, host, page, note_updated_at, state) "
+            "VALUES (999, 'h', '/', 't', 'bogus')"
+        )

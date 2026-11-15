@@ -528,6 +528,18 @@ The cold start of a note chore has not been measured yet. The deploy is paused w
 
 There is no row for this in the claims table. The claim is filled in when the supervised trial passes.
 
+### Sorting notes first
+
+Since 2026-11-13 every new note is sorted before any chore (`docs/superpowers/specs/2026-11-13-review-note-triage-design.md`). A `note_sort` run asks the model one question: is this a website change? A change queues for a chore as before. Anything else (a personal message, a question, or a reply that is not the JSON asked for) goes to the owner as a card. The card shows who left the note, on which page, their words, how old the note is and one suggestion line, with two buttons: Dismiss, and Treat as a change. A reply to the card is a hint, and the chore starts with it.
+
+- Sorting does not wait for the page and does not count toward the daily cap. A model or Telegram failure ends the sort run in error, and the next tick sorts the note again. Nobody is messaged about an outage.
+- Dismiss marks the note done in D1 on the next tick, which takes it off the reviewer's page. It refuses while a run is going or a pull request is open, and it never cancels either.
+- A press on a card whose note was edited since changes nothing. The row is dropped, so the next tick reads the new words and sends a new card.
+- An escalated note chore's message shows the same card in place of the raw instruction, with Dismiss. A question escalated before cards existed gets one card.
+- The digest lists each note waiting on the owner by its first words. That line is built in code, so the digest model sees only the count.
+
+The tests are `tests/test_note_card.py`, `tests/test_note_sort.py`, `tests/test_note_triage_flow.py`, `tests/test_note_buttons.py`, and the note cases in `tests/test_escalation.py`, `tests/test_telegram_webhook.py` and `tests/test_digest.py`. The first live Dismiss is the trial.
+
 ## Evals
 
 An eval task is one YAML file in `evals/chores/`: the repo, an instruction that names every file and function it expects, and a grade test. There are 11, 8 small exact ones on a calculator and a text module and 3 on a standard library `orders` package, all on the public fixture repo `thomas-whitley/mercury-fixture`. The grade test never reaches the model. Mercury runs the chore as it runs any other, and the runner grades the branch afterwards on its own clone. A result passes when it still has every test id `main` has and skips none of them, its own tests pass, and the grade test passes. A result that drops or skips one of `main`'s tests fails, whatever the grade says.

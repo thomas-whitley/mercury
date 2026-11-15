@@ -332,3 +332,53 @@ def test_slash_hint_with_no_text_says_how(advising_bot, fake_telegram, migrated_
 
     assert replies(fake_telegram) == ["Usage: /hint <what to do differently>"]
     assert migrated_db.execute("SELECT count(*) FROM runs").fetchone() == (1,)
+
+
+def note_press(base_url: str, data: str, chat_id: int = CHAT) -> None:
+    body = {
+        "update_id": 3,
+        "callback_query": {
+            "id": "cb-9",
+            "message": {"message_id": 70, "chat": {"id": chat_id}, "text": "Luke left a note"},
+            "data": data,
+        },
+    }
+    assert post(base_url, body).status_code == 200
+
+
+def seed_asked_note(conn) -> None:
+    conn.execute(
+        "INSERT INTO review_notes (note_id, host, page, note_updated_at, state, card_message_id, "
+        "card_updated_at, note_body) VALUES (5, 'h', '/', 't', 'asked', 70, 't', 'hi')"
+    )
+
+
+def note_state(conn) -> str:
+    return conn.execute("SELECT state FROM review_notes WHERE note_id = 5").fetchone()[0]
+
+
+def test_note_button_routes(bot, fake_telegram, migrated_db):
+    seed_asked_note(migrated_db)
+
+    note_press(bot, "note:5:dismiss")
+
+    assert note_state(migrated_db) == "dismiss"
+    assert fake_telegram.sent("answerCallbackQuery")[0]["text"] == "Dismissed."
+    assert fake_telegram.sent("editMessageText") == [
+        {"chat_id": CHAT, "message_id": 70, "text": "Luke left a note\n\nDismissed."}
+    ]
+
+
+def test_note_button_from_another_chat_is_ignored(bot, fake_telegram, migrated_db):
+    seed_asked_note(migrated_db)
+    note_press(bot, "note:5:dismiss", chat_id=999)
+    assert note_state(migrated_db) == "asked"
+    assert fake_telegram.sent("answerCallbackQuery") == []
+
+
+def test_reply_to_a_note_card_is_a_hint(bot, fake_telegram, migrated_db):
+    seed_asked_note(migrated_db)
+    post(bot, reply_to(70, "make it bold"))
+    # No review_notes section in this bot's config, so the change cannot start here.
+    assert replies(fake_telegram) == ["That note is no longer tracked."]
+    assert migrated_db.execute("SELECT count(*) FROM runs WHERE type = 'chat'").fetchone() == (0,)
